@@ -12,7 +12,14 @@ from typing import Any, Dict, Optional
 
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
-from utils.connection.qq import QQConnector
+
+# QQConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），运行时
+# 无需导入；在缺 utils.connection 的隔离测试环境里也能加载包（连接由 create_qq_connection
+# 在方法内惰性构建，见下方）。
+try:
+    from utils.connection.qq import QQConnector
+except (ImportError, ModuleNotFoundError):
+    QQConnector = None
 
 try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
