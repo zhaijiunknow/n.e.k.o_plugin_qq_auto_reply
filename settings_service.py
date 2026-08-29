@@ -5,11 +5,10 @@ import math
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from copy import deepcopy
-
 from typing import Any
 
-from .permission import PermissionManager
 from .group_permission import GroupPermissionManager
+from .permission import PermissionManager
 
 
 class QQSettingsService:

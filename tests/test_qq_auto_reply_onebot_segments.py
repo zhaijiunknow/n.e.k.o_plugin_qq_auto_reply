@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from plugin.plugins.qq_auto_reply.enrichment import QQMessageEnricher, _FILE_TEXT_MAX_BYTES
+from plugin.plugins.qq_auto_reply.enrichment import _FILE_TEXT_MAX_BYTES, QQMessageEnricher
 from plugin.plugins.qq_auto_reply.message_chain import At, File, Text
 from utils.connection.qq.qq_client import QQClient
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from plugin.sdk.plugin import NekoPluginBase, Err, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, ui
+from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, ui
 
 
 @neko_plugin
@@ -36,6 +36,7 @@ class QQSendTestPlugin(NekoPluginBase):
     async def _watch_qq_sse(self) -> None:
         """连接 /plugin/qq_auto_reply/ui-api/events 的 SSE 流，收集 type=qq_message 帧。"""
         import json as _json
+
         import httpx as _httpx
         try:
             from config import USER_PLUGIN_BASE

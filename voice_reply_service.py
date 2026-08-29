@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 import websockets
-
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
+
 try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
 except (ImportError, ModuleNotFoundError):
@@ -23,10 +23,16 @@ try:
 except (ImportError, ModuleNotFoundError):
     normalize_gemini_tts_voice = None
 try:
-    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+    from utils.voice_clone import (
+        MimoVoiceCloneClient,
+        MimoVoiceCloneError,
+        MinimaxVoiceCloneClient,
+        MinimaxVoiceCloneError,
+    )
 except (ImportError, ModuleNotFoundError):
     MimoVoiceCloneClient = MinimaxVoiceCloneClient = None
-    class _MissingVoiceCloneError(Exception): pass
+    class _MissingVoiceCloneError(Exception):
+        pass
     MimoVoiceCloneError = MinimaxVoiceCloneError = _MissingVoiceCloneError
 try:
     from utils.voice_config import read_legacy_voice_id
@@ -86,7 +92,11 @@ class QQVoiceReplyService:
             voice_id = await self.get_current_voice_id() or "default"
             voice_name = str(tts_config.get("voice_name") or voice_id)
 
-            import websockets, json as _json, io, wave
+            import io
+            import json as _json
+            import wave
+
+            import websockets
             ws_url = base_url.rstrip("/") + "/v1/audio/speech/stream"
 
             async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
@@ -128,12 +138,12 @@ class QQVoiceReplyService:
         if not normalized_text:
             raise RuntimeError("语音合成文本不能为空")
         try:
-            from utils.config_manager import get_config_manager
-            from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE
             from main_logic.tts_client.workers.free import (
                 _adjust_free_tts_url,
                 _build_step_tts_create_data,
             )
+            from utils.config_manager import get_config_manager
+            from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE
 
             config_manager = get_config_manager()
 
@@ -165,7 +175,6 @@ class QQVoiceReplyService:
                     voice_id = active_native
             voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
             provider = (voice_data or {}).get("provider", "")
-            preview_language = "zh-CN"
             text = normalized_text
 
             try:

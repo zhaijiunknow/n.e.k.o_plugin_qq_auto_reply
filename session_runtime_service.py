@@ -6,7 +6,6 @@ from typing import Any
 
 from .pipeline_models import QQReplyContext
 
-
 # 会被 handle_message 就地改写成 group 轮的通知类型：会话键必须与
 # 改写后一致，否则这些轮次全程无锁。新增改写分支时同步补进来（
 # test_converted_notice_types_take_the_group_session_lock 会盯着）。

@@ -23,6 +23,7 @@
     python plugin/plugins/qq_auto_reply/debug_reply_buffer_summary.py [--data-dir <目录>]
 退出码：0 = 全部断言通过；2 = 有失败。
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -53,7 +54,6 @@ from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
 from plugin.plugins.qq_auto_reply.reply_buffer_service import QQReplyBufferService
 from plugin.plugins.qq_auto_reply.session import QQAutoReplySessionMixin
-
 
 GROUP_ID = "1048307485"
 SENDER_ID = "1219199629"
@@ -195,7 +195,7 @@ async def scenario_multi_summary(facade: QQAutoReplyPlugin) -> list[str]:
         problems.append("总结 prompt 缺少原消息（应包含两条原消息）")
     if "猫娘的第一版草稿回复" in prompt:
         problems.append("总结 prompt 混入了 bot 自己的草稿回复（bug 复现）")
-    if f"对方连续发了 2 条消息" not in prompt:
+    if "对方连续发了 2 条消息" not in prompt:
         problems.append("总结 prompt 的消息条数不是 2")
     return problems
 

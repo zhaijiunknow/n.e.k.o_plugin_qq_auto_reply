@@ -3,7 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from .pipeline_models import QQDeliveryPlan, QQMessageBlock, QQReplyContext, QQReplyOutcome, QQModelResult
+from .pipeline_models import QQDeliveryPlan, QQMessageBlock, QQModelResult, QQReplyContext, QQReplyOutcome
 
 
 class QQReplyPostprocessNode:
@@ -177,22 +177,37 @@ class QQReplyPostprocessNode:
         import re
         text = raw_text
 
-        reply_id = ""; at_id = ""; poke_user = ""; sticker_id = ""; voice_text = ""; keyboard = ""
+        reply_id = ""
+        at_id = ""
+        poke_user = ""
+        sticker_id = ""
+        voice_text = ""
+        keyboard = ""
 
         m = re.search(r"<reply>(.*?)</reply>", text, re.IGNORECASE)
-        if m: reply_id = m.group(1).strip(); text = re.sub(r"<reply>.*?</reply>", "", text, flags=re.IGNORECASE)
+        if m:
+            reply_id = m.group(1).strip()
+            text = re.sub(r"<reply>.*?</reply>", "", text, flags=re.IGNORECASE)
 
         m = re.search(r"<at>(.*?)</at>", text, re.IGNORECASE)
-        if m: at_id = m.group(1).strip(); text = re.sub(r"<at>.*?</at>", "", text, count=1, flags=re.IGNORECASE)
+        if m:
+            at_id = m.group(1).strip()
+            text = re.sub(r"<at>.*?</at>", "", text, count=1, flags=re.IGNORECASE)
 
         m = re.search(r"<poke>(.*?)</poke>", text, re.IGNORECASE)
-        if m: poke_user = m.group(1).strip(); text = re.sub(r"<poke>.*?</poke>", "", text, count=1, flags=re.IGNORECASE)
+        if m:
+            poke_user = m.group(1).strip()
+            text = re.sub(r"<poke>.*?</poke>", "", text, count=1, flags=re.IGNORECASE)
 
         m = re.search(r"<sticker>(.*?)</sticker>", text, re.IGNORECASE)
-        if m: sticker_id = m.group(1).strip(); text = re.sub(r"<sticker>.*?</sticker>", "", text, count=1, flags=re.IGNORECASE)
+        if m:
+            sticker_id = m.group(1).strip()
+            text = re.sub(r"<sticker>.*?</sticker>", "", text, count=1, flags=re.IGNORECASE)
 
         m = re.search(r"<record>(.*?)</record>", text, re.IGNORECASE)
-        if m: voice_text = m.group(1).strip(); text = re.sub(r"<record>.*?</record>", "", text, count=1, flags=re.IGNORECASE)
+        if m:
+            voice_text = m.group(1).strip()
+            text = re.sub(r"<record>.*?</record>", "", text, count=1, flags=re.IGNORECASE)
 
         m = re.search(r"<keyboard>(.*?)</keyboard>", text, re.IGNORECASE)
         if m:
@@ -361,16 +376,25 @@ class QQReplyPostprocessNode:
             reply_text = first_text or reply_text
             # 日志：LLM 使用的标签
             tags = []
-            if emoji_reaction_id: tags.append(f"emoji={emoji_reaction_id}")
-            if feeling: tags.append(f"feeling={feeling}")
-            if forward_content: tags.append("forward")
+            if emoji_reaction_id:
+                tags.append(f"emoji={emoji_reaction_id}")
+            if feeling:
+                tags.append(f"feeling={feeling}")
+            if forward_content:
+                tags.append("forward")
             for b in (blocks or []):
-                if b.reply_to: tags.append(f"reply={b.reply_to}")
-                if b.at_user: tags.append(f"at={b.at_user}")
-                if b.sticker: tags.append(f"sticker={b.sticker}")
-                if b.poke: tags.append(f"poke={b.poke}")
-                if b.record: tags.append("record")
-                if b.keyboard: tags.append("keyboard")
+                if b.reply_to:
+                    tags.append(f"reply={b.reply_to}")
+                if b.at_user:
+                    tags.append(f"at={b.at_user}")
+                if b.sticker:
+                    tags.append(f"sticker={b.sticker}")
+                if b.poke:
+                    tags.append(f"poke={b.poke}")
+                if b.record:
+                    tags.append("record")
+                if b.keyboard:
+                    tags.append("keyboard")
             if tags:
                 self.plugin._emit_log("INFO", f"[Tags] {' | '.join(tags)}")
 

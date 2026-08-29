@@ -11,8 +11,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 from plugin.plugins.qq_auto_reply.attention_gate_service import QQAttentionGateService
 
 

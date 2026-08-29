@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import urlparse
-import time
 
 
 class QQRuntimeService:
@@ -31,7 +31,6 @@ class QQRuntimeService:
         f = getattr(self.plugin, "fatigue_service", None)
         if not f:
             return {"available": False}
-        now = time.time()
         return {
             "available": True,
             "total_fatigue": round(f.calculate_fatigue("global"), 1),

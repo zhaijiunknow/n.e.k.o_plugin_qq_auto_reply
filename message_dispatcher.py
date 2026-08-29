@@ -750,8 +750,10 @@ class QQMessageDispatcher:
                 self.plugin.permission_mgr.add_user(sender_id, "admin", user_nickname or "管理员")
                 self.plugin._refresh_admin_qq()
                 self.plugin._emit_log("INFO", f"开放平台自动设置管理员: {sender_id}")
-                try: await self.plugin.settings_service.persist_business_config()
-                except Exception: pass
+                try:
+                    await self.plugin.settings_service.persist_business_config()
+                except Exception:
+                    pass
         # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline
         if getattr(self.plugin, "reply_buffer_service", None):
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)

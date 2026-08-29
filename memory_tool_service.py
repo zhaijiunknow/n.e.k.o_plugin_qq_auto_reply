@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
+    RECALL_MEMORY_TOOL_FOUND_HEADER,
+    RECALL_MEMORY_TOOL_NO_RESULT,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
     RECALL_MEMORY_TOOL_TIME_DESCRIPTION,
-    RECALL_MEMORY_TOOL_NO_RESULT,
-    RECALL_MEMORY_TOOL_FOUND_HEADER,
     _normalize_memory_prompt_lang,
 )
+from config.prompts.prompts_sys import _loc
 from main_logic.tool_calling import ToolDefinition
 from utils.language_utils import get_global_language_full
 

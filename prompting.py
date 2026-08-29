@@ -2,21 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 from io import BytesIO
 from pathlib import Path
-import re
-import time
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 from PIL import Image
-
-from utils.llm_client import create_chat_llm_async, strip_thinking_segments
+from utils.llm_client import strip_thinking_segments
 from utils.screenshot_utils import compress_screenshot
-from utils.token_tracker import set_call_type
+
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import LOGIN_IDENTITY_PROMPT
-
 
 _THINK_TAG_VARIANT_PAIRED_RE = re.compile(
     r"<(?P<tag>think(?:ing)?(?:[_-][a-z0-9_:-]+)+)\s*>.*?</(?P=tag)\s*>",

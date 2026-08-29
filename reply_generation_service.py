@@ -10,7 +10,6 @@ from utils.token_tracker import set_call_type
 
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS
 from .pipeline_models import (
-    QQInstructionBundle,
     QQModelResult,
     QQPipelineStageTrace,
     QQReplyContext,
@@ -434,7 +433,7 @@ class QQReplyGenerationService:
         会话随后被弃，多记无害）。私聊轮同样记（此前限定 is_group）：
         participant 结算分支拿它当 digest 起点地板，OFF 时代的私聊行在
         开关翻 ON 后绝不回溯入库；legacy admin 路径不读该字段，多记无害。
-        """  # noqa: DOCSTRING_CJK
+        """
         if not user_data.get("memory_enabled"):
             user_data["nonconsent_history_end"] = len(
                 getattr(user_session, "_conversation_history", []) or []

@@ -18,7 +18,6 @@ actually comes from.
 """
 
 import pytest
-
 from utils.connection.qq.qq_open_plat import QQOpenPlatformConnection
 
 

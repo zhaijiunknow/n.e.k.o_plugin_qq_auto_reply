@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from utils.config_manager import get_config_manager
 
-from .pipeline_models import is_synthetic_source, QQInstructionBundle, QQPipelineStageTrace, QQReplyContext
+from .pipeline_models import QQPipelineStageTrace, QQReplyContext, is_synthetic_source
 
 
 class QQReplyContextNode:

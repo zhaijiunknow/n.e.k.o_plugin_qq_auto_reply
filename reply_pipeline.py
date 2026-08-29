@@ -4,7 +4,17 @@ import asyncio
 import re
 from typing import Any
 
-from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest, delivered_blocks_text
+from .pipeline_models import (
+    QQDeliveryResult,
+    QQModelResult,
+    QQPipelineStageTrace,
+    QQRelayResult,
+    QQReplyContext,
+    QQReplyDecision,
+    QQReplyOutcome,
+    QQReplyRequest,
+    delivered_blocks_text,
+)
 from .reply_buffer_service import QQReplyBufferService
 
 
@@ -589,7 +599,8 @@ class QQReplyPipelineRunner:
 
     def _resolve_sticker_path(self, sticker_id: str) -> str:
         """解析表情包 ID 到文件路径。"""
-        import json, os
+        import json
+        import os
         sticker_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json",
         )

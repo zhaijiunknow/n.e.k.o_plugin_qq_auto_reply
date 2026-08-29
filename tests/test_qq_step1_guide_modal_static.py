@@ -1,6 +1,5 @@
 import pathlib
 
-
 # 仓库根：tests(0)/qq_auto_reply(1)/plugins(2)/plugin(3)/仓库根(4)
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 

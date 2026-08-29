@@ -7,12 +7,10 @@ rejects non-finite inputs with ValueError before clamping.
 from __future__ import annotations
 
 import asyncio
-import math
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
 

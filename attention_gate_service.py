@@ -12,10 +12,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from .feedback_classifier import QQFeedbackClassifier
-from .pipeline_models import QQReplyRequest
 
 
 class GateDecision:
@@ -356,7 +355,7 @@ class QQAttentionGateService:
         # 1. 从统一 backlog_store 取出上次 focus 以来的未审核消息
         since = attention.get_last_focus_at(group_id)
         if not hasattr(self.plugin, "backlog_store") or not self.plugin.backlog_store:
-            self._logger.warning(f"[RetroReview] backlog_store 不可用，跳过回溯")
+            self._logger.warning("[RetroReview] backlog_store 不可用，跳过回溯")
             return []
         max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
         unreviewed = await self.plugin.backlog_store.get_unreviewed_messages_since(group_id, since_timestamp=since, limit=max_messages)

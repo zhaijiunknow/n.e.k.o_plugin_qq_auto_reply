@@ -5,7 +5,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
 
 
@@ -90,7 +89,6 @@ class _KwPlugin:
 
 
 async def _classify_message_boost(keyword_ratio, category="issue"):
-    from types import SimpleNamespace
 
     from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService
 

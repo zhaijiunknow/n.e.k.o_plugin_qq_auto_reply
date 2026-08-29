@@ -9,8 +9,7 @@ from __future__ import annotations
 import json as _json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
-
+from typing import Any, Optional
 
 # ── base elements ──────────────────────────────────────────
 

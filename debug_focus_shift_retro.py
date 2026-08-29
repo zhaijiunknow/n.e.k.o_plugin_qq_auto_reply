@@ -19,6 +19,7 @@
     # 数据目录 = 包含 business_config.json 的目录，通常在
     #   <N.E.K.O 数据根>/data/plugins/qq_auto_reply
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -223,7 +224,7 @@ async def run(data_dir: Path, messages_b: list[tuple[str, str, str]]) -> int:
                 problems.append("捕获到的请求里没有摘要段落")
         if not summary:
             problems.append("回溯前快照的未审核消息为空")
-        empty_rows = [l for l in summary.splitlines() if ":  " in l or l.rstrip().endswith(":")]
+        empty_rows = [ln for ln in summary.splitlines() if ":  " in ln or ln.rstrip().endswith(":")]
         if empty_rows:
             problems.append(f"仍有 {len(empty_rows)} 条空内容行——原消息内容可能为空")
         if problems:

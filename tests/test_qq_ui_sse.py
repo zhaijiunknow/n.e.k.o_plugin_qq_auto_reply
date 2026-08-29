@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---- runs bus -> SSE bridge ---------------------------------------------
 
 def _register_sse_queue(plugin_id: str = "qq_auto_reply") -> asyncio.Queue:

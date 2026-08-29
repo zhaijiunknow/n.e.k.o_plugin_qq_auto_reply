@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-
 from datetime import datetime
 from typing import Any, Optional
 
@@ -12,6 +11,7 @@ from config.prompts.prompts_sys import (
 )
 from main_logic.core import apply_role_placeholders
 from utils.language_utils import get_global_language_full
+
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
@@ -126,7 +126,9 @@ class QQSessionInstructionService:
         return os.path.join(str(base), "user_profile_cache.json")
 
     def _load_profile_cache_from_disk(self) -> None:
-        import json, os, time
+        import json
+        import os
+        import time
         path = self._profile_cache_path()
         if not os.path.isfile(path):
             return
@@ -141,7 +143,9 @@ class QQSessionInstructionService:
             pass
 
     def _save_profile_cache_to_disk(self) -> None:
-        import json, os, time
+        import json
+        import os
+        import time
         try:
             now = time.time()
             live = {
@@ -292,7 +296,8 @@ class QQSessionInstructionService:
         if self._emoji_catalog_cache:
             return self._emoji_catalog_cache
         try:
-            import json, os
+            import json
+            import os
             emoji_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emoji.json")
             if os.path.isfile(emoji_path):
                 with open(emoji_path, "r", encoding="utf-8") as f:
@@ -714,7 +719,7 @@ class QQSessionInstructionService:
 
         try:
             # 按时间召回最近事实（不走语义，embedding 服务不可用时也能工作）
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timedelta, timezone
             end = datetime.now(timezone.utc)
             start = end - timedelta(days=7)
             time_window = f"{start.strftime('%Y-%m-%dT%H')}/{end.strftime('%Y-%m-%dT%H')}"
@@ -913,7 +918,6 @@ class QQSessionInstructionService:
             gid = str(s.get("group_id") or "").strip()
             if gid == current_group:
                 continue  # 跳过当前群
-            title = s.get("user_title") or gid
             last_msg = ""
             # 尝试从 OmniOfflineClient 会话中拿最近一条用户消息
             session = s.get("session")

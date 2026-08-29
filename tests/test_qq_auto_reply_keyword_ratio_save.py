@@ -7,7 +7,6 @@ the runtime kept the default 1.8, and the dashboard echoed 1.8.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
 

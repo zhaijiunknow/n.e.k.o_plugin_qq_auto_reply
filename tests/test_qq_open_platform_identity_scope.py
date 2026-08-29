@@ -29,15 +29,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from plugin.plugins.qq_auto_reply import message_dispatcher as dispatcher_mod
-from utils.connection.qq import qq_open_plat as open_plat_mod
 from plugin.plugins.qq_auto_reply.message_dispatcher import QQMessageDispatcher
+from utils.connection.qq import qq_open_plat as open_plat_mod
 from utils.connection.qq.qq_open_plat import (
     QQOpenPlatformConnection,
     build_identity_probe_line,
 )
-
 
 # ==========================================================================
 # A. The probe line itself

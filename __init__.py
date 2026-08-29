@@ -1,8 +1,9 @@
-
+# ruff: noqa: E402, F401, I001
 from __future__ import annotations
 
 # 加载本地依赖
-import sys as _sys, pathlib as _pathlib
+import sys as _sys
+import pathlib as _pathlib
 
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
 _lib_dir = _pathlib.Path(__file__).parent / "lib"
@@ -112,7 +113,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         # 内存日志缓冲区（供前端运行日志页读取）
-        import collections, time as _time
+        import collections
+        import time as _time
         self._log_buffer: collections.deque = collections.deque(maxlen=self.LOG_BUFFER_SIZE)
         self._last_log_push_at = 0.0
         self._log_push_throttle_seconds = 1.5
@@ -292,7 +294,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         """语音转文字：优先本地 STT，其次云端 OpenAI/Qwen。audio_url 用于 Qwen。"""
         try:
             from utils.config_manager import get_config_manager
-            import httpx, base64 as b64
+            import httpx
+            import base64 as b64
 
             core_config = get_config_manager().get_core_config() or {}
             audio_bytes = b64.b64decode(audio_base64) if audio_base64 else b""
@@ -693,7 +696,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                             [{"role": "system", "content": (
                                 f"[QQ群聊记录] {her_name} 使用QQ插件在群 {group_id}"
                                 + (f"（账号 {login_id}）" if login_id else "")
-                                + f" 聊了以下内容：\n"
+                                + " 聊了以下内容：\n"
                                 + "\n".join(f"{user_label if m['role']=='user' else her_name}: {m['content']}" for m in messages[-8:])
                             )}],
                             timeout=3.0,
@@ -931,13 +934,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     )
     async def upload_sticker(self, filename: str = "", data_base64: str = "", desc: str = "", **_):
         """上传表情包图片并注册"""
-        import base64 as b64, json as _json, os as _os
+        import base64 as b64
+        import json as _json
+        import os as _os
         fname = str(filename or "").strip()
         description = str(desc or "").strip()
         raw_b64 = str(data_base64 or "").strip()
-        if not fname: return Err(SdkError("INVALID_INPUT: filename 不能为空"))
-        if not raw_b64: return Err(SdkError("INVALID_INPUT: data_base64 不能为空"))
-        if not description: return Err(SdkError("INVALID_INPUT: desc 不能为空"))
+        if not fname:
+            return Err(SdkError("INVALID_INPUT: filename 不能为空"))
+        if not raw_b64:
+            return Err(SdkError("INVALID_INPUT: data_base64 不能为空"))
+        if not description:
+            return Err(SdkError("INVALID_INPUT: desc 不能为空"))
         sticker_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "sticker")
         sticker_json = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "sticker.json")
         _os.makedirs(sticker_dir, exist_ok=True)
@@ -991,11 +999,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     )
     async def register_sticker(self, image_path: str = "", desc: str = "", **_):
         """注册表情包到 sticker.json"""
-        import json, os
+        import os
         path = str(image_path or "").strip()
         description = str(desc or "").strip()
-        if not path: return Err(SdkError("INVALID_INPUT: image_path 不能为空"))
-        if not description: return Err(SdkError("INVALID_INPUT: desc 不能为空"))
+        if not path:
+            return Err(SdkError("INVALID_INPUT: image_path 不能为空"))
+        if not description:
+            return Err(SdkError("INVALID_INPUT: desc 不能为空"))
         sticker_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json")
         sticker_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker")
         full_path = os.path.join(sticker_dir, path)
@@ -1174,7 +1184,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 with open(log_path, "r", encoding="utf-8", errors="replace") as f:
                     all_lines = f.readlines()
                 n = max(1, min(int(lines or 100), 500))
-                return Ok({"lines": [l.rstrip("\n\r") for l in all_lines[-n:]], "total": n, "source": "file"})
+                return Ok({"lines": [ln.rstrip("\n\r") for ln in all_lines[-n:]], "total": n, "source": "file"})
             except Exception as e:
                 return Ok({"lines": [], "total": 0, "message": str(e)})
         return Ok({"lines": [], "total": 0, "message": "暂无日志（缓冲区为空且未找到日志文件）"})
@@ -1187,7 +1197,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     )
     async def list_stickers(self, **_):
         """列出所有已注册表情包"""
-        import json, os
+        import os
         sticker_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json")
         try:
             with open(sticker_json, "r", encoding="utf-8") as f:
@@ -1430,7 +1440,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         input_schema={"type": "object", "properties": {}},
     )
     async def get_user_profiles(self, **_):
-        import time
         profiles: list[dict[str, Any]] = []
         now = time.time()
         cache = getattr(self.session_instruction_service, "_user_profile_cache", {}) or {}

@@ -14,7 +14,6 @@ import random
 import time
 from typing import Any, Optional
 
-
 _MAX_BUFFER_COUNT = 17
 
 
@@ -310,11 +309,16 @@ class QQReplyBufferService:
                 existing.has_nonconsent_input = True
             existing.message_count += 1
             n = existing.message_count
-            if n <= 2:       extra = random.uniform(6.0, 10.0)
-            elif n <= 4:     extra = random.uniform(10.0, 16.0)
-            elif n <= 7:     extra = random.uniform(13.0, 19.0)
-            elif n <= 16:    extra = random.uniform(6.0, 11.0)
-            else:            extra = 0.0
+            if n <= 2:
+                extra = random.uniform(6.0, 10.0)
+            elif n <= 4:
+                extra = random.uniform(10.0, 16.0)
+            elif n <= 7:
+                extra = random.uniform(13.0, 19.0)
+            elif n <= 16:
+                extra = random.uniform(6.0, 11.0)
+            else:
+                extra = 0.0
             existing.wait_until = now + extra
             existing.task = asyncio.create_task(
                 self._deliver_after_wait(session_key, existing, existing.generation)
@@ -687,7 +691,7 @@ class QQReplyBufferService:
         # 汇总缓冲内容
         texts = pending.buffered_texts
         if pending.message_count == 1:
-            from .pipeline_models import QQMessageBlock, QQDeliveryPlan
+            from .pipeline_models import QQDeliveryPlan, QQMessageBlock
             # 优先用原始 blocks（保留 sticker/poke/record），否则纯文本
             if pending.first_blocks:
                 blocks = pending.first_blocks
@@ -890,9 +894,10 @@ class QQReplyBufferService:
             )
 
             # 通过 OmniOfflineClient 调 LLM（兼容 Lanlan API）
+            import asyncio as _asyncio
+
             from main_logic.omni_offline_client import OmniOfflineClient
             from utils.config_manager import get_config_manager as _gcm
-            import asyncio as _asyncio
             _cm = _gcm()
             # 线路会连 base_url 一起冻进下面的 OmniOfflineClient，先给仍在飞的区域
             # 探测一个收尾窗口。已落定时零开销；fail-open，不因探测出错而不回消息。

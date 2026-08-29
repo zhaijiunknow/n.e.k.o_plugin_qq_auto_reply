@@ -39,17 +39,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
 from plugin.plugins.qq_auto_reply.message_dispatcher import QQMessageDispatcher
+from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 from utils.connection.qq.qq_open_plat import (
-    QQOpenPlatformConnection,
     _C2C_ACTOR_ID_KEYS,
     _GROUP_ACTOR_ID_KEYS,
+    QQOpenPlatformConnection,
     pick_actor_id,
 )
-from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
 
 # The vendor's own sample payloads, field for field.
 OFFICIAL_C2C_EVENT = {

@@ -15,12 +15,21 @@ import base64
 import re
 from datetime import datetime as _dt
 from pathlib import Path as _Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import httpx
 
 from .message_chain import (
-    At, Emoji, File, Forward, Image, JsonCard, MessageChain, Record, Reply, Text,
+    At,
+    Emoji,
+    File,
+    Forward,
+    Image,
+    JsonCard,
+    MessageChain,
+    Record,
+    Reply,
+    Text,
 )
 
 #: Max depth for recursively expanding quote chains.

@@ -55,8 +55,10 @@ class QQRuntimeOpsService:
             mismatch = False
         if mismatch:
             # 模式不匹配 → 断开旧连接，重建
-            try: await self.plugin.qq_client.disconnect()
-            except Exception: pass
+            try:
+                await self.plugin.qq_client.disconnect()
+            except Exception:
+                pass
             self.plugin.qq_client = None
         self.plugin._ensure_qq_client_initialized()
         if not self.plugin.qq_client:

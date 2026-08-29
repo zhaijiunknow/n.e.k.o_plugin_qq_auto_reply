@@ -1,5 +1,4 @@
 import pytest
-
 from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
 
 
