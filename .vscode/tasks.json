@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "N.E.K.O: check qq_integration",
+      "type": "shell",
+      "command": "uv run neko-plugin check qq_integration",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: sync qq_integration",
+      "type": "shell",
+      "command": "uv run --with pip neko-plugin sync qq_integration --clean",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: check -r qq_integration",
+      "type": "shell",
+      "command": "uv run neko-plugin check -r qq_integration",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: build qq_integration",
+      "type": "shell",
+      "command": "uv run neko-plugin build qq_integration",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
