@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+# 先把 vendored lib/ 加入 sys.path（副作用式导入），使 utils.connection 等本地依赖可解析，
+# 且不触发 E402 的“import 不在顶部”。
+from . import _lib_bootstrap  # isort: skip
+
 import asyncio
 import json
-import pathlib as _pathlib
-import sys as _sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -78,12 +80,9 @@ from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .voice_reply_service import QQVoiceReplyService
 
-# 加载本地依赖：把插件同级的 lib/ 目录在模块加载时放进 sys.path。所有 import 已
-# 提到顶部（满足严格 lint 的 E402）；lib/ 目录缺失时此块为空操作。
-_lib_dir = _pathlib.Path(__file__).parent / "lib"
-if _lib_dir.exists() and str(_lib_dir) not in _sys.path:
-    _sys.path.insert(0, str(_lib_dir))
-del _sys, _pathlib, _lib_dir
+# 本地依赖（vendored lib/）由 _lib_bootstrap 在模块加载时放入 sys.path；此处记录目录，
+# 保持对 _lib_bootstrap 的引用（--ignore-noqa 下不可用 noqa，须显式引用）。
+_LIB_DIR = _lib_bootstrap.lib_dir
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict[str, Any]:
