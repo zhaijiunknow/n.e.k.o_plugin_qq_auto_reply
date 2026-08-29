@@ -23,8 +23,6 @@
     python plugin/plugins/qq_auto_reply/debug_reply_buffer_summary.py [--data-dir <目录>]
 退出码：0 = 全部断言通过；2 = 有失败。
 """
-# ruff: noqa: E402
-
 from __future__ import annotations
 
 import argparse
@@ -34,18 +32,9 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-# Windows 控制台默认 GBK，强制 UTF-8 输出避免中文乱码
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
-# 让脚本在仓库根目录下可导入 plugin.*（仓库根 = 本文件的 4 层父目录：
-# qq_auto_reply → plugins → plugin → 仓库根）
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# 先把仓库根加入 sys.path（副作用式导入），使下面 plugin.* 可解析且不被 E402 判为
+# “import 不在顶部”。
+import _debug_bootstrap  # isort: skip
 
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
 from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
@@ -54,6 +43,15 @@ from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
 from plugin.plugins.qq_auto_reply.reply_buffer_service import QQReplyBufferService
 from plugin.plugins.qq_auto_reply.session import QQAutoReplySessionMixin
+
+_REPO_ROOT = _debug_bootstrap._REPO_ROOT
+
+# Windows 控制台默认 GBK，强制 UTF-8 输出避免中文乱码
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 GROUP_ID = "1048307485"
 SENDER_ID = "1219199629"

@@ -1,34 +1,17 @@
-# ruff: noqa: E402, F401, I001
 from __future__ import annotations
 
-# 加载本地依赖
-import sys as _sys
-import pathlib as _pathlib
-
-from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
-_lib_dir = _pathlib.Path(__file__).parent / "lib"
-if _lib_dir.exists() and str(_lib_dir) not in _sys.path:
-    _sys.path.insert(0, str(_lib_dir))
-del _sys, _pathlib, _lib_dir
-
 import asyncio
-import base64
-import copy
-import inspect
-import io
 import json
-import random
+import pathlib as _pathlib
+import sys as _sys
 import time
-import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from config.prompts.prompts_sys import _loc
-from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
-from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin, plugin_entry, Ok, Err, SdkError, tr, ui
+from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
+from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
+from utils.connection.qq import QQConnector
 
-from utils.api_config_loader import get_free_voices
-from utils.config_manager import get_reserved
 try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
 except (ImportError, ModuleNotFoundError):
@@ -38,28 +21,34 @@ try:
 except (ImportError, ModuleNotFoundError):
     normalize_gemini_tts_voice = None
 try:
-    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+    from utils.voice_clone import (
+        MimoVoiceCloneClient,
+        MimoVoiceCloneError,
+        MinimaxVoiceCloneClient,
+        MinimaxVoiceCloneError,
+    )
 except (ImportError, ModuleNotFoundError):
     MimoVoiceCloneClient = MimoVoiceCloneError = MinimaxVoiceCloneClient = MinimaxVoiceCloneError = None
 try:
     from utils.voice_config import read_legacy_voice_id
 except (ImportError, ModuleNotFoundError):
     read_legacy_voice_id = None
-from .dashboard_service import QQDashboardService
-from .feedback_classifier import QQFeedbackClassifier
-from .backlog_models import QQBacklogMessage
-from .backlog_service import QQBacklogService
+
+from .attention_gate_service import QQAttentionGateService
 from .attention_service import QQAttentionService
+from .backlog_models import QQBacklogMessage as QQBacklogMessage
+from .backlog_service import QQBacklogService
 from .config_store import QQAutoReplyConfigStore
+from .dashboard_service import QQDashboardService
+from .display_name_service import QQDisplayNameService
+from .enrichment import QQMessageEnricher
 from .fatigue_service import QQFatigueService
+from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
 from .group_permission import GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
-from .message_dispatcher import QQMessageDispatcher
 from .memory_bridge import QQMemoryBridge
-from .display_name_service import QQDisplayNameService
 from .memory_tool_service import QQMemoryToolService
-from utils.connection.qq import QQConnector
-from .enrichment import QQMessageEnricher
+from .message_dispatcher import QQMessageDispatcher
 from .napcat_service import QQNapcatService
 from .permission import PermissionManager
 from .prompt_builder import QQPromptBuilder
@@ -68,11 +57,11 @@ from .relay_service import QQRelayService
 from .reply_buffer_service import QQReplyBufferService
 from .reply_context_node import QQReplyContextNode
 from .reply_decision_node import QQReplyDecisionNode
+from .reply_delivery_node import QQReplyDeliveryNode
 from .reply_generation_service import QQReplyGenerationService
 from .reply_model_node import QQReplyModelNode
 from .reply_pipeline import QQReplyPipelineRunner
 from .reply_postprocess_node import QQReplyPostprocessNode
-from .reply_delivery_node import QQReplyDeliveryNode
 from .reply_relay_node import QQReplyRelayNode
 from .runtime_ops_service import QQProactiveMessageService, QQRuntimeOpsService
 from .runtime_service import QQRuntimeService
@@ -85,9 +74,16 @@ from .session_instruction_service import (
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
-from .targets import QQAutoReplyTargetsMixin, QQAutoReplyValidationError
+from .targets import QQAutoReplyTargetsMixin
+from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
 from .voice_reply_service import QQVoiceReplyService
-from .attention_gate_service import QQAttentionGateService
+
+# 加载本地依赖：把插件同级的 lib/ 目录在模块加载时放进 sys.path。所有 import 已
+# 提到顶部（满足严格 lint 的 E402）；lib/ 目录缺失时此块为空操作。
+_lib_dir = _pathlib.Path(__file__).parent / "lib"
+if _lib_dir.exists() and str(_lib_dir) not in _sys.path:
+    _sys.path.insert(0, str(_lib_dir))
+del _sys, _pathlib, _lib_dir
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict[str, Any]:
@@ -248,8 +244,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         ``data`` 可选结构化数据（如 qq_message 的 qq_inbound），透传给 SSE 订阅者。
         """
         try:
-            from utils.internal_http_client import get_internal_http_client
             from config import USER_PLUGIN_BASE
+            from utils.internal_http_client import get_internal_http_client
 
             client = get_internal_http_client()
             payload: dict[str, Any] = {"type": msg_type, "text": str(text or msg_type)[:200]}
@@ -293,9 +289,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _transcribe_voice(self, audio_base64: str = "", *, audio_url: str = "") -> str:
         """语音转文字：优先本地 STT，其次云端 OpenAI/Qwen。audio_url 用于 Qwen。"""
         try:
-            from utils.config_manager import get_config_manager
-            import httpx
             import base64 as b64
+
+            import httpx
+            from utils.config_manager import get_config_manager
 
             core_config = get_config_manager().get_core_config() or {}
             audio_bytes = b64.b64decode(audio_base64) if audio_base64 else b""
@@ -432,8 +429,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""
         import asyncio as _asyncio
         try:
-            from utils.llm_client import create_chat_llm_async
             from utils.config_manager import get_config_manager
+            from utils.llm_client import create_chat_llm_async
 
             model_config = get_config_manager().get_model_api_config("conversation")
             base_url = str(model_config.get("base_url") or "").strip()
@@ -1043,8 +1040,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         进程崩溃（宿主收到 error=None）。因此这里捕获异常返回明确错误，绝不崩溃进程。
         """
         try:
-            import tkinter.filedialog as fd
             import tkinter as tk
+            import tkinter.filedialog as fd
             root = tk.Tk()
             root.withdraw()
             root.attributes('-topmost', True)
@@ -1542,13 +1539,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             default_text = ""
             if not is_runtime:
                 from .prompt_fragment_templates import (
-                    ROLE_PROMPT_SECTION, ATTENTION_PROMPT_SECTION, CHARACTER_PROMPT_SECTION,
-                    TIME_PROMPT_SECTION, DETAIL_CONSTRAINTS_SECTION, OUTPUT_PROMPT_SECTION,
-                    FORMAT_PROMPT_SECTION, FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+                    ATTENTION_PROMPT_SECTION,
+                    CHARACTER_PROMPT_SECTION,
+                    DETAIL_CONSTRAINTS_SECTION,
+                    FORMAT_PROMPT_SECTION,
+                    FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
+                    FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+                    OUTPUT_PROMPT_SECTION,
+                    ROLE_PROMPT_SECTION,
+                    TIME_PROMPT_SECTION,
                 )
                 from .scene_prompt_templates import (
-                    SCENE_COLLECTIVE_GROUP, SCENE_DIRECTED_GROUP,
-                    SCENE_KIRA_UNIFIED_GROUP, SCENE_SHARED_GROUP, SCENE_PRIVATE_CHAT,
+                    SCENE_COLLECTIVE_GROUP,
+                    SCENE_DIRECTED_GROUP,
+                    SCENE_KIRA_UNIFIED_GROUP,
+                    SCENE_PRIVATE_CHAT,
+                    SCENE_SHARED_GROUP,
                 )
                 default_map = {
                     "role_prompt_section": ROLE_PROMPT_SECTION,

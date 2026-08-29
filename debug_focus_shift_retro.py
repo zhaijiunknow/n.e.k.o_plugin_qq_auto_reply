@@ -19,7 +19,6 @@
     # 数据目录 = 包含 business_config.json 的目录，通常在
     #   <N.E.K.O 数据根>/data/plugins/qq_auto_reply
 """
-# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -30,18 +29,9 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-# Windows 控制台默认 GBK，强制 UTF-8 输出避免中文乱码
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
-# 让脚本在仓库根目录下可导入 plugin.*（仓库根 = 本文件的 4 层父目录：
-# qq_auto_reply → plugins → plugin → 仓库根）
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# 先把仓库根加入 sys.path（副作用式导入），使下面 plugin.* 可解析且不被 E402 判为
+# “import 不在顶部”。
+import _debug_bootstrap  # isort: skip
 
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
 from plugin.plugins.qq_auto_reply.attention_gate_service import QQAttentionGateService
@@ -52,6 +42,15 @@ from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
 from plugin.plugins.qq_auto_reply.group_permission import GroupPermissionManager
 from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from plugin.plugins.qq_auto_reply.session import QQAutoReplySessionMixin
+
+_REPO_ROOT = _debug_bootstrap._REPO_ROOT
+
+# Windows 控制台默认 GBK，强制 UTF-8 输出避免中文乱码
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 
 def log(msg: str) -> None:
