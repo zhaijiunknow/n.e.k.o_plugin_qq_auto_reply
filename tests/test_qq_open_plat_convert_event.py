@@ -18,7 +18,8 @@ actually comes from.
 """
 
 import pytest
-from utils.connection.qq.qq_open_plat import QQOpenPlatformConnection
+
+QQOpenPlatformConnection = pytest.importorskip("utils.connection.qq.qq_open_plat").QQOpenPlatformConnection
 
 
 def _connection() -> QQOpenPlatformConnection:

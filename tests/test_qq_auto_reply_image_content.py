@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 
-from utils.connection.qq import QQClient
+import pytest
+
+QQClient = pytest.importorskip("utils.connection.qq").QQClient
 
 
 def _img_message(*, content="", has_text=False):

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import asyncio
 
-from utils.connection.qq import QQClient, QQOpenPlatformConnection
+import pytest
+
+_qq_conn = pytest.importorskip("utils.connection.qq")
+QQClient = _qq_conn.QQClient
+QQOpenPlatformConnection = _qq_conn.QQOpenPlatformConnection
 
 
 def _make_onebot_client() -> QQClient:

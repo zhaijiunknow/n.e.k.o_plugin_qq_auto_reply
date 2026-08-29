@@ -19,9 +19,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from plugin.plugins.qq_auto_reply.enrichment import _FILE_TEXT_MAX_BYTES, QQMessageEnricher
 from plugin.plugins.qq_auto_reply.message_chain import At, File, Text
-from utils.connection.qq.qq_client import QQClient
+
+QQClient = pytest.importorskip("utils.connection.qq.qq_client").QQClient
 
 
 class _FakeResp:

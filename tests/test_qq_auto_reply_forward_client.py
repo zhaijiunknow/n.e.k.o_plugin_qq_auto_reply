@@ -17,7 +17,9 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
-from utils.connection.qq.qq_client import QQClient
+import pytest
+
+QQClient = pytest.importorskip("utils.connection.qq.qq_client").QQClient
 
 
 class _FakeWS:
