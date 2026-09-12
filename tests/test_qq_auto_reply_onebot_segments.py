@@ -23,7 +23,7 @@ import pytest
 from plugin.plugins.qq_auto_reply.enrichment import _FILE_TEXT_MAX_BYTES, QQMessageEnricher
 from plugin.plugins.qq_auto_reply.message_chain import At, File, Text
 
-QQClient = pytest.importorskip("utils.connection.qq.qq_client").QQClient
+OneBotClient = pytest.importorskip("utils.connection.onebot.onebot_client").OneBotClient
 
 
 class _FakeResp:
@@ -73,13 +73,13 @@ def _patch_http(resp):
     return patch("httpx.AsyncClient", lambda *_a, **_k: _FakeClient(resp))
 
 
-def _client() -> QQClient:
-    client = QQClient(onebot_url="ws://127.0.0.1:3001", direction="forward")
+def _client() -> OneBotClient:
+    client = OneBotClient(onebot_url="ws://127.0.0.1:3001", direction="forward")
     client._self_id = "10001"
     return client
 
 
-def _enricher(client: QQClient) -> QQMessageEnricher:
+def _enricher(client: OneBotClient) -> QQMessageEnricher:
     """Wrap a bare connector client in the plugin's enrichment layer.
 
     The connector only owns the *data* API (``get_group_file_url``, ``get_msg``

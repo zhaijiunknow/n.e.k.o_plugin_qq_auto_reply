@@ -9,7 +9,7 @@ from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko
 class QQSendTestPlugin(NekoPluginBase):
     """验证「其它插件 ↔ QQ」链路的最小测试插件（收发一体）。
 
-    - 发送：``self.plugins.call_entry(f"{_SOURCE_PLUGIN}:send_group_proactive_message", ..., verbatim=True)``
+    - 发送：``self.plugins.call_entry(f"{_SOURCE_PLUGIN}:send", {"action": "group", ..., "verbatim": True})``
       原文直发（走 qq_auto_reply 那条已建立的连接，无需再开第二条 WS）。
     - 接收链路（唯一）：启动时连 SSE 流 ``GET /plugin/{_SOURCE_PLUGIN}/ui-api/events``，收
       ``type=qq_message`` 帧（``data`` 即 qq_inbound），存进 ``_received``，用 ``get_received`` 查看。
@@ -99,8 +99,8 @@ class QQSendTestPlugin(NekoPluginBase):
 
         # 主动发送 + verbatim=true：源插件原文直发（不经 LLM 生成），确定性快。
         sent = await self.plugins.call_entry(
-            f"{self._SOURCE_PLUGIN}:send_group_proactive_message",
-            {"group_id": gid, "message": msg, "verbatim": True},
+            f"{self._SOURCE_PLUGIN}:send",
+            {"action": "group", "group_id": gid, "message": msg, "verbatim": True},
             timeout=30.0,
         )
         if isinstance(sent, Err):
@@ -138,7 +138,8 @@ class QQSendTestPlugin(NekoPluginBase):
     async def ping_qq(self, **_):
         import time as _t
         t0 = _t.time()
-        r = await self.plugins.call_entry(f"{self._SOURCE_PLUGIN}:get_dashboard_state", {}, timeout=15.0)
+        r = await self.plugins.call_entry(
+            f"{self._SOURCE_PLUGIN}:query", {"action": "dashboard"}, timeout=15.0)
         elapsed = round(_t.time() - t0, 2)
         if isinstance(r, Err):
             return Err(SdkError(f"PING_ERR: {r.error}"))

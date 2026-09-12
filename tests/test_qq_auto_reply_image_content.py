@@ -13,7 +13,7 @@ import asyncio
 
 import pytest
 
-QQClient = pytest.importorskip("utils.connection.qq").QQClient
+OneBotClient = pytest.importorskip("utils.connection.onebot").OneBotClient
 
 
 def _img_message(*, content="", has_text=False):
@@ -35,7 +35,7 @@ async def _run(message, *, describer=None):
     # 连接器只做传输/归一/收发，不再持有 image_describer。
     from plugin.plugins.qq_auto_reply.enrichment import QQMessageEnricher
 
-    client = QQClient(
+    client = OneBotClient(
         onebot_url="ws://0.0.0.0:6199",
         emit_log=lambda *a, **k: None,
     )

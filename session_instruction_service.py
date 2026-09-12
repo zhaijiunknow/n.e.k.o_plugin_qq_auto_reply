@@ -119,11 +119,10 @@ class QQSessionInstructionService:
         self._load_profile_cache_from_disk()
 
     def _profile_cache_path(self) -> str:
-        import os
-        base = getattr(self.plugin, "data_dir", None) or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "data",
-        )
-        return os.path.join(str(base), "user_profile_cache.json")
+        """用户画像缓存路径。走 SDK 状态根 —— SDK 没有 ``plugin.data_dir`` 这个属性，
+        原来那句 getattr 恒为 None，兜底的 ``__file__/../data`` 会落到仓库的
+        ``plugin/plugins/data/``（和插件自己的存档无关）。"""
+        return str(self.plugin.data_path("user_profile_cache.json"))
 
     def _load_profile_cache_from_disk(self) -> None:
         import json
@@ -267,10 +266,10 @@ class QQSessionInstructionService:
     # sticker 目录加载
     # ==========================================
 
-    @staticmethod
-    def _sticker_data_path() -> str:
-        import os
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json")
+    def _sticker_data_path(self):
+        """表情包注册表路径。必须走 SDK 状态根：``__file__`` 相对路径指向代码根，
+        布局迁移后那里已经没有 data/ 了，会永远读不到存档。"""
+        return self.plugin.data_path("sticker.json")
 
     def _load_sticker_catalog(self) -> str:
         """加载自定义表情包目录，格式化为 Kira 风格的列表"""

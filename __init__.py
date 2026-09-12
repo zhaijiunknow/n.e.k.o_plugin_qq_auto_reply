@@ -13,13 +13,13 @@ from typing import Any, Dict, Optional
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
 
-# QQConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），运行时
-# 无需导入；在缺 utils.connection 的隔离测试环境里也能加载包（连接由 create_qq_connection
+# OneBotConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），运行时
+# 无需导入；在缺 utils.connection 的隔离测试环境里也能加载包（连接由 create_onebot_connection
 # 在方法内惰性构建，见下方）。
 try:
-    from utils.connection.qq import QQConnector
+    from utils.connection.onebot import OneBotConnector
 except (ImportError, ModuleNotFoundError):
-    QQConnector = None
+    OneBotConnector = None
 
 try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
@@ -49,6 +49,7 @@ from .backlog_models import QQBacklogMessage as QQBacklogMessage
 from .backlog_service import QQBacklogService
 from .config_store import QQAutoReplyConfigStore
 from .dashboard_service import QQDashboardService
+from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
 from .fatigue_service import QQFatigueService
@@ -104,6 +105,11 @@ def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict
     }
 
 
+#: 合法的连接方式。三条接入流程各自对应其中一段：napcat/napcat_forward 走 OneBot，
+#: open_platform 走官方 Bot API。schema 与校验都引用它，别再各写一份内联元组。
+CONNECTION_MODES: tuple[str, ...] = ("napcat", "napcat_forward", "open_platform")
+
+
 @neko_plugin
 class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAutoReplyTargetsMixin, NekoPluginBase):
     SESSION_IDLE_TIMEOUT_SECONDS = 300
@@ -143,6 +149,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             logger=self.logger,
             emit_log=self._emit_log,
         )
+        self.deploy_service = QQDeployService(self)
         self.backlog_service = QQBacklogService(self)
         self.fatigue_service: Optional[QQFatigueService] = None
         self.attention_service = QQAttentionService(self)
@@ -169,7 +176,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.session_instruction_service = QQSessionInstructionService(self)
         self.session_memory_service = QQSessionMemoryService(self)
         self.session_runtime_service = QQSessionRuntimeService(self)
-        self.qq_client: Optional[QQConnector] = None
+        self.qq_client: Optional[OneBotConnector] = None
         self.enricher: Optional[QQMessageEnricher] = None
         self.attention_gate_service = QQAttentionGateService(self)
         self.permission_mgr: Optional[PermissionManager] = None
@@ -219,11 +226,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     def _make_qq_connection(self):
         # 延迟导入：连接构造器依赖的模块较重（顶层 import 会拖慢插件进程启动握手），
         # 而连接对象只在真正启动自动回复时才需要。连接本身由连接层
-        # ``utils.connection.qq`` 的工厂构建；VLM/STT 描述器不注入连接器——
+        # ``utils.connection.onebot`` 的工厂构建；VLM/STT 描述器不注入连接器——
         # 增强是插件业务，由 QQMessageEnricher 在 _ensure_qq_client_initialized 里绑定。
-        from utils.connection.qq import create_qq_connection
+        from utils.connection.onebot import create_onebot_connection
 
-        return create_qq_connection(
+        return create_onebot_connection(
             self._qq_settings,
             logger=self.logger,
             emit_log=self._emit_log,
@@ -817,343 +824,252 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def open_ui(self, **_):
         return await self.dashboard_service.open_ui()
 
-    @ui.action(label=tr("ui.onboarding.step3.init"), refresh_context=True)
+
+    # ── trust：名单与身份 ───────────────────────────────────────
+    #
+    # 信任用户/群、用户昵称、开放平台身份合并，以及联系人刷新。对 agent 可见。
+
+    @ui.action(id="trust", label=tr("entries.trust.name", default="信任名单与身份"), refresh_context=True)
     @plugin_entry(
-        id="init_config",
-        name=tr("entries.init_config.name", default="初始化 QQ 配置"),
-        description=tr("entries.init_config.description", default="在第一次使用 QQ 插件、完成引导或缺少配置文件时，创建一份新的 QQ 配置。"),
-        input_schema={"type": "object", "properties": {"guide_step_config_done": {"type": "boolean"}}, "additionalProperties": False},
+        id="trust",
+        name=tr("entries.trust.name", default="信任名单与身份"),
+        description=tr("entries.trust.description", default="管理信任用户/群、用户昵称，以及开放平台身份合并。action 取 user_add / user_remove / user_nickname / group_add / group_remove / claims / identity_bind / identity_unbind / refresh_contacts。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["user_add", "user_remove", "user_nickname",
+                                "group_add", "group_remove", "claims",
+                                "identity_bind", "identity_unbind", "refresh_contacts"],
+                       "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
+            "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
+            "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
+            "level": {"type": "string", "description": "user_add / group_add：权限等级"},
+            "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
+            "open_reply_probability": {"type": "number", "description": "group_add：开放群回复概率"},
+            "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
+            "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
+            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份"},
+        }, "required": ["action"], "additionalProperties": False},
     )
-    async def init_config(self, guide_step_config_done: Optional[bool] = None, **_):
-        return await self.dashboard_service.init_config(guide_step_config_done=guide_step_config_done)
+    async def trust(self, action: str = "", **kw):
+        return await self._trust_dispatch(str(action or "").strip(), kw)
 
-    @plugin_entry(
-        id="configure_onebot_nl",
-        name=tr("entries.configure_onebot_nl.name", default="用自然语言配置 OneBot 连接"),
-        description=tr("entries.configure_onebot_nl.description", default="通过自然语言描述来设置或修改 OneBot 的 WebSocket 地址和 Access Token。例如：设置地址为 ws://0.0.0.0:6199 token 为 abc123、把 OneBot 地址改成 ws://192.168.1.1:3001、清空 token"),
-        input_schema={"type": "object", "properties": {"message": {"type": "string", "description": "自然语言指令"}}, "required": ["message"], "additionalProperties": False},
-    )
-    async def configure_onebot_nl(self, message: str = "", **_):
-        """通过自然语言解析并保存 OneBot 配置"""
-        import re
-        text = str(message or "").strip()
-        if not text:
-            return Err(SdkError("INVALID_INPUT: 请提供自然语言指令，如：设置地址为 ws://0.0.0.0:6199 token 为 abc123"))
+    async def _trust_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "user_add":
+            return await self._trust_user_add(kw)
+        if action == "user_remove":
+            return await self._trust_user_remove(kw)
+        if action == "user_nickname":
+            return await self._trust_user_nickname(kw)
+        if action == "group_add":
+            return await self._trust_group_add(kw)
+        if action == "group_remove":
+            return await self._trust_group_remove(kw)
+        if action == "claims":
+            return await self._trust_claims(kw)
+        if action == "identity_bind":
+            return await self._trust_identity_bind(kw)
+        if action == "identity_unbind":
+            return await self._trust_identity_unbind(kw)
+        if action == "refresh_contacts":
+            return await self._trust_refresh_contacts(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: trust 不支持 {action!r}"
+            f"（可选 user_add/user_remove/user_nickname/group_add/group_remove/"
+            f"claims/identity_bind/identity_unbind/refresh_contacts）"))
 
-        url = ""
-        token = ""
-        clear_token = False
+    async def _trust_user_add(self, kw: dict[str, Any]):
+        """把一个 QQ 号加入信任用户列表。"""
+        qq_number = str(kw.get("qq_number") or "").strip()
+        if not qq_number:
+            return Err(SdkError("INVALID_INPUT: user_add 需要 qq_number"))
+        return await self.dashboard_service.add_trusted_user(
+            qq_number=qq_number,
+            level=str(kw.get("level") or "trusted"),
+            nickname=str(kw.get("nickname") or ""),
+            normal_relay_probability=kw.get("normal_relay_probability"),
+        )
 
-        # 提取 WebSocket/HTTP 地址
-        url_patterns = [
-            r'(wss?://\S+)',           # ws://... 或 wss://...
-            r'(https?://\S+)',          # http://... 或 https://...
-            r'地址[设为是]*[：:\s]*(\S+:\d+\S*)',  # 地址设为 xxx:3001/...
-            r'url[设为是]*[：:\s]*(\S+:\d+\S*)',   # url 设为 ...
-            r'改为\s*(\S+:\d+\S*)',    # 改为 ...
-            r'改成\s*(\S+:\d+\S*)',    # 改成 ...
-        ]
-        for pattern in url_patterns:
-            m = re.search(pattern, text, re.IGNORECASE)
-            if m:
-                candidate = m.group(1).rstrip(".,;!?）)")
-                if "://" in candidate:
-                    url = candidate
-                    break
+    async def _trust_user_remove(self, kw: dict[str, Any]):
+        """把一个 QQ 号从信任用户列表移除。"""
+        qq_number = str(kw.get("qq_number") or "").strip()
+        if not qq_number:
+            return Err(SdkError("INVALID_INPUT: user_remove 需要 qq_number"))
+        return await self.dashboard_service.remove_trusted_user(qq_number=qq_number)
 
-        # 提取 token
-        token_patterns = [
-            r'token\s*[设为是]*[：:\s]*(\S+)',     # token 设为 xxx
-            r'access_token\s*[设为是]*[：:\s]*(\S+)',
-            r'密钥\s*[设为是]*[：:\s]*(\S+)',
-            r'token\s*[=：:]\s*(\S+)',
-        ]
-        for pattern in token_patterns:
-            m = re.search(pattern, text, re.IGNORECASE)
-            if m:
-                candidate = m.group(1).rstrip(".,;!?）)")
-                if candidate in ("空", "无", "清空", "清除", "none", "null"):
-                    clear_token = True
-                else:
-                    token = candidate
-                break
+    async def _trust_user_nickname(self, kw: dict[str, Any]):
+        """修改信任用户在回复里显示的昵称。"""
+        qq_number = str(kw.get("qq_number") or "").strip()
+        if not qq_number:
+            return Err(SdkError("INVALID_INPUT: user_nickname 需要 qq_number"))
+        return await self.dashboard_service.set_user_nickname(
+            qq_number=qq_number, nickname=str(kw.get("nickname") or ""))
 
-        # 检测清空 token
-        if not token and not clear_token:
-            if re.search(r'(清空|清除|去掉|删除|移除)\s*token', text, re.IGNORECASE):
-                clear_token = True
+    async def _trust_group_add(self, kw: dict[str, Any]):
+        """把一个 QQ 群加入信任群聊列表。"""
+        group_id = str(kw.get("group_id") or "").strip()
+        if not group_id:
+            return Err(SdkError("INVALID_INPUT: group_add 需要 group_id"))
+        return await self.dashboard_service.add_trusted_group(
+            group_id=group_id,
+            level=str(kw.get("level") or "normal"),
+            normal_relay_probability=kw.get("normal_relay_probability"),
+            open_reply_probability=kw.get("open_reply_probability"),
+        )
 
-        if not url and not token and not clear_token:
-            return Ok({
-                "parsed": False,
-                "hint": "未能从指令中解析出 OneBot 地址或 Token。请尝试更明确的表达，如：设置地址为 ws://0.0.0.0:6199，token 为 my_token_123",
-                "current": {
-                    "onebot_url": str(self._qq_settings.get("onebot_url", "")),
-                    "token_configured": bool(self._qq_settings.get("token")),
-                },
-            })
+    async def _trust_group_remove(self, kw: dict[str, Any]):
+        """把一个 QQ 群从信任群聊列表移除。"""
+        group_id = str(kw.get("group_id") or "").strip()
+        if not group_id:
+            return Err(SdkError("INVALID_INPUT: group_remove 需要 group_id"))
+        return await self.dashboard_service.remove_trusted_group(group_id=group_id)
 
-        # 构建 save_settings 参数
-        save_kwargs: dict[str, Any] = {}
-        if url:
-            save_kwargs["onebot_url"] = url
-        if token:
-            save_kwargs["token"] = token
-        if clear_token:
-            save_kwargs["token"] = ""
+    async def _trust_claims(self, kw: dict[str, Any]):
+        """列出开放平台上出现过、但还不在名册里的群内 ID。"""
+        return await self.dashboard_service.list_identity_claims()
 
-        await self.dashboard_service.save_settings(**save_kwargs)
+    async def _trust_identity_bind(self, kw: dict[str, Any]):
+        """把一个群内 ID 的信赖度账本并入已有身份。只能由人触发。"""
+        user_id = str(kw.get("user_id") or "")
+        target_user_id = str(kw.get("target_user_id") or "")
+        if not user_id or not target_user_id:
+            return Err(SdkError("INVALID_INPUT: identity_bind 需要 user_id 与 target_user_id"))
+        return await self.dashboard_service.bind_identity_account(
+            user_id=user_id, target_user_id=target_user_id)
 
-        changes: list[str] = []
-        if url:
-            changes.append(f"地址 → {url}")
-        if token:
-            changes.append(f"Token → {self._mask_token(token)}")
-        if clear_token:
-            changes.append("Token → (已清空)")
+    async def _trust_identity_unbind(self, kw: dict[str, Any]):
+        """把一个群内 ID 从被合并进的身份里拆回独立身份（误合并的唯一回滚方式）。"""
+        user_id = str(kw.get("user_id") or "")
+        if not user_id:
+            return Err(SdkError("INVALID_INPUT: identity_unbind 需要 user_id"))
+        return await self.dashboard_service.unbind_identity_account(user_id=user_id)
 
-        return Ok({
-            "parsed": True,
-            "changes": changes,
-            "reconnect_required": bool(self._running),
-            "hint": "配置已保存" + ("，需要重启自动回复以应用新连接" if self._running else ""),
-        })
-
-    @plugin_entry(id="get_dashboard_state", name=tr("entries.get_dashboard_state.name", default="获取控制面板状态"), description=tr("entries.get_dashboard_state.description", default="读取 QQ 插件当前的运行状态、登录状态、联系人数量、配置项和引导进度。"), input_schema={"type": "object", "properties": {}})
-    async def get_dashboard_state(self, **_):
-        return await self.dashboard_service.get_dashboard_state()
-
-    @ui.action(id="refresh_actual_contacts", label=tr("entries.refresh_actual_contacts.name", default="刷新实际联系人列表"), refresh_context=True)
-    @plugin_entry(id="refresh_actual_contacts", name=tr("entries.refresh_actual_contacts.name", default="刷新实际联系人列表"), description=tr("entries.refresh_actual_contacts.description", default="重新从 OneBot 拉取 QQ 好友和群聊列表，用于更新联系人显示。"), input_schema={"type": "object", "properties": {}})
-    async def refresh_actual_contacts(self, **_):
+    async def _trust_refresh_contacts(self, kw: dict[str, Any]):
+        """重新从 OneBot 拉取好友与群列表。"""
         return await self.dashboard_service.refresh_actual_contacts()
 
+
+
+
+
+
+
+
+
+    # ── QQ 开放平台：扫码创建 / 复用机器人 ────────────────────
+
+
+
+
+
+
+
+
+    # ── query：状态读取 ─────────────────────────────────────────
+    #
+    # 全是只读。对 agent 可见 —— 它得能看状态才知道自己做得对不对。
+
+    @ui.action(id="query", label=tr("entries.query.name", default="查询状态"), refresh_context=False)
     @plugin_entry(
-        id="upload_sticker",
-        name=tr("entries.upload_sticker.name", default="上传表情包"),
-        description=tr("entries.upload_sticker.description", default="上传一张图片 base64 数据，自动保存到 data/sticker/ 目录并注册到 sticker.json。"),
-        input_schema={"type": "object", "properties": {"filename": {"type": "string", "description": "文件名（如 cat.png）"}, "data_base64": {"type": "string", "description": "图片 base64 编码数据"}, "desc": {"type": "string", "description": "表情包描述"}}, "required": ["filename", "data_base64", "desc"], "additionalProperties": False},
-        metadata={"timeout": 30},
+        id="query",
+        name=tr("entries.query.name", default="查询状态"),
+        description=tr("entries.query.description", default="只读查询：控制面板状态、缓冲、日志、提示词、用户画像、待审阅、NapCat WebUI、机器人账本。action 取 dashboard / buffer / logs / prompt_editor / group_prompts / user_profiles / backlog_summary / backlog_detail / napcat_webui / bots。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["dashboard", "buffer", "logs", "prompt_editor",
+                                "group_prompts", "user_profiles",
+                                "backlog_summary", "backlog_detail",
+                                "napcat_webui", "bots"],
+                       "description": "要读哪一份状态"},
+            "lines": {"type": "integer", "description": "logs：取最近多少行，默认 100"},
+            "group_id": {"type": "string", "description": "backlog_detail：群号"},
+            "mode": {"type": "string", "description": "prompt_editor：策略模式（选填）"},
+            "locale": {"type": "string", "description": "prompt_editor：语言（选填）"},
+        }, "required": ["action"], "additionalProperties": False},
     )
-    async def upload_sticker(self, filename: str = "", data_base64: str = "", desc: str = "", **_):
-        """上传表情包图片并注册"""
-        import base64 as b64
-        import json as _json
-        import os as _os
-        fname = str(filename or "").strip()
-        description = str(desc or "").strip()
-        raw_b64 = str(data_base64 or "").strip()
-        if not fname:
-            return Err(SdkError("INVALID_INPUT: filename 不能为空"))
-        if not raw_b64:
-            return Err(SdkError("INVALID_INPUT: data_base64 不能为空"))
-        if not description:
-            return Err(SdkError("INVALID_INPUT: desc 不能为空"))
-        sticker_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "sticker")
-        sticker_json = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "sticker.json")
-        _os.makedirs(sticker_dir, exist_ok=True)
-        # 处理 base64（可能带 data:image/...;base64, 前缀）
-        if "," in raw_b64 and raw_b64.startswith("data:"):
-            raw_b64 = raw_b64.split(",", 1)[1]
-        # 安全检查：文件名只保留安全字符
-        safe_name = "".join(c for c in fname if c.isalnum() or c in "._-")
-        if not safe_name:
-            safe_name = "sticker.png"
-        # 避免重名
-        base, ext = _os.path.splitext(safe_name)
-        if not ext:
-            ext = ".png"
-        dest_name = safe_name
-        counter = 1
-        while _os.path.exists(_os.path.join(sticker_dir, dest_name)):
-            dest_name = f"{base}_{counter}{ext}"
-            counter += 1
-        dest_path = _os.path.join(sticker_dir, dest_name)
-        try:
-            img_bytes = b64.b64decode(raw_b64)
-        except Exception as e:
-            return Err(SdkError(f"DECODE_FAILED: base64 解码失败: {e}"))
-        with open(dest_path, "wb") as f:
-            f.write(img_bytes)
-        # 注册到 sticker.json
-        try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = _json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        next_id = 1
-        while str(next_id) in data:
-            next_id += 1
-        sid = str(next_id)
-        data[sid] = {"desc": description, "path": dest_name}
-        with open(sticker_json, "w", encoding="utf-8") as f:
-            _json.dump(data, f, ensure_ascii=False, indent=2)
-        self.session_instruction_service._sticker_catalog_cache = ""
-        self.logger.info(f"上传表情包: id={sid}, file={dest_name}, desc={description}")
-        return Ok({"id": sid, "desc": description, "path": dest_name, "total": len(data)})
+    async def query(self, action: str = "", **kw):
+        return await self._query_dispatch(str(action or "").strip(), kw)
 
-    @plugin_entry(
-        id="register_sticker",
-        name=tr("entries.register_sticker.name", default="注册表情包"),
-        description=tr("entries.register_sticker.description", default="将一张图片注册为表情包，写入 sticker.json。需要提供图片文件的相对路径和描述。"),
-        input_schema={"type": "object", "properties": {"image_path": {"type": "string", "description": "图片文件名，放在 data/sticker/ 目录下"}, "desc": {"type": "string", "description": "表情包描述，LLM 通过描述选择使用哪个表情包"}}, "required": ["image_path", "desc"], "additionalProperties": False},
-    )
-    async def register_sticker(self, image_path: str = "", desc: str = "", **_):
-        """注册表情包到 sticker.json"""
-        import os
-        path = str(image_path or "").strip()
-        description = str(desc or "").strip()
-        if not path:
-            return Err(SdkError("INVALID_INPUT: image_path 不能为空"))
-        if not description:
-            return Err(SdkError("INVALID_INPUT: desc 不能为空"))
-        sticker_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json")
-        sticker_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker")
-        full_path = os.path.join(sticker_dir, path)
-        if not os.path.exists(full_path):
-            return Err(SdkError(f"NOT_FOUND: 图片文件不存在: data/sticker/{path}"))
-        try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        next_id = 1
-        while str(next_id) in data:
-            next_id += 1
-        sid = str(next_id)
-        data[sid] = {"desc": description, "path": path}
-        os.makedirs(os.path.dirname(sticker_json), exist_ok=True)
-        with open(sticker_json, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        self.session_instruction_service._sticker_catalog_cache = ""
-        self.logger.info(f"注册表情包: id={sid}, path={path}, desc={description}")
-        return Ok({"id": sid, "desc": description, "path": path, "total": len(data)})
+    async def _query_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "dashboard":
+            return await self._query_dashboard(kw)
+        if action == "buffer":
+            return await self._query_buffer(kw)
+        if action == "logs":
+            return await self._query_logs(kw)
+        if action == "prompt_editor":
+            return await self._query_prompt_editor(kw)
+        if action == "group_prompts":
+            return await self._query_group_prompts(kw)
+        if action == "user_profiles":
+            return await self._query_user_profiles(kw)
+        if action == "backlog_summary":
+            return await self._query_backlog_summary(kw)
+        if action == "backlog_detail":
+            return await self._query_backlog_detail(kw)
+        if action == "napcat_webui":
+            return await self._query_napcat_webui(kw)
+        if action == "bots":
+            return await self._query_bots(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: query 不支持 {action!r}"
+            f"（可选 dashboard/buffer/logs/prompt_editor/group_prompts/"
+            f"user_profiles/backlog_summary/backlog_detail/napcat_webui/bots）"))
 
-    @plugin_entry(
-        id="pick_directory",
-        name=tr("entries.pick_directory.name", default="选择目录"),
-        description=tr("entries.pick_directory.description", default="打开系统原生目录选择对话框，返回选中目录的绝对路径。"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    )
-    async def pick_directory(self, **_):
-        """打开系统原生目录选择器（后端路径——前端 NapCat 目录用 <input webkitdirectory> 原生选择，不走这里）。
+    async def _query_dashboard(self, kw: dict[str, Any]):
+        _ = kw
+        return await self.dashboard_service.get_dashboard_state()
 
-        注意：tkinter 在插件子进程里可能无桌面会话/初始化失败，直接 Tk() 会导致
-        进程崩溃（宿主收到 error=None）。因此这里捕获异常返回明确错误，绝不崩溃进程。
-        """
-        try:
-            import tkinter as tk
-            import tkinter.filedialog as fd
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            path = fd.askdirectory(title="选择 NapCat 安装目录")
-            root.destroy()
-            if path:
-                return Ok({"path": str(path)})
-            return Ok({"path": "", "cancelled": True})
-        except Exception as e:
-            self._emit_log("ERROR", f"pick_directory 打开目录选择失败: {type(e).__name__}: {e}")
-            return Err(SdkError(f"PICK_DIRECTORY_FAILED: tkinter 目录选择在插件进程不可用: {type(e).__name__}"))
-
-    @plugin_entry(
-        id="get_napcat_webui",
-        name=tr("entries.get_napcat_webui.name", default="获取 NapCat WebUI 地址"),
-        description=tr("entries.get_napcat_webui.description", default="从 NapCat 日志提取 WebUI 登录地址和 token。"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    )
-    async def get_napcat_webui(self, **_):
-        url = self.napcat_service.get_webui_url()
-        webui_lines = await self.napcat_service._read_napcat_webui_lines()
-        return Ok({"url": url, "lines": webui_lines})
-
-    @plugin_entry(id="get_buffer_state")
-    async def get_buffer_state(self, **_):
+    async def _query_buffer(self, kw: dict[str, Any]):
+        _ = kw
         if not self.reply_buffer_service:
             return Ok({"pending": [], "count": 0})
         return Ok(self.reply_buffer_service.get_state())
 
-    @plugin_entry(
-        id="get_attention_state",
-        name=tr("entries.get_attention_state.name", default="获取注意力状态"),
-        description=tr("entries.get_attention_state.description", default="返回所有群聊的注意力分数和焦点状态。"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    )
-    async def get_attention_state(self, **_):
-        if not self.attention_service:
-            return Ok({"enabled": False, "groups": [], "focus_group_id": "", "global_sleep": False})
-        snapshot = self.attention_service.get_snapshot()
-        return Ok({
-            "enabled": snapshot.get("enabled", False),
-            "focus_group_id": snapshot.get("focus_group_id", ""),
-            "focus_score": snapshot.get("focus_score", 0.0),
-            "global_sleep": self.attention_service.is_global_sleep(),
-            "groups": snapshot.get("groups", []),
-        })
+    async def _query_napcat_webui(self, kw: dict[str, Any]):
+        _ = kw
+        url = self.napcat_service.get_webui_url()
+        webui_lines = await self.napcat_service._read_napcat_webui_lines()
+        return Ok({"url": url, "lines": webui_lines})
 
-    @plugin_entry(
-        id="adjust_group_attention",
-        name=tr("entries.adjust_group_attention.name", default="手动调整群注意力"),
-        description=tr("entries.adjust_group_attention.description", default="给指定群手动增减注意力分数，正数为加分、负数为减分。"),
-        input_schema={"type": "object", "properties": {
-            "group_id": {"type": "string"},
-            "delta": {"type": "number"},
-        }, "required": ["group_id", "delta"], "additionalProperties": False},
-    )
-    async def adjust_group_attention(self, group_id: str, delta: float, **_):
-        if not self.attention_service:
-            return Err(SdkError("attention_service_not_initialized"))
-        gid = str(group_id or "").strip()
-        if not gid:
-            return Err(SdkError("INVALID_INPUT: group_id 不能为空"))
-        try:
-            amount = float(delta or 0.0)
-        except (TypeError, ValueError):
-            return Err(SdkError("INVALID_INPUT: delta 必须是数字"))
-        if amount > 0:
-            await self.attention_service.boost_attention(gid, amount, reason="manual_adjust")
-        elif amount < 0:
-            await self.attention_service.consume_attention(gid, -amount, reason="manual_adjust")
-        else:
-            return Ok({"group_id": gid, "delta": 0.0, "note": "noop"})
-        state = self.attention_service.get_state(gid)
-        self._emit_log("INFO", f"[Attention] 手动调整 群{gid} delta={amount:+.1f} → score={state.attention_score:.1f}")
-        return Ok({
-            "group_id": gid,
-            "delta": amount,
-            "attention_score": float(state.attention_score),
-        })
+    async def _query_bots(self, kw: dict[str, Any]):
+        _ = kw
+        from . import qq_official_bind as bind
 
-    @plugin_entry(
-        id="ensure_napcat",
-        name=tr("entries.ensure_napcat.name", default="启动 NapCat 进程"),
-        description=tr("entries.ensure_napcat.description", default="启动 NapCat 外部进程并等待 OneBot 就绪（不连接 WebSocket）。"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    )
-    async def ensure_napcat(self, **_):
-        """仅启动 NapCat 进程，不连接"""
-        await self._ensure_napcat_started()
-        # 硬失败（目录缺失/启动器缺失/进程拉起失败）→ 明确报错，不返回
-        # 「已启动」假象，也不让前端反复重试（ensure_napcat_started 已短路）。
-        if self.napcat_service.has_hard_startup_error():
-            return Err(SdkError(f"NAPCAT_START_FAILED: {self.napcat_service.get_startup_error()}"))
-        ready = await self.napcat_service.wait_for_onebot_ready()
-        if ready:
-            await self._sync_napcat_qrcode_into_static()
-            return Ok({"status": "napcat_ready"})
-        return Ok({"status": "napcat_started", "onebot_ready": False})
+        active = str(self._qq_settings.get(bind.ACTIVE_KEY) or "")
+        bots = [
+            {**{k: v for k, v in b.items() if k != "secret"},
+             "active": str(b.get("appid") or "") == active}
+            for b in bind.list_bots(self._qq_settings)
+        ]
+        return Ok({"bots": bots, "active_appid": active, "total": len(bots)})
 
-    @plugin_entry(
-        id="get_recent_logs",
-        name=tr("entries.get_recent_logs.name", default="获取最近日志"),
-        description=tr("entries.get_recent_logs.description", default="返回 QQ 插件文件日志的最近 N 行。"),
-        input_schema={"type": "object", "properties": {"lines": {"type": "integer", "default": 100}}, "additionalProperties": False},
-    )
-    async def get_recent_logs(self, lines: int = 100, **_):
+    async def _query_backlog_summary(self, kw: dict[str, Any]):
+        _ = kw
+        return Ok(await self.backlog_service.get_summary_payload())
+
+    async def _query_group_prompts(self, kw: dict[str, Any]):
+        _ = kw
+        """获取所有群的专属提示词映射。"""
+        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
+        return Ok({"group_prompts": group_prompts})
+
+    async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
+        await self.backlog_service.maybe_notify_summary(group_id=group_id)
+
+    async def _process_messages(self):
+        await self.message_dispatcher.process_messages()
+
+    async def _handle_message(self, message: Dict[str, Any]):
+        await self.message_dispatcher.handle_message(message)
+
+    async def _handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[Dict[str, Any]]] = None, user_nickname: Optional[str] = None):
+        await self.message_dispatcher.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname)
+
+    async def _handle_group_message(self, group_id: str, sender_id: str, message_text: str, is_at_bot: bool, attachments: Optional[list[Dict[str, Any]]] = None, user_nickname: Optional[str] = None):
+        await self.message_dispatcher.handle_group_message(group_id, sender_id, message_text, is_at_bot, attachments=attachments, user_nickname=user_nickname)
+
+    async def _query_logs(self, kw: dict[str, Any]):
+        lines = kw.get("lines", 100)
         """返回最近的日志行（内存缓冲区 + NapCat 输出）"""
         result_lines: list[str] = []
         buf = getattr(self, "_log_buffer", None)
@@ -1192,257 +1108,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 return Ok({"lines": [], "total": 0, "message": str(e)})
         return Ok({"lines": [], "total": 0, "message": "暂无日志（缓冲区为空且未找到日志文件）"})
 
-    @plugin_entry(
-        id="list_stickers",
-        name=tr("entries.list_stickers.name", default="列出表情包"),
-        description=tr("entries.list_stickers.description", default="读取 sticker.json 并返回所有已注册的表情包。"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    )
-    async def list_stickers(self, **_):
-        """列出所有已注册表情包"""
-        import os
-        sticker_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json")
-        try:
-            with open(sticker_json, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        items = []
-        for sid, info in data.items():
-            items.append({
-                "id": sid,
-                "desc": info.get("desc", "") if isinstance(info, dict) else str(info),
-                "path": info.get("path", "") if isinstance(info, dict) else "",
-            })
-        return Ok({"stickers": items, "total": len(items)})
-
-    @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "napcat_forward", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
-    async def save_settings(
-        self,
-        onebot_url: Optional[str] = None,
-        token: Optional[str] = None,
-        napcat_directory: Optional[str] = None,
-        show_napcat_window: Optional[bool] = None,
-        reply_mode: Optional[str] = None,
-        show_onboarding: Optional[bool] = None,
-        guide_step_napcat_done: Optional[bool] = None,
-        guide_step_config_done: Optional[bool] = None,
-        guide_step_runtime_done: Optional[bool] = None,
-        normal_relay_probability: Optional[float] = None,
-        truth_reply_probability: Optional[float] = None,
-        backlog_labels: Optional[list[dict[str, Any]]] = None,
-        group_attention_max_score: Optional[float] = None,
-        group_attention_focus_threshold: Optional[float] = None,
-        group_attention_focus_send_threshold: Optional[float] = None,
-        group_attention_min_threshold: Optional[float] = None,
-        group_attention_message_gain: Optional[float] = None,
-        attention_base_rise_rate: Optional[float] = None,
-        attention_message_boost: Optional[float] = None,
-        attention_keyword_boost_ratio: Optional[float] = None,
-        attention_honeymoon_seconds: Optional[int] = None,
-        attention_fall_seconds: Optional[int] = None,
-        attention_fall_rate: Optional[float] = None,
-        attention_consume_ratio: Optional[float] = None,
-        icebreaker_cold_threshold: Optional[int] = None,
-        retroactive_review_max_messages: Optional[int] = None,
-        retroactive_review_max_reply: Optional[int] = None,
-        group_memory_enabled: Optional[bool] = None,
-        group_member_memory_enabled: Optional[bool] = None,
-        private_participant_memory_enabled: Optional[bool] = None,
-        allow_cross_group_context: Optional[bool] = None,
-        strategy_mode: Optional[str] = None,
-        qq_connection_mode: Optional[str] = None,
-        qq_open_app_id: Optional[str] = None,
-        qq_open_client_secret: Optional[str] = None,
-        qq_open_identity_probe_enabled: Optional[bool] = None,
-        local_stt_url: Optional[str] = None,
-        **_,
-    ):
-        return await self.dashboard_service.save_settings(
-            onebot_url=onebot_url,
-            token=token,
-            napcat_directory=napcat_directory,
-            show_napcat_window=show_napcat_window,
-            reply_mode=reply_mode,
-            show_onboarding=show_onboarding,
-            guide_step_napcat_done=guide_step_napcat_done,
-            guide_step_config_done=guide_step_config_done,
-            guide_step_runtime_done=guide_step_runtime_done,
-            normal_relay_probability=normal_relay_probability,
-            truth_reply_probability=truth_reply_probability,
-            backlog_labels=backlog_labels,
-            group_attention_max_score=group_attention_max_score,
-            group_attention_focus_threshold=group_attention_focus_threshold,
-            group_attention_focus_send_threshold=group_attention_focus_send_threshold,
-            group_attention_min_threshold=group_attention_min_threshold,
-            group_attention_message_gain=group_attention_message_gain,
-            attention_base_rise_rate=attention_base_rise_rate,
-            attention_message_boost=attention_message_boost,
-            attention_keyword_boost_ratio=attention_keyword_boost_ratio,
-            attention_honeymoon_seconds=attention_honeymoon_seconds,
-            attention_fall_seconds=attention_fall_seconds,
-            attention_fall_rate=attention_fall_rate,
-            attention_consume_ratio=attention_consume_ratio,
-            icebreaker_cold_threshold=icebreaker_cold_threshold,
-            retroactive_review_max_messages=retroactive_review_max_messages,
-            retroactive_review_max_reply=retroactive_review_max_reply,
-            group_memory_enabled=group_memory_enabled,
-            group_member_memory_enabled=group_member_memory_enabled,
-            private_participant_memory_enabled=private_participant_memory_enabled,
-            allow_cross_group_context=allow_cross_group_context,
-            strategy_mode=strategy_mode,
-            qq_connection_mode=qq_connection_mode,
-            qq_open_app_id=qq_open_app_id,
-            qq_open_client_secret=qq_open_client_secret,
-            qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
-            local_stt_url=local_stt_url,
-        )
-
-    @ui.action(id="add_trusted_user", label=tr("entries.add_trusted_user.name", default="添加信任用户"), refresh_context=True)
-    @plugin_entry(id="add_trusted_user", name=tr("entries.add_trusted_user.name", default="添加信任用户"), description=tr("entries.add_trusted_user.description", default="把一个 QQ 号加入信任用户列表，并可设置权限、昵称和转发概率。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "level": {"type": "string", "default": "trusted"}, "nickname": {"type": "string", "default": ""}, "normal_relay_probability": {"type": "number"}}, "required": ["qq_number"]})
-    async def add_trusted_user(self, qq_number: str, level: str = "trusted", nickname: str = "", normal_relay_probability: Optional[float] = None, **_):
-        return await self.dashboard_service.add_trusted_user(
-            qq_number=qq_number,
-            level=level,
-            nickname=nickname,
-            normal_relay_probability=normal_relay_probability,
-        )
-
-    @ui.action(id="list_identity_claims", label=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), refresh_context=False)
-    @plugin_entry(id="list_identity_claims", name=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), description=tr("entries.list_identity_claims.description", default="列出开放平台上出现过、但还不在信任用户名册里的群内 ID，以及可供人工合并的已有身份候选。"), input_schema={"type": "object", "properties": {}, "additionalProperties": False})
-    async def list_identity_claims(self, **_):
-        return await self.dashboard_service.list_identity_claims()
-
-    @ui.action(id="bind_identity_account", label=tr("entries.bind_identity_account.name", default="合并到已有身份"), refresh_context=True)
-    @plugin_entry(id="bind_identity_account", name=tr("entries.bind_identity_account.name", default="合并到已有身份"), description=tr("entries.bind_identity_account.description", default="把一个群内 ID 的信赖度账本并入已有身份。只能由人触发，系统不会自动合并任何身份。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}, "target_user_id": {"type": "string"}}, "required": ["user_id", "target_user_id"], "additionalProperties": False})
-    async def bind_identity_account(self, user_id: str, target_user_id: str, **_):
-        return await self.dashboard_service.bind_identity_account(
-            user_id=user_id, target_user_id=target_user_id,
-        )
-
-    @ui.action(id="unbind_identity_account", label=tr("entries.unbind_identity_account.name", default="撤销合并"), refresh_context=True)
-    @plugin_entry(id="unbind_identity_account", name=tr("entries.unbind_identity_account.name", default="撤销合并"), description=tr("entries.unbind_identity_account.description", default="把一个群内 ID 从它被合并进的身份里拆回独立身份。误合并的唯一回滚方式。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"], "additionalProperties": False})
-    async def unbind_identity_account(self, user_id: str, **_):
-        return await self.dashboard_service.unbind_identity_account(
-            user_id=user_id,
-        )
-
-    @ui.action(id="remove_trusted_user", label=tr("entries.remove_trusted_user.name", default="移除信任用户"), refresh_context=True)
-    @plugin_entry(id="remove_trusted_user", name=tr("entries.remove_trusted_user.name", default="移除信任用户"), description=tr("entries.remove_trusted_user.description", default="把一个 QQ 号从信任用户列表中移除，不再按信任用户处理。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}}, "required": ["qq_number"]})
-    async def remove_trusted_user(self, qq_number: str, **_):
-        return await self.dashboard_service.remove_trusted_user(qq_number=qq_number)
-
-    @ui.action(id="set_user_nickname", label=tr("entries.set_user_nickname.name", default="设置用户昵称"), refresh_context=True)
-    @plugin_entry(id="set_user_nickname", name=tr("entries.set_user_nickname.name", default="设置用户昵称"), description=tr("entries.set_user_nickname.description", default="修改这个信任用户在回复里显示的昵称或称呼。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "nickname": {"type": "string", "default": ""}}, "required": ["qq_number"]})
-    async def set_user_nickname(self, qq_number: str, nickname: str = "", **_):
-        return await self.dashboard_service.set_user_nickname(qq_number=qq_number, nickname=nickname)
-
-    @ui.action(id="add_trusted_group", label=tr("entries.add_trusted_group.name", default="添加信任群聊"), refresh_context=True)
-    @plugin_entry(id="add_trusted_group", name=tr("entries.add_trusted_group.name", default="添加信任群聊"), description=tr("entries.add_trusted_group.description", default="把一个 QQ 群加入信任群聊列表，并可设置群等级和回复概率。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "level": {"type": "string", "default": "normal"}, "normal_relay_probability": {"type": "number"}, "open_reply_probability": {"type": "number"}}, "required": ["group_id"]})
-    async def add_trusted_group(self, group_id: str, level: str = "normal", normal_relay_probability: Optional[float] = None, open_reply_probability: Optional[float] = None, **_):
-        return await self.dashboard_service.add_trusted_group(
-            group_id=group_id,
-            level=level,
-            normal_relay_probability=normal_relay_probability,
-            open_reply_probability=open_reply_probability,
-        )
-
-    @ui.action(id="remove_trusted_group", label=tr("entries.remove_trusted_group.name", default="移除信任群聊"), refresh_context=True)
-    @plugin_entry(id="remove_trusted_group", name=tr("entries.remove_trusted_group.name", default="移除信任群聊"), description=tr("entries.remove_trusted_group.description", default="把一个 QQ 群从信任群聊列表中移除，不再按信任群聊处理。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
-    async def remove_trusted_group(self, group_id: str, **_):
-        return await self.dashboard_service.remove_trusted_group(group_id=group_id)
-
-    @plugin_entry(id="send_backlog_reply_direct", name=tr("entries.send_backlog_reply_direct.name", default="发送这条回复"), description=tr("entries.send_backlog_reply_direct.description", default="把你填写的内容直接回复到这条 QQ 消息，并在发送后把对应群聊标记为已处理。"), input_schema={"type": "object", "properties": {"source_type": {"type": "string"}, "target_id": {"type": "string"}, "sender_id": {"type": "string"}, "message_id": {"type": "string"}, "original_message": {"type": "string"}, "reply_text": {"type": "string"}}, "required": ["source_type", "target_id", "original_message", "reply_text"], "additionalProperties": False})
-    async def send_backlog_reply_direct(self, source_type: str, target_id: str, original_message: str, reply_text: str, sender_id: str = "", message_id: str = "", **_):
-        return await self.relay_service.send_backlog_reply_direct(
-            source_type=source_type,
-            target_id=target_id,
-            original_message=original_message,
-            reply_text=reply_text,
-            sender_id=sender_id,
-            message_id=message_id,
-        )
-
-    @plugin_entry(id="sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新二维码"), description=tr("entries.sync_qrcode.description", default="重新读取 NapCat 当前生成的 QQ 登录二维码，并更新到插件界面。"), input_schema={"type": "object", "properties": {}})
-    async def sync_qrcode(self, **_):
-        return await self.dashboard_service.sync_qrcode()
-
-    @plugin_entry(id="start_auto_reply", name=tr("entries.start_auto_reply.name", default="启动自动回复"), description=tr("entries.start_auto_reply.description", default="开始监听 QQ 消息，并按当前配置自动回复或转发。"), input_schema={"type": "object", "properties": {}})
-    async def start_auto_reply(self, **_):
-        return await self.runtime_ops_service.start_auto_reply()
-
-    @plugin_entry(id="stop_auto_reply", name=tr("entries.stop_auto_reply.name", default="停止自动回复"), description=tr("entries.stop_auto_reply.description", default="停止监听 QQ 消息，不再继续自动回复或转发。"), input_schema={"type": "object", "properties": {}})
-    async def stop_auto_reply(self, **_):
-        return await self.runtime_ops_service.stop_auto_reply()
-
-    @plugin_entry(id="send_private_proactive_message", name=tr("entries.send_private_proactive_message.name", default="主动发送私聊消息"), description=tr("entries.send_private_proactive_message.description", default="根据你提供的内容生成一条新的 QQ 私聊消息，并直接发送给指定用户。verbatim=true 时原文直发，不经过 LLM 生成。"), input_schema={"type": "object", "properties": {"target": {"type": "string"}, "message": {"type": "string"}, "verbatim": {"type": "boolean", "default": False, "description": "true 则原文直发（不 LLM 生成）"}}, "required": ["target", "message"], "additionalProperties": False}, metadata={"timeout": 90})
-    async def send_private_proactive_message(self, target: str, message: str, verbatim: bool = False, **_):
-        return await self.proactive_message_service.send_private_message(target=target, message=message, verbatim=bool(verbatim))
-
-    @plugin_entry(id="send_group_proactive_message", name=tr("entries.send_group_proactive_message.name", default="主动发送群聊消息"), description=tr("entries.send_group_proactive_message.description", default="根据你提供的内容生成一条新的 QQ 群消息，并直接发送到指定群聊。verbatim=true 时原文直发，不经过 LLM 生成。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "message": {"type": "string"}, "verbatim": {"type": "boolean", "default": False, "description": "true 则原文直发（不 LLM 生成）"}}, "required": ["group_id", "message"], "additionalProperties": False}, metadata={"timeout": 90})
-    async def send_group_proactive_message(self, group_id: str, message: str, verbatim: bool = False, **_):
-        return await self.proactive_message_service.send_group_message(group_id=group_id, message=message, verbatim=bool(verbatim))
-
-    async def _stop_auto_reply_runtime(self, *, stop_napcat: bool):
-        await self.runtime_ops_service.stop_runtime(stop_napcat=stop_napcat)
-
-    def _track_handler_task(self, task: asyncio.Task) -> None:
-        self.handler_runtime_service.track_handler_task(task)
-
-    def _on_handler_task_done(self, task: asyncio.Task) -> None:
-        self.handler_runtime_service.on_handler_task_done(task)
-
-    async def _record_backlog_message(self, message: Dict[str, Any]) -> None:
-        await self.backlog_service.record_message(message)
-
-    @plugin_entry(id="get_backlog_summary", name=tr("entries.get_backlog_summary.name", default="读取待审阅摘要"), description=tr("entries.get_backlog_summary.description", default="查看当前哪些群还有待处理消息，以及每个群的大致积压情况。"), input_schema={"type": "object", "properties": {}})
-    async def get_backlog_summary(self, **_):
-        return Ok(await self.backlog_service.get_summary_payload())
-
-    @plugin_entry(id="get_group_backlog_detail", name=tr("entries.get_group_backlog_detail.name", default="读取群聊待审阅详情"), description=tr("entries.get_group_backlog_detail.description", default="查看这个群当前每条待处理消息的详细内容，方便逐条回复或处理。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
-    async def get_group_backlog_detail(self, group_id: str, **_):
+    async def _query_backlog_detail(self, kw: dict[str, Any]):
+        group_id = str(kw.get("group_id") or "")
         normalized_group_id = self._validate_group_id(group_id)
         return Ok(await self.backlog_service.get_group_detail_payload(normalized_group_id))
 
-    @plugin_entry(id="mark_group_backlog_reviewed", name=tr("entries.mark_group_backlog_reviewed.name", default="标记群聊已处理"), description=tr("entries.mark_group_backlog_reviewed.description", default="把这个群当前所有待处理消息标记为已处理，不再继续显示为未审阅。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
-    async def mark_group_backlog_reviewed(self, group_id: str, **_):
-        normalized_group_id = self._validate_group_id(group_id)
-        return Ok(await self.backlog_service.mark_group_reviewed_payload(normalized_group_id))
-
-    @plugin_entry(
-        id="forget_group_memory",
-        name=tr("entries.forget_group_memory.name", default="清除群记忆"),
-        description=tr("entries.forget_group_memory.description", default="删除指定群聊的全部长期记忆（facts/reflections/persona）。幂等，重试安全。"),
-        input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
-    )
-    async def forget_group_memory(self, group_id: str, **_):
-        normalized_group_id = self._validate_group_id(group_id)
-        from utils.config_manager import get_config_manager
-        try:
-            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
-        except Exception:
-            her_name = "neko"
-        try:
-            result = await self.memory_bridge.post_scoped_forget(
-                her_name,
-                subject=self.memory_bridge.group_subject(normalized_group_id),
-            )
-            self._emit_log("INFO", f"群 {normalized_group_id} 记忆已清除: {result}")
-            return Ok({"group_id": normalized_group_id, "forgotten": True, "detail": result})
-        except Exception as exc:
-            self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
-            return Err(SdkError(f"FORGET_FAILED: {exc}"))
-
-    @plugin_entry(
-        id="get_user_profiles",
-        name=tr("entries.get_user_profiles.name", default="获取用户画像"),
-        description=tr("entries.get_user_profiles.description", default="读取当前缓存的用户画像列表，包含身份信息和从长期记忆中提取的事实摘要。"),
-        input_schema={"type": "object", "properties": {}},
-    )
-    async def get_user_profiles(self, **_):
+    async def _query_user_profiles(self, kw: dict[str, Any]):
+        _ = kw
         profiles: list[dict[str, Any]] = []
         now = time.time()
         cache = getattr(self.session_instruction_service, "_user_profile_cache", {}) or {}
@@ -1492,13 +1164,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     # 提示词编辑器
     # ==========================================
 
-    @plugin_entry(
-        id="get_prompt_editor_state",
-        name=tr("entries.get_prompt_editor_state.name", default="获取提示词编辑器状态"),
-        description=tr("entries.get_prompt_editor_state.description", default="返回当前语言下的各层提示词元数据和配置，供提示词编辑器使用。"),
-        input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "additionalProperties": False},
-    )
-    async def get_prompt_editor_state(self, mode: str = "", locale: str = "", **_):
+    async def _query_prompt_editor(self, kw: dict[str, Any]):
+        mode = str(kw.get("mode") or "")
+        locale = str(kw.get("locale") or "")
         frontend_mode = str(mode or "").strip()
         stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
         mode = frontend_mode if frontend_mode in ("napcat", "napcat_forward", "open_platform") else stored_mode
@@ -1617,22 +1285,146 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "proactive_topics": proactive_topics,
         })
 
-    @plugin_entry(
-        id="save_prompt_override",
-        name=tr("entries.save_prompt_override.name", default="保存提示词覆盖"),
-        description=tr("entries.save_prompt_override.description", default="保存某个提示词层的自定义覆盖值到 business_config。"),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "locale": {"type": "string"},
-                "layer_id": {"type": "string"},
-                "text": {"type": "string", "maxLength": 65536},
-            },
-            "required": ["locale", "layer_id", "text"],
-            "additionalProperties": False,
-        },
-    )
-    async def save_prompt_override(self, locale: str, layer_id: str, text: str, **_):
+    async def _config_init(self, kw: dict[str, Any]):
+        guide_step_config_done = kw.get("guide_step_config_done")
+        return await self.dashboard_service.init_config(guide_step_config_done=guide_step_config_done)
+
+    async def _config_nl(self, kw: dict[str, Any]):
+        message = str(kw.get("message") or "")
+        """通过自然语言解析并保存 OneBot 配置"""
+        import re
+        text = str(message or "").strip()
+        if not text:
+            return Err(SdkError("INVALID_INPUT: 请提供自然语言指令，如：设置地址为 ws://0.0.0.0:6199 token 为 abc123"))
+
+        url = ""
+        token = ""
+        clear_token = False
+
+        # 提取 WebSocket/HTTP 地址
+        url_patterns = [
+            r'(wss?://\S+)',           # ws://... 或 wss://...
+            r'(https?://\S+)',          # http://... 或 https://...
+            r'地址[设为是]*[：:\s]*(\S+:\d+\S*)',  # 地址设为 xxx:3001/...
+            r'url[设为是]*[：:\s]*(\S+:\d+\S*)',   # url 设为 ...
+            r'改为\s*(\S+:\d+\S*)',    # 改为 ...
+            r'改成\s*(\S+:\d+\S*)',    # 改成 ...
+        ]
+        for pattern in url_patterns:
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).rstrip(".,;!?）)")
+                if "://" in candidate:
+                    url = candidate
+                    break
+
+        # 提取 token
+        token_patterns = [
+            r'token\s*[设为是]*[：:\s]*(\S+)',     # token 设为 xxx
+            r'access_token\s*[设为是]*[：:\s]*(\S+)',
+            r'密钥\s*[设为是]*[：:\s]*(\S+)',
+            r'token\s*[=：:]\s*(\S+)',
+        ]
+        for pattern in token_patterns:
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).rstrip(".,;!?）)")
+                if candidate in ("空", "无", "清空", "清除", "none", "null"):
+                    clear_token = True
+                else:
+                    token = candidate
+                break
+
+        # 检测清空 token
+        if not token and not clear_token:
+            if re.search(r'(清空|清除|去掉|删除|移除)\s*token', text, re.IGNORECASE):
+                clear_token = True
+
+        if not url and not token and not clear_token:
+            return Ok({
+                "parsed": False,
+                "hint": "未能从指令中解析出 OneBot 地址或 Token。请尝试更明确的表达，如：设置地址为 ws://0.0.0.0:6199，token 为 my_token_123",
+                "current": {
+                    "onebot_url": str(self._qq_settings.get("onebot_url", "")),
+                    "token_configured": bool(self._qq_settings.get("token")),
+                },
+            })
+
+        # 构建 save_settings 参数
+        save_kwargs: dict[str, Any] = {}
+        if url:
+            save_kwargs["onebot_url"] = url
+        if token:
+            save_kwargs["token"] = token
+        if clear_token:
+            save_kwargs["token"] = ""
+
+        await self.dashboard_service.save_settings(**save_kwargs)
+
+        changes: list[str] = []
+        if url:
+            changes.append(f"地址 → {url}")
+        if token:
+            changes.append(f"Token → {self._mask_token(token)}")
+        if clear_token:
+            changes.append("Token → (已清空)")
+
+        return Ok({
+            "parsed": True,
+            "changes": changes,
+            "reconnect_required": bool(self._running),
+            "hint": "配置已保存" + ("，需要重启自动回复以应用新连接" if self._running else ""),
+        })
+
+    async def _config_attention_adjust(self, kw: dict[str, Any]):
+        group_id = str(kw.get("group_id") or "")
+        delta = kw.get("delta")
+        if not self.attention_service:
+            return Err(SdkError("attention_service_not_initialized"))
+        gid = str(group_id or "").strip()
+        if not gid:
+            return Err(SdkError("INVALID_INPUT: group_id 不能为空"))
+        try:
+            amount = float(delta or 0.0)
+        except (TypeError, ValueError):
+            return Err(SdkError("INVALID_INPUT: delta 必须是数字"))
+        if amount > 0:
+            await self.attention_service.boost_attention(gid, amount, reason="manual_adjust")
+        elif amount < 0:
+            await self.attention_service.consume_attention(gid, -amount, reason="manual_adjust")
+        else:
+            return Ok({"group_id": gid, "delta": 0.0, "note": "noop"})
+        state = self.attention_service.get_state(gid)
+        self._emit_log("INFO", f"[Attention] 手动调整 群{gid} delta={amount:+.1f} → score={state.attention_score:.1f}")
+        return Ok({
+            "group_id": gid,
+            "delta": amount,
+            "attention_score": float(state.attention_score),
+        })
+
+    async def _config_memory_forget(self, kw: dict[str, Any]):
+        group_id = str(kw.get("group_id") or "")
+        normalized_group_id = self._validate_group_id(group_id)
+        from utils.config_manager import get_config_manager
+        try:
+            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
+        except Exception:
+            her_name = "neko"
+        try:
+            result = await self.memory_bridge.post_scoped_forget(
+                her_name,
+                subject=self.memory_bridge.group_subject(normalized_group_id),
+            )
+            self._emit_log("INFO", f"群 {normalized_group_id} 记忆已清除: {result}")
+            return Ok({"group_id": normalized_group_id, "forgotten": True, "detail": result})
+        except Exception as exc:
+            self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
+            return Err(SdkError(f"FORGET_FAILED: {exc}"))
+
+    async def _config_prompt_save(self, kw: dict[str, Any]):
+        locale = str(kw.get("locale") or "")
+        layer_id = str(kw.get("layer_id") or "")
+        text = kw.get("text")
         locale = str(locale or "").strip()
         layer_id = str(layer_id or "").strip()
         text_val = str(text or "")
@@ -1666,18 +1458,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self.session_instruction_service._discard_all_sessions_for_prompt_change()
         return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
 
-    @plugin_entry(
-        id="reset_prompt_override",
-        name=tr("entries.reset_prompt_override.name", default="重置提示词覆盖"),
-        description=tr("entries.reset_prompt_override.description", default="删除某个提示词层的自定义覆盖值，恢复默认。"),
-        input_schema={
-            "type": "object",
-            "properties": {"locale": {"type": "string"}, "layer_id": {"type": "string"}},
-            "required": ["locale", "layer_id"],
-            "additionalProperties": False,
-        },
-    )
-    async def reset_prompt_override(self, locale: str, layer_id: str, **_):
+    async def _config_prompt_reset(self, kw: dict[str, Any]):
+        locale = str(kw.get("locale") or "")
+        layer_id = str(kw.get("layer_id") or "")
         locale = str(locale or "").strip()
         layer_id = str(layer_id or "").strip()
         if not locale or not layer_id:
@@ -1740,8 +1523,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
         return Ok({"persisted": True, "layer_id": layer_id, "locale": locale, "reason": "no_override_found"})
 
-    @plugin_entry(id="save_group_prompt")
-    async def save_group_prompt(self, group_id: str, text: str, **_):
+    async def _config_group_prompt_save(self, kw: dict[str, Any]):
+        group_id = str(kw.get("group_id") or "")
+        text = kw.get("text")
         """保存某个群的专属提示词。text 为空字符串则视为删除。"""
         gid = str(group_id or "").strip()
         if not gid:
@@ -1782,8 +1566,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
         return Ok({"persisted": success, "group_id": gid, "has_text": bool(custom_text)})
 
-    @plugin_entry(id="delete_group_prompt")
-    async def delete_group_prompt(self, group_id: str, **_):
+    async def _config_group_prompt_delete(self, kw: dict[str, Any]):
+        group_id = str(kw.get("group_id") or "")
         """删除某个群的专属提示词。"""
         gid = str(group_id or "").strip()
         if not gid:
@@ -1821,28 +1605,740 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
 
-    @plugin_entry(id="get_group_prompts")
-    async def get_group_prompts(self, **_):
-        """获取所有群的专属提示词映射。"""
-        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
-        return Ok({"group_prompts": group_prompts})
+    async def _config_save_topics(self, kw: dict[str, Any]):
+        topics = kw.get("topics")
+        topic_list = [str(t).strip() for t in (topics or []) if str(t).strip()]
+        self._qq_settings["proactive_topics"] = topic_list
+        success = await self._persist_business_config()
+        self._emit_log("INFO", f"主动发言话题已更新: {len(topic_list)}条")
+        return Ok({"count": len(topic_list), "persisted": success})
 
-    async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
-        await self.backlog_service.maybe_notify_summary(group_id=group_id)
+    async def _run_message_handler(self, message: Dict[str, Any]) -> None:
+        await self.handler_runtime_service.run_message_handler(message)
 
-    async def _process_messages(self):
-        await self.message_dispatcher.process_messages()
+    # ── config：配置写入 ────────────────────────────────────────
+    #
+    # 所有持久化设置的写入口。对 agent 可见 —— 改配置是它的正当动作。
 
-    async def _handle_message(self, message: Dict[str, Any]):
-        await self.message_dispatcher.handle_message(message)
+    #: 允许透传给 ``dashboard_service.save_settings`` 的键。**白名单，不是全透传。**
+    #:
+    #: 服务层是关键字参数、逐个 `kwargs.get(...)` 具名写回，而前端会多塞键
+    #: （``napcat.html`` 就在发 ``locale``）。老入口靠自己的 `**_` 把它们悄悄吞掉；
+    #: 合并后如果直接 `**kw` 转发，多余的键会撞到服务层；而漏在名单外的键会**静默
+    #: 丢失** —— 回复缓冲那两个开关正是这么踩的：界面能点，值从没存进去过。
+    _CONFIG_SAVE_KEYS = frozenset({
+        "onebot_url", "token", "napcat_directory", "show_napcat_window", "reply_mode",
+        "show_onboarding", "guide_step_napcat_done", "guide_step_config_done",
+        "guide_step_runtime_done", "normal_relay_probability", "truth_reply_probability",
+        "backlog_labels", "group_attention_max_score", "group_attention_focus_threshold",
+        "group_attention_focus_send_threshold", "group_attention_min_threshold",
+        "group_attention_message_gain", "attention_base_rise_rate",
+        "attention_message_boost", "attention_keyword_boost_ratio",
+        "attention_honeymoon_seconds", "attention_fall_seconds", "attention_fall_rate",
+        "attention_consume_ratio", "icebreaker_cold_threshold",
+        "retroactive_review_max_messages", "retroactive_review_max_reply",
+        "group_memory_enabled", "group_member_memory_enabled",
+        "private_participant_memory_enabled", "allow_cross_group_context",
+        "strategy_mode", "qq_connection_mode", "qq_open_app_id",
+        "qq_open_client_secret", "qq_open_identity_probe_enabled",
+        "qq_open_sandbox_enabled", "local_stt_url",
+        "group_buffer_enabled", "private_buffer_enabled",
+    })
 
-    async def _handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[Dict[str, Any]]] = None, user_nickname: Optional[str] = None):
-        await self.message_dispatcher.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname)
+    @ui.action(id="config", label=tr("entries.config.name", default="保存配置"), refresh_context=True)
+    @plugin_entry(
+        id="config",
+        name=tr("entries.config.name", default="保存配置"),
+        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / save_topics / attention_adjust / memory_forget。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["save", "init", "nl", "prompt_save", "prompt_reset",
+                                "group_prompt_save", "group_prompt_delete",
+                                "save_topics", "attention_adjust", "memory_forget"],
+                       "description": "save=保存设置（其余参数见下）；init=初始化配置；nl=用自然语言改 OneBot 地址/token；prompt_save/reset=提示词覆盖；group_prompt_save/delete=群专属提示词；save_topics=主动发言话题；attention_adjust=调群注意力；memory_forget=清除群长期记忆"},
+            "message": {"type": "string", "description": "nl：自然语言指令"},
+            "locale": {"type": "string", "description": "prompt_save / prompt_reset：语言"},
+            "layer_id": {"type": "string", "description": "prompt_save / prompt_reset：提示词层 id"},
+            "text": {"type": "string", "description": "prompt_save / group_prompt_save：内容（群提示词传空串=删除）"},
+            "group_id": {"type": "string", "description": "group_prompt_save / group_prompt_delete / attention_adjust / memory_forget：群号"},
+            "delta": {"type": "number", "description": "attention_adjust：正数加分、负数扣分"},
+            "topics": {"type": "array", "items": {"type": "string"}, "description": "save_topics：话题列表"},
+            "guide_step_config_done": {"type": "boolean", "description": "init / save：配置步骤是否已完成"},
+            # ── action="save" 的键。必须与 _CONFIG_SAVE_KEYS 及
+            #    dashboard_service.save_settings 的签名三者一致 ——
+            #    漏一个，那个设置就会静默存不进去。
+            "onebot_url": {"type": "string", "description": "save：OneBot 地址"},
+            "token": {"type": "string", "description": "save：OneBot token"},
+            "napcat_directory": {"type": "string", "description": "save：NapCat 安装目录"},
+            "show_napcat_window": {"type": "boolean", "description": "save：是否显示 NapCat 窗口"},
+            "reply_mode": {"type": "string", "enum": ["text", "voice", "both"], "description": "save：回复形式"},
+            "show_onboarding": {"type": "boolean", "description": "save：是否显示引导"},
+            "guide_step_napcat_done": {"type": "boolean", "description": "save：NapCat 步骤是否已完成"},
+            "guide_step_runtime_done": {"type": "boolean", "description": "save：运行时步骤是否已完成"},
+            "normal_relay_probability": {"type": "number", "description": "save：普通转发概率 0~1"},
+            "truth_reply_probability": {"type": "number", "description": "save：开放群回复概率 0~1"},
+            "backlog_labels": {"type": "array", "items": {"type": "object"}, "description": "save：待审阅标签"},
+            "group_attention_max_score": {"type": "number", "description": "save：群注意力上限"},
+            "group_attention_focus_threshold": {"type": "number", "description": "save：进入专注的阈值"},
+            "group_attention_focus_send_threshold": {"type": "number", "description": "save：专注时主动发言阈值"},
+            "group_attention_min_threshold": {"type": "number", "description": "save：群注意力下限"},
+            "group_attention_message_gain": {"type": "number", "description": "save：每条消息的注意力增益"},
+            "attention_base_rise_rate": {"type": "number", "description": "save：注意力基础上升速率"},
+            "attention_message_boost": {"type": "number", "description": "save：消息带来的额外增益"},
+            "attention_keyword_boost_ratio": {"type": "number", "description": "save：命中关键词的增益倍率"},
+            "attention_honeymoon_seconds": {"type": "integer", "description": "save：专注后的蜜月时长（秒）"},
+            "attention_fall_seconds": {"type": "integer", "description": "save：注意力衰减周期（秒）"},
+            "attention_fall_rate": {"type": "number", "description": "save：每周期衰减量"},
+            "attention_consume_ratio": {"type": "number", "description": "save：回复消耗的注意力比例"},
+            "icebreaker_cold_threshold": {"type": "integer", "description": "save：冷场多少条后主动破冰"},
+            "retroactive_review_max_messages": {"type": "integer", "description": "save：回溯审核最多取多少条"},
+            "retroactive_review_max_reply": {"type": "integer", "description": "save：回溯最多补回多少条"},
+            "group_memory_enabled": {"type": "boolean", "description": "save：群长期记忆"},
+            "group_member_memory_enabled": {"type": "boolean", "description": "save：群成员记忆（需群记忆开启）"},
+            "private_participant_memory_enabled": {"type": "boolean", "description": "save：私聊 participant 记忆"},
+            "allow_cross_group_context": {"type": "boolean", "description": "save：允许跨群上下文"},
+            "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"], "description": "save：策略模式"},
+            "qq_connection_mode": {"type": "string", "enum": list(CONNECTION_MODES), "description": "save：连接方式"},
+            "qq_open_app_id": {"type": "string", "description": "save：开放平台 AppID"},
+            "qq_open_client_secret": {"type": "string", "description": "save：开放平台密钥"},
+            "qq_open_identity_probe_enabled": {"type": "boolean", "description": "save：开放平台身份取证"},
+            "qq_open_sandbox_enabled": {"type": "boolean", "description": "save：开放平台沙箱环境"},
+            "local_stt_url": {"type": "string", "description": "save：本地 STT 地址"},
+            "group_buffer_enabled": {"type": "boolean", "description": "save：群聊回复缓冲"},
+            "private_buffer_enabled": {"type": "boolean", "description": "save：私聊回复缓冲"},
+        }, "required": ["action"], "additionalProperties": False},
+    )
+    async def config(self, action: str = "", **kw):
+        return await self._config_dispatch(str(action or "").strip(), kw)
 
-    async def _handle_group_message(self, group_id: str, sender_id: str, message_text: str, is_at_bot: bool, attachments: Optional[list[Dict[str, Any]]] = None, user_nickname: Optional[str] = None):
-        await self.message_dispatcher.handle_group_message(group_id, sender_id, message_text, is_at_bot, attachments=attachments, user_nickname=user_nickname)
+    async def _config_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "save":
+            return await self._config_save(kw)
+        if action == "init":
+            return await self._config_init(kw)
+        if action == "nl":
+            return await self._config_nl(kw)
+        if action == "prompt_save":
+            return await self._config_prompt_save(kw)
+        if action == "prompt_reset":
+            return await self._config_prompt_reset(kw)
+        if action == "group_prompt_save":
+            return await self._config_group_prompt_save(kw)
+        if action == "group_prompt_delete":
+            return await self._config_group_prompt_delete(kw)
+        if action == "save_topics":
+            return await self._config_save_topics(kw)
+        if action == "attention_adjust":
+            return await self._config_attention_adjust(kw)
+        if action == "memory_forget":
+            return await self._config_memory_forget(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: config 不支持 {action!r}"
+            f"（可选 save/init/nl/prompt_save/prompt_reset/group_prompt_save/"
+            f"group_prompt_delete/save_topics/attention_adjust/memory_forget）"))
+
+    async def _config_save(self, kw: dict[str, Any]):
+        """保存设置。只认白名单里的键 —— 多余的静默丢弃，而不是撞到服务层。"""
+        payload = {k: v for k, v in kw.items() if k in self._CONFIG_SAVE_KEYS}
+        if not payload:
+            return Err(SdkError(
+                "INVALID_INPUT: save 没收到任何可识别的设置项"
+                f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个，见 config 入口的 input_schema）"))
+        return await self.dashboard_service.save_settings(**payload)
+
+    async def _deploy_ensure(self, kw: dict[str, Any]):
+        _ = kw
+        """仅启动 NapCat 进程，不连接"""
+        await self._ensure_napcat_started()
+        # 硬失败（目录缺失/启动器缺失/进程拉起失败）→ 明确报错，不返回
+        # 「已启动」假象，也不让前端反复重试（ensure_napcat_started 已短路）。
+        if self.napcat_service.has_hard_startup_error():
+            return Err(SdkError(f"NAPCAT_START_FAILED: {self.napcat_service.get_startup_error()}"))
+        ready = await self.napcat_service.wait_for_onebot_ready()
+        if ready:
+            await self._sync_napcat_qrcode_into_static()
+            return Ok({"status": "napcat_ready"})
+        return Ok({"status": "napcat_started", "onebot_ready": False})
+
+    async def _deploy_one_click(self, kw: dict[str, Any]):
+        uin = str(kw.get("uin") or "").strip()
+        force = bool(kw.get("force", False))
+        auto_start = bool(kw.get("auto_start", True))
+        """一键部署：出二维码 → 启动自动回复"""
+        try:
+            result = await self.deploy_service.deploy(
+                uin=str(uin or "").strip(),
+                force=bool(force),
+                # 经 SSE 推给界面（status.html 订阅 deploy_progress 渲染进度）
+                emit=lambda p: self._spawn_push_ui_event(
+                    "deploy_progress", p.get("message", ""), data=p,
+                ),
+            )
+        except Exception as e:
+            self.logger.error(f"一键部署失败: {e}")
+            return Err(SdkError(f"DEPLOY_FAILED: {e}"))
+        # 部署完就把运行时拉起来（反向模式下这里是"先监听、等 NapCat 登录后自动接上"），
+        # 用户扫完码即可用，不必再点一次「启动自动回复」。
+        return Ok({**result,
+                   **self._auto_start_fields(
+                       await self._restart_auto_reply_runtime(bool(auto_start)))})
+
+    async def _deploy_apply_onebot(self, kw: dict[str, Any]):
+        uin = str(kw.get("uin") or "").strip()
+        restart = bool(kw.get("restart", True))
+        auto_start = bool(kw.get("auto_start", True))
+        """扫码后的兜底：补写配置 → 重启 NapCat → 按新配置启动自动回复"""
+        try:
+            result = await self.deploy_service.apply_onebot_config(
+                uin=str(uin or "").strip(),
+                restart=bool(restart),
+                emit=lambda p: self._spawn_push_ui_event(
+                    "deploy_progress", p.get("message", ""), data=p,
+                ),
+            )
+        except Exception as e:
+            self.logger.error(f"补写 OneBot 配置失败: {e}")
+            return Err(SdkError(f"APPLY_CONFIG_FAILED: {e}"))
+        # 配置刚被改写、NapCat 刚重启 —— 运行中的连接还指着旧端点（连接对象也是按旧
+        # 设置建的），必须丢掉重建，否则"配置写对了却连不上"。
+        return Ok({**result,
+                   **self._auto_start_fields(
+                       await self._restart_auto_reply_runtime(bool(auto_start)))})
+
+    async def _deploy_bind_start(self, kw: dict[str, Any]):
+        _ = kw
+        """开始扫码绑定。
+
+        **不做拦截**：新建还是绑定已有，是用户在手机连接页上选的，本地无从决定 ——
+        原先那个 ``force`` 参数建立在一个错误前提上（以为服务端能"强制新建"）。
+        账本里已记过的机器人只作为**提示**回传（``reusable_appid``），供界面提醒用户
+        扫码时选「已有的机器人」而不是新建 —— 扫码会轮换 AppSecret，能不重扫就不重扫。
+        """
+        from . import qq_official_bind as bind
+
+        reusable = bind.pick_reusable_bot(self._qq_settings)
+        try:
+            session = await bind.create_bind_task()
+        except Exception as e:
+            self.logger.error(f"创建绑定任务失败: {e}")
+            return Err(SdkError(f"BIND_START_FAILED: {e}"))
+
+        # 会话只放内存：bind_key 是本次解密用的临时密钥，不该落盘。
+        self._qq_bind_session = session
+        # 服务端渲染成 PNG，前端直接 <img> 取（与 NapCat 登录二维码同一条静态路径）。
+        qr_file = self.config_dir / "static" / "cache" / "bind_qrcode.png"
+        rendered = bind.render_qr_png(session.qrcode, qr_file)
+        return Ok({
+            "task_id": session.task_id,
+            "qrcode": session.qrcode,
+            "qrcode_ready": rendered,
+            "qrcode_url": (
+                f"/plugin/{self.plugin_id}/ui/cache/bind_qrcode.png" if rendered else ""
+            ),
+            "interval": session.interval,
+            "existing_bots": len(bind.list_bots(self._qq_settings)),
+            # 提示用：扫码时选「已有的机器人」就会复用它，不必新建
+            "reusable_appid": str((reusable or {}).get("appid") or ""),
+        })
+
+    async def _deploy_bind_poll(self, kw: dict[str, Any]):
+        auto_start = bool(kw.get("auto_start", True))
+        from . import qq_official_bind as bind
+
+        session = getattr(self, "_qq_bind_session", None)
+        if session is None:
+            return Err(SdkError("NO_BIND_TASK: 请先调用 qq_official_bind_start"))
+        try:
+            result = await bind.poll_bind_result(session)
+        except Exception as e:
+            self.logger.error(f"轮询绑定结果失败: {e}")
+            return Err(SdkError(f"BIND_POLL_FAILED: {e}"))
+        if result.get("status") != "completed":
+            return Ok(result)
+
+        appid, secret = str(result["appid"]), str(result["secret"])
+        record = bind.remember_bot(self._qq_settings, appid=appid, secret=secret)
+        # 连接器读的就是这两个键 —— 记账的同时让它立刻可用。
+        self._qq_settings["qq_open_app_id"] = appid
+        self._qq_settings["qq_open_client_secret"] = secret
+        self._qq_bind_session = None
+        try:
+            await self.settings_service.persist_business_config()
+        except Exception as e:
+            self.logger.warning(f"机器人凭据已获取但落盘失败: {e}")
+
+        # 先落盘、再校验 —— 顺序不能反。绑定会轮换 AppSecret（实测），所以走到这里时
+        # **旧密钥已经作废**："验不过就不写"等于把配置停在一个确定失效的值上，比写了更糟。
+        # 校验的产物是给用户看的结论，不是落盘的前提。
+        verify = await bind.verify_credentials(appid, secret)
+        if verify["ok"]:
+            self.logger.info(f"[绑定] 凭据已校验可用（第 {verify['attempts']} 次）")
+        else:
+            self.logger.warning(
+                f"[绑定] 凭据未通过校验（旧密钥此时已被轮换，新值仍已写入配置）: "
+                f"{verify['error']}")
+
+        auto = await self._restart_auto_reply_runtime(bool(auto_start))
+
+        return Ok({"status": "completed", "appid": appid,
+                   "verified": verify["ok"],
+                   "verify_attempts": verify["attempts"],
+                   "verify_error": verify["error"],
+                   **self._auto_start_fields(auto),
+                   "bot": {k: v for k, v in record.items() if k != "secret"}})
+
+    async def _deploy_use_bot(self, kw: dict[str, Any]):
+        appid = str(kw.get("appid") or "")
+        from . import qq_official_bind as bind
+
+        bot = bind.find_bot(self._qq_settings, appid)
+        if bot is None:
+            return Err(SdkError(f"BOT_NOT_FOUND: 账本里没有 {appid}"))
+        self._qq_settings["qq_open_app_id"] = str(bot.get("appid") or "")
+        self._qq_settings["qq_open_client_secret"] = str(bot.get("secret") or "")
+        self._qq_settings[bind.ACTIVE_KEY] = str(bot.get("appid") or "")
+        try:
+            await self.settings_service.persist_business_config()
+        except Exception as e:
+            self.logger.warning(f"切换机器人后落盘失败: {e}")
+        return Ok({"status": "switched", "appid": self._qq_settings["qq_open_app_id"]})
+
+    async def _deploy_qrcode_sync(self, kw: dict[str, Any]):
+        _ = kw
+        return await self.dashboard_service.sync_qrcode()
+
+    # ── deploy：接入与部署 ──────────────────────────────────────
+    #
+    # NapCat 进程的起停、OneBot 配置补写、开放平台扫码绑定与账本切换。
+    #
+    # **对 agent 隐藏**（`agent_auto: False`，见 brain/task_executor.py 的
+    # `_is_plugin_entry_agent_hidden`）：这里装着不该让模型自己碰的东西 ——
+    # `one_click` 会为了注入而**杀掉正在运行的 QQ**，`bind_*` 会轮换 AppSecret。
+    # 标记链路已验：query_service 把 entry.metadata 原样放进入口清单，brain 读它。
+
+    @ui.action(id="deploy", label=tr("entries.deploy.name", default="接入与部署"), refresh_context=True)
+    @plugin_entry(
+        id="deploy",
+        name=tr("entries.deploy.name", default="接入与部署"),
+        description=tr("entries.deploy.description", default="启动 NapCat、一键部署、补写 OneBot 配置、开放平台扫码绑定与机器人切换。action 取 ensure / one_click / apply_onebot / bind_start / bind_poll / use_bot / qrcode_sync。**此入口对 AI 隐藏，只能由界面或人触发。**"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["ensure", "one_click", "apply_onebot",
+                                "bind_start", "bind_poll", "use_bot", "qrcode_sync"],
+                       "description": "ensure=只启动 NapCat 进程；one_click=一键部署（下载/解包/写配置/启动/出码）；apply_onebot=扫码后补写 OneBot 配置并重启；bind_start/bind_poll=开放平台扫码绑定与轮询；use_bot=切换到账本里已有的机器人；qrcode_sync=刷新登录二维码"},
+            "uin": {"type": "string", "description": "one_click / apply_onebot：机器人 QQ 号（apply_onebot 留空则取最近登录的）"},
+            "force": {"type": "boolean", "default": False, "description": "one_click：已有 NapCat 也强制重新下载"},
+            "auto_start": {"type": "boolean", "default": True,
+                           "description": "one_click / apply_onebot / bind_poll：完事顺手把自动回复跑起来（会按新设置停掉重建）"},
+            "restart": {"type": "boolean", "default": True, "description": "apply_onebot：写完是否重启 NapCat（它启动时才读网络配置）"},
+            "appid": {"type": "string", "description": "use_bot：要启用的机器人 AppID"},
+        }, "required": ["action"], "additionalProperties": False},
+        metadata={"agent_auto": False},
+    )
+    async def deploy(self, action: str = "", **kw):
+        return await self._deploy_dispatch(str(action or "").strip(), kw)
+
+    async def _deploy_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "ensure":
+            return await self._deploy_ensure(kw)
+        if action == "one_click":
+            return await self._deploy_one_click(kw)
+        if action == "apply_onebot":
+            return await self._deploy_apply_onebot(kw)
+        if action == "bind_start":
+            return await self._deploy_bind_start(kw)
+        if action == "bind_poll":
+            return await self._deploy_bind_poll(kw)
+        if action == "use_bot":
+            return await self._deploy_use_bot(kw)
+        if action == "qrcode_sync":
+            return await self._deploy_qrcode_sync(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: deploy 不支持 {action!r}"
+            f"（可选 ensure/one_click/apply_onebot/bind_start/bind_poll/"
+            f"use_bot/qrcode_sync）"))
+
+    async def _asset_attention(self, kw: dict[str, Any]):
+        _ = kw
+        if not self.attention_service:
+            return Ok({"enabled": False, "groups": [], "focus_group_id": "", "global_sleep": False})
+        snapshot = self.attention_service.get_snapshot()
+        return Ok({
+            "enabled": snapshot.get("enabled", False),
+            "focus_group_id": snapshot.get("focus_group_id", ""),
+            "focus_score": snapshot.get("focus_score", 0.0),
+            "global_sleep": self.attention_service.is_global_sleep(),
+            "groups": snapshot.get("groups", []),
+        })
+
+    async def _asset_list_stickers(self, kw: dict[str, Any]):
+        _ = kw
+        """列出所有已注册表情包"""
+        sticker_json = str(self.data_path("sticker.json"))
+        try:
+            with open(sticker_json, "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        items = []
+        for sid, info in data.items():
+            items.append({
+                "id": sid,
+                "desc": info.get("desc", "") if isinstance(info, dict) else str(info),
+                "path": info.get("path", "") if isinstance(info, dict) else "",
+            })
+        return Ok({"stickers": items, "total": len(items)})
+
+    async def _asset_register_sticker(self, kw: dict[str, Any]):
+        image_path = str(kw.get("image_path") or "")
+        desc = str(kw.get("desc") or "")
+        """注册表情包到 sticker.json"""
+        import os
+        path = str(image_path or "").strip()
+        description = str(desc or "").strip()
+        if not path:
+            return Err(SdkError("INVALID_INPUT: image_path 不能为空"))
+        if not description:
+            return Err(SdkError("INVALID_INPUT: desc 不能为空"))
+        sticker_json = str(self.data_path("sticker.json"))
+        sticker_dir = str(self.data_path("sticker"))
+        full_path = os.path.join(sticker_dir, path)
+        if not os.path.exists(full_path):
+            return Err(SdkError(f"NOT_FOUND: 图片文件不存在: data/sticker/{path}"))
+        try:
+            with open(sticker_json, "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        next_id = 1
+        while str(next_id) in data:
+            next_id += 1
+        sid = str(next_id)
+        data[sid] = {"desc": description, "path": path}
+        os.makedirs(os.path.dirname(sticker_json), exist_ok=True)
+        with open(sticker_json, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        self.session_instruction_service._sticker_catalog_cache = ""
+        self.logger.info(f"注册表情包: id={sid}, path={path}, desc={description}")
+        return Ok({"id": sid, "desc": description, "path": path, "total": len(data)})
+
+    async def _asset_upload_sticker(self, kw: dict[str, Any]):
+        filename = str(kw.get("filename") or "")
+        data_base64 = kw.get("data_base64")
+        desc = str(kw.get("desc") or "")
+        """上传表情包图片并注册"""
+        import base64 as b64
+        import json as _json
+        import os as _os
+        fname = str(filename or "").strip()
+        description = str(desc or "").strip()
+        raw_b64 = str(data_base64 or "").strip()
+        if not fname:
+            return Err(SdkError("INVALID_INPUT: filename 不能为空"))
+        if not raw_b64:
+            return Err(SdkError("INVALID_INPUT: data_base64 不能为空"))
+        if not description:
+            return Err(SdkError("INVALID_INPUT: desc 不能为空"))
+        # 走 SDK 状态根（data_path）；__file__ 相对路径指向代码根，迁移后写不到存档
+        sticker_dir = str(self.data_path("sticker"))
+        sticker_json = str(self.data_path("sticker.json"))
+        _os.makedirs(sticker_dir, exist_ok=True)
+        # 处理 base64（可能带 data:image/...;base64, 前缀）
+        if "," in raw_b64 and raw_b64.startswith("data:"):
+            raw_b64 = raw_b64.split(",", 1)[1]
+        # 安全检查：文件名只保留安全字符
+        safe_name = "".join(c for c in fname if c.isalnum() or c in "._-")
+        if not safe_name:
+            safe_name = "sticker.png"
+        # 避免重名
+        base, ext = _os.path.splitext(safe_name)
+        if not ext:
+            ext = ".png"
+        dest_name = safe_name
+        counter = 1
+        while _os.path.exists(_os.path.join(sticker_dir, dest_name)):
+            dest_name = f"{base}_{counter}{ext}"
+            counter += 1
+        dest_path = _os.path.join(sticker_dir, dest_name)
+        try:
+            img_bytes = b64.b64decode(raw_b64)
+        except Exception as e:
+            return Err(SdkError(f"DECODE_FAILED: base64 解码失败: {e}"))
+        with open(dest_path, "wb") as f:
+            f.write(img_bytes)
+        # 注册到 sticker.json
+        try:
+            with open(sticker_json, "r", encoding="utf-8") as f:
+                data = _json.loads(f.read())
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        next_id = 1
+        while str(next_id) in data:
+            next_id += 1
+        sid = str(next_id)
+        data[sid] = {"desc": description, "path": dest_name}
+        with open(sticker_json, "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, indent=2)
+        self.session_instruction_service._sticker_catalog_cache = ""
+        self.logger.info(f"上传表情包: id={sid}, file={dest_name}, desc={description}")
+        return Ok({"id": sid, "desc": description, "path": dest_name, "total": len(data)})
+
+    # ── asset：机器人自有资源 ───────────────────────────────────
+    #
+    # 表情包目录与注意力读数。
+    #
+    # **对 agent 隐藏**（`agent_auto: False`）：这里是资源写入面（存图、写
+    # sticker.json），不该让模型自己动手。注意力**写入**不在这儿 —— 它在
+    # `config(action="attention_adjust")`，那条对 agent 是可见的。
+
+    @ui.action(id="asset", label=tr("entries.asset.name", default="表情包与注意力"), refresh_context=True)
+    @plugin_entry(
+        id="asset",
+        name=tr("entries.asset.name", default="表情包与注意力"),
+        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / attention。**此入口对 AI 隐藏。**"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "attention"],
+                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；attention=读群注意力状态"},
+            "image_path": {"type": "string", "description": "register_sticker：data/sticker/ 下的图片文件名"},
+            "filename": {"type": "string", "description": "upload_sticker：文件名（如 cat.png）"},
+            "data_base64": {"type": "string", "description": "upload_sticker：图片 base64（可带 data:image/...;base64, 前缀）"},
+            "desc": {"type": "string", "description": "register_sticker / upload_sticker：描述，LLM 按它挑图"},
+        }, "required": ["action"], "additionalProperties": False},
+        metadata={"agent_auto": False},
+    )
+    async def asset(self, action: str = "", **kw):
+        return await self._asset_dispatch(str(action or "").strip(), kw)
+
+    async def _asset_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "list_stickers":
+            return await self._asset_list_stickers(kw)
+        if action == "register_sticker":
+            return await self._asset_register_sticker(kw)
+        if action == "upload_sticker":
+            return await self._asset_upload_sticker(kw)
+        if action == "attention":
+            return await self._asset_attention(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: asset 不支持 {action!r}"
+            f"（可选 list_stickers/register_sticker/upload_sticker/attention）"))
+
+    # ── send：收发 ──────────────────────────────────────────────
+    #
+    # 出站消息 + backlog 处理。**对 agent 可见** —— 其它插件也经它发消息
+    # （`call_entry("qq_auto_reply:send", {"action": "group", ...})`）。
+
+    @plugin_entry(
+        id="send",
+        name=tr("entries.send.name", default="发送消息"),
+        description=tr("entries.send.description", default="主动发私聊/群聊消息，或处理待审阅消息。action 取 private / group / backlog_reply / backlog_review。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["private", "group", "backlog_reply", "backlog_review"],
+                       "description": "private=发私聊；group=发群聊；backlog_reply=回复一条待审阅消息；backlog_review=把某群标记为已处理"},
+            "target": {"type": "string", "description": "private：目标 QQ 号"},
+            "group_id": {"type": "string", "description": "group / backlog_review：群号"},
+            "message": {"type": "string", "description": "private / group：消息内容"},
+            "verbatim": {"type": "boolean", "default": False,
+                         "description": "private / group：true 则原文直发，不经过 LLM 生成"},
+            "source_type": {"type": "string", "description": "backlog_reply：来源类型"},
+            "target_id": {"type": "string", "description": "backlog_reply：目标 id"},
+            "sender_id": {"type": "string", "description": "backlog_reply：发件人（选填）"},
+            "message_id": {"type": "string", "description": "backlog_reply：原消息 id（选填）"},
+            "original_message": {"type": "string", "description": "backlog_reply：被回复的原文"},
+            "reply_text": {"type": "string", "description": "backlog_reply：要回复的内容"},
+        }, "required": ["action"], "additionalProperties": False},
+        metadata={"timeout": 90},
+    )
+    async def send(self, action: str = "", **kw):
+        return await self._send_dispatch(str(action or "").strip(), kw)
+
+    async def _send_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "private":
+            return await self._send_private(kw)
+        if action == "group":
+            return await self._send_group(kw)
+        if action == "backlog_reply":
+            return await self._send_backlog_reply(kw)
+        if action == "backlog_review":
+            return await self._send_backlog_review(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: send 不支持 {action!r}"
+            f"（可选 private/group/backlog_reply/backlog_review）"))
+
+    async def _send_private(self, kw: dict[str, Any]):
+        """给指定用户发一条私聊消息（内容由 LLM 生成，verbatim 则原文直发）。"""
+        target = str(kw.get("target") or "").strip()
+        message = str(kw.get("message") or "")
+        if not target or not message:
+            return Err(SdkError("INVALID_INPUT: private 需要 target 与 message"))
+        # JSON 来的 verbatim 可能是字符串（"false" 是真值），统一转 bool
+        return await self.proactive_message_service.send_private_message(
+            target=target, message=message, verbatim=bool(kw.get("verbatim", False)))
+
+    async def _send_group(self, kw: dict[str, Any]):
+        """给指定群发一条消息（内容由 LLM 生成，verbatim 则原文直发）。"""
+        group_id = str(kw.get("group_id") or "").strip()
+        message = str(kw.get("message") or "")
+        if not group_id or not message:
+            return Err(SdkError("INVALID_INPUT: group 需要 group_id 与 message"))
+        return await self.proactive_message_service.send_group_message(
+            group_id=group_id, message=message, verbatim=bool(kw.get("verbatim", False)))
+
+    async def _send_backlog_reply(self, kw: dict[str, Any]):
+        """把填写的内容直接回复到那条 QQ 消息（发送后顺带把该群标记为已处理）。"""
+        source_type = str(kw.get("source_type") or "")
+        target_id = str(kw.get("target_id") or "")
+        original_message = str(kw.get("original_message") or "")
+        reply_text = str(kw.get("reply_text") or "")
+        if not (source_type and target_id and original_message and reply_text):
+            return Err(SdkError(
+                "INVALID_INPUT: backlog_reply 需要 source_type / target_id / "
+                "original_message / reply_text"))
+        return await self.relay_service.send_backlog_reply_direct(
+            source_type=source_type,
+            target_id=target_id,
+            original_message=original_message,
+            reply_text=reply_text,
+            sender_id=str(kw.get("sender_id") or ""),
+            message_id=str(kw.get("message_id") or ""),
+        )
+
+    async def _send_backlog_review(self, kw: dict[str, Any]):
+        """把这个群当前所有待处理消息标记为已处理。"""
+        # 注意：_validate_group_id 是 raise 而不是返回 Err（targets.py），
+        # 这里沿用原行为未改 —— 非法 group_id 仍会以异常形式冒泡。
+        normalized_group_id = self._validate_group_id(str(kw.get("group_id") or ""))
+        return Ok(await self.backlog_service.mark_group_reviewed_payload(normalized_group_id))
+
+
+    # ── runtime：启停与连接方式 ─────────────────────────────────
+    #
+    # 三个动作合成一个入口，靠 `action` 分流。入口只做归一化，真实逻辑在 _runtime_* 里。
+
+    @plugin_entry(
+        id="runtime",
+        name=tr("entries.runtime.name", default="运行时控制"),
+        description=tr("entries.runtime.description", default="启停自动回复、切换连接方式。action 取 start / stop / set_mode。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["start", "stop", "set_mode"],
+                       "description": "start=启动自动回复；stop=停止；set_mode=切换连接方式（另需 mode）"},
+            "mode": {"type": "string", "enum": list(CONNECTION_MODES),
+                     "description": "仅 set_mode 用：napcat / napcat_forward / open_platform"},
+            "restart": {"type": "boolean", "default": True,
+                        "description": "仅 set_mode 用：正在运行时是否按新模式重连；关掉则只存设置"},
+        }, "required": ["action"], "additionalProperties": False},
+    )
+    async def runtime(self, action: str = "", **kw):
+        return await self._runtime_dispatch(str(action or "").strip(), kw)
+
+    async def _runtime_dispatch(self, action: str, kw: dict[str, Any]):
+        if action == "start":
+            return await self._runtime_start(kw)
+        if action == "stop":
+            return await self._runtime_stop(kw)
+        if action == "set_mode":
+            return await self._runtime_set_mode(kw)
+        return Err(SdkError(
+            f"BAD_ACTION: runtime 不支持 {action!r}（可选 start/stop/set_mode）"))
+
+    async def _runtime_start(self, kw: dict[str, Any]):
+        """开始监听 QQ 消息，并按当前配置自动回复或转发。"""
+        return await self.runtime_ops_service.start_auto_reply()
+
+    async def _runtime_stop(self, kw: dict[str, Any]):
+        """停止监听，不再继续自动回复或转发。"""
+        return await self.runtime_ops_service.stop_auto_reply()
+
+    async def _runtime_set_mode(self, kw: dict[str, Any]):
+        """切换连接方式。运行中则停掉重连，否则只存设置。"""
+        mode = str(kw.get("mode") or "").strip()
+        restart = bool(kw.get("restart", True))
+        if mode not in CONNECTION_MODES:
+            return Err(SdkError(
+                f"BAD_MODE: 未知的连接方式 {mode!r}（可选 {'/'.join(CONNECTION_MODES)}）"))
+
+        self._qq_settings["qq_connection_mode"] = mode
+        try:
+            await self.settings_service.persist_business_config()
+        except Exception as e:
+            self.logger.warning(f"切换连接方式后落盘失败: {e}")
+        self.settings_service.apply_runtime_settings(self._qq_settings)
+
+        # 没在跑就只存设置 —— 别顺手把机器人启动起来，那是 runtime.start 的事。
+        if not (restart and self._running):
+            return Ok({"status": "saved", "mode": mode, "restarted": False, "error": ""})
+
+        auto = await self._restart_auto_reply_runtime(True)
+        return Ok({"status": "reconnected" if auto["ok"] else "reconnect_failed",
+                   "mode": mode, "restarted": auto["ok"], "error": auto["error"]})
+
+    async def _stop_auto_reply_runtime(self, *, stop_napcat: bool):
+        await self.runtime_ops_service.stop_runtime(stop_napcat=stop_napcat)
 
     @staticmethod
+    def _auto_start_fields(auto: dict[str, Any]) -> dict[str, Any]:
+        """把 ``_restart_auto_reply_runtime`` 的结果摊成入口返回值里的固定三键。
+
+        开放平台绑定 / 一键部署 / 补写 OneBot 配置三条流程共用同一组键名，
+        前端不必按流程分支去猜字段。
+        """
+        return {"auto_started": bool(auto.get("ok")),
+                "auto_start_status": str(auto.get("status") or ""),
+                "auto_start_error": str(auto.get("error") or "")}
+
+    async def _restart_auto_reply_runtime(self, auto_start: bool) -> dict[str, Any]:
+        """把运行时收敛到"按当前设置在跑"的状态 —— 各条接入流程的收尾。
+
+        开放平台扫码绑定、NapCat 一键部署、扫码后补写 OneBot 配置都走这里。三者的共同点
+        是**设置刚变过，而运行时可能还挂着按旧设置建的连接**；对开放平台尤其致命，因为
+        绑定会把 AppSecret 轮换掉（见 ``qq_official_bind``）。
+
+        **必须丢弃连接对象重建。** ``create_onebot_connection`` 在**构造时**就把
+        app_id / client_secret 拷进了连接对象（``QQOpenPlatformConnection.__init__``），
+        而 ``_ensure_qq_client_initialized`` 见对象非空直接早退 —— 不丢的话，收尾这次
+        启动会拿**刚被轮换掉的旧密钥**去连，现象是"配置明明写对了却连不上"。
+
+        顺序：停 → 丢对象 → 启。``stop_napcat=False``：轮换的是开放平台凭据，与 NapCat
+        进程无关，不该顺手把它杀掉。
+
+        任何一步失败都不向上抛：凭据此刻已经写好了，启动失败是**运行状态**问题，不该让
+        整个绑定结果变成"失败"。
+        """
+        out: dict[str, Any] = {"ok": False, "status": "", "error": ""}
+        if not auto_start:
+            return out
+        try:
+            await self._stop_auto_reply_runtime(stop_napcat=False)
+        except Exception as e:
+            # 停不下来不阻断重建：对象照样丢，运行状态由下面的 start 收敛。
+            self.logger.warning(f"[绑定] 停止旧运行时失败（继续重建）: {e}")
+        self.qq_client = None
+        try:
+            # 必须走 service，不能调入口方法：`start_auto_reply` 这个入口已经并进
+            # `runtime`（见本文件 runtime 段），调 self.start_auto_reply() 只会抛
+            # AttributeError，然后被下面的 except 吞掉 —— 表现为"启动静默失败"。
+            started = await self.runtime_ops_service.start_auto_reply()
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {e}"
+            self.logger.warning(f"[绑定] 凭据已写入，但自动回复启动失败: {e}")
+            return out
+        if started.is_ok():
+            payload = started.value if isinstance(started.value, dict) else {}
+            out["ok"] = True
+            out["status"] = str(payload.get("status") or "")
+            self.logger.info(f"[绑定] 自动回复已启动（{out['status'] or 'ok'}）")
+        else:
+            out["error"] = str(started.error)
+            self.logger.warning(f"[绑定] 凭据已写入，但自动回复启动被拒: {started.error}")
+        return out
+
     @staticmethod
     def _sanitize_message_text(text: str, *, is_reply_to_bot: bool = False) -> str:
         import re
@@ -1864,18 +2360,3 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             relay_probability=relay_probability,
         )
 
-    @plugin_entry(
-        id="save_proactive_topics",
-        name=tr("entries.save_proactive_topics.name", default="保存主动发言话题"),
-        description=tr("entries.save_proactive_topics.description", default="保存主动发言话题列表，每行一个话题。"),
-        input_schema={"type": "object", "properties": {"topics": {"type": "array", "items": {"type": "string"}}}, "required": ["topics"], "additionalProperties": False},
-    )
-    async def save_proactive_topics(self, topics: list[str] = None, **_):
-        topic_list = [str(t).strip() for t in (topics or []) if str(t).strip()]
-        self._qq_settings["proactive_topics"] = topic_list
-        success = await self._persist_business_config()
-        self._emit_log("INFO", f"主动发言话题已更新: {len(topic_list)}条")
-        return Ok({"count": len(topic_list), "persisted": success})
-
-    async def _run_message_handler(self, message: Dict[str, Any]) -> None:
-        await self.handler_runtime_service.run_message_handler(message)

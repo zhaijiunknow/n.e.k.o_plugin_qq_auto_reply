@@ -754,8 +754,12 @@ class QQMessageDispatcher:
                     await self.plugin.settings_service.persist_business_config()
                 except Exception:
                     pass
-        # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline
-        if getattr(self.plugin, "reply_buffer_service", None):
+        # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline。
+        # 私聊缓冲可单独关闭 —— 关掉时这条直接走 pipeline，不排进任何等待队列。
+        _buffer = getattr(self.plugin, "reply_buffer_service", None)
+        if _buffer and _buffer.is_enabled(
+            getattr(self.plugin, "_qq_settings", {}) or {}, is_group=False
+        ):
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
             if self.plugin.reply_buffer_service.pre_buffer(
                 session_key,
@@ -791,7 +795,20 @@ class QQMessageDispatcher:
         outcome = await self.plugin.reply_pipeline.run(request)
         if outcome.action == "reply" and outcome.reply_text and current_message_id:
             await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
-        self.plugin._emit_log("INFO", f"私聊 pipeline 结果: action={outcome.action} text={'有' if outcome.reply_text else '空'}")
+        # 非回复结局补上原因：私聊只有一句 action=ignore 时，看不出是权限（发送者
+        # 不在信任列表）还是别的门控，排查代价很高。
+        _reason = ""
+        _permission = ""
+        if outcome.action != "reply":
+            _traces = getattr(outcome, "traces", None) or []
+            _meta = (getattr(_traces[0], "metadata", None) or {}) if _traces else {}
+            _reason = str(_meta.get("attention_gate_reason") or "")
+            _permission = str(_meta.get("permission_level") or "")
+        self.plugin._emit_log(
+            "INFO",
+            f"私聊 pipeline 结果: action={outcome.action} text={'有' if outcome.reply_text else '空'}"
+            + (f" reason={_reason or '-'} permission={_permission or '-'}" if outcome.action != "reply" else ""),
+        )
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 
     async def handle_group_message(

@@ -696,6 +696,17 @@ class QQSettingsService:
         mode = str(settings.get("qq_connection_mode") or "napcat").strip()
         self.plugin._emit_log("INFO", f"连接模式: {mode} | 监听地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''} | 策略: {self.plugin._strategy_mode}")
 
+    @staticmethod
+    def _default_onebot_url(mode: str) -> str:
+        """该模式的默认通信地址。
+
+        两者语义不同、默认值也不同：反向是 N.E.K.O 监听（``0.0.0.0:6199``），
+        正向是拨到 NapCat 的服务端（``127.0.0.1:3001``）。
+        """
+        if str(mode or "").strip() == "napcat_forward":
+            return "ws://127.0.0.1:3001"
+        return "ws://0.0.0.0:6199"
+
     def _enforce_attention_for_dynamic_mode(self) -> None:
         """neko_dynamic 模式下强制启用多群注意力，确保磁盘配置与运行时一致。"""
         strategy_mode = self.plugin.config_store._normalize_strategy_mode(
@@ -928,8 +939,21 @@ class QQSettingsService:
         qq_open_app_id = kwargs.get("qq_open_app_id")
         qq_open_client_secret = kwargs.get("qq_open_client_secret")
         if qq_connection_mode is not None:
-            self.plugin._qq_settings["qq_connection_mode"] = str(qq_connection_mode or "napcat").strip()
-            self.plugin._emit_log("INFO", f"连接模式已切换: {self.plugin._qq_settings['qq_connection_mode']}")
+            prev_mode = str(self.plugin._qq_settings.get("qq_connection_mode") or "").strip()
+            new_mode = str(qq_connection_mode or "napcat").strip()
+            self.plugin._qq_settings["qq_connection_mode"] = new_mode
+            self.plugin._emit_log("INFO", f"连接模式已切换: {new_mode}")
+            # 模式一换，``onebot_url`` 的**含义**就变了：反向是 N.E.K.O 的监听地址，
+            # 正向是 NapCat 服务端的拨号目标。沿用旧值几乎必然是错的 —— 典型后果是
+            # 反向模式下把 NapCat 的端口当成自己的监听口，启动时只报一句没头没脑的
+            # "每个套接字地址只允许使用一次"。本次没显式传 url 就重置成该模式默认值；
+            # 传了就说明用户明确要改，不动。
+            if onebot_url is None and new_mode != prev_mode:
+                default_url = self._default_onebot_url(new_mode)
+                self.plugin._qq_settings["onebot_url"] = default_url
+                self.plugin._emit_log(
+                    "INFO", f"连接模式已切换，通信地址重置为 {default_url}",
+                )
             # 这里**不**登记新模式：保存只改配置，旧连接还在跑（本方法的响应
             # 自己会报 reconnect_required）。登记发生在连接真正建立之后，见
             # runtime_ops_service 的 start_auto_reply——否则在那段可能无限长
@@ -938,6 +962,15 @@ class QQSettingsService:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:
             self.plugin._qq_settings["qq_open_client_secret"] = str(qq_open_client_secret or "").strip()
+        qq_open_sandbox_enabled = kwargs.get("qq_open_sandbox_enabled")
+        if qq_open_sandbox_enabled is not None:
+            # 与 app_id/secret 同族：就地写即可。它决定连哪套域名，而连接器那边是通过
+            # 零参回调读它的，所以保存后无需重建连接、下一次调用就生效。
+            self.plugin._qq_settings["qq_open_sandbox_enabled"] = bool(qq_open_sandbox_enabled)
+            self.plugin._emit_log(
+                "INFO",
+                "QQ 开放平台环境: " + ("沙箱" if qq_open_sandbox_enabled else "正式"),
+            )
         # qq_open_identity_probe_enabled 不在这里就地写：它和记忆开关同族，
         # 是「一打开就开始把别人的 ID 落进持久日志」的采集授权，必须走下面
         # 那套延迟发布（开启只在写盘成功后才对运行时可见）。
@@ -1058,6 +1091,16 @@ class QQSettingsService:
         locale = kwargs.get("locale")
         if locale is not None:
             self.plugin._qq_settings["locale"] = str(locale or "").strip()
+        # 回复缓冲的两个开关（群聊/私聊各自独立）。
+        # 注意：它们**必须在这里显式写出**。入口层用 `**_` 收参数，服务层又是逐个
+        # `kwargs.get(...)` 具名写回 —— 不写这段的话，前端发来的值会被一路静默丢掉，
+        # 开关看起来能点、实际从没存进去过。
+        group_buffer_enabled = kwargs.get("group_buffer_enabled")
+        if group_buffer_enabled is not None:
+            self.plugin._qq_settings["group_buffer_enabled"] = bool(group_buffer_enabled)
+        private_buffer_enabled = kwargs.get("private_buffer_enabled")
+        if private_buffer_enabled is not None:
+            self.plugin._qq_settings["private_buffer_enabled"] = bool(private_buffer_enabled)
         group_memory_before = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )

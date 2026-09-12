@@ -1,16 +1,20 @@
 """
-LLM 驱动的回复缓冲与发送延迟
+回复缓冲与发送延迟
 
-消息到达 → LLM 生成回复 + 等待时间 → 异步等待 → 发送
+消息到达 → LLM 生成回复 → 按正态分布取一个发送延迟 → 等待 → 发送
 等待期间新消息到达 → LLM 决定合并/替换/丢弃 → 重置计时
 
-LLM 通过 <wait>N</wait> 标签指定等待秒数（默认 0，立即发送）。
+**发送延迟由脚本取样，不再由 LLM 决定**（见 :meth:`QQReplyBufferService.sample_wait_seconds`）：
+让模型在正文里额外产出一个数字，既占生成预算、又要求它每次自己变随机，实测不稳定；
+在基数附近按正态分布取样只要一行，节奏反而更像人。``<wait>`` 标签连同提示词里那条指令
+一并移除 —— 插件里不再有任何解析或剥离它的代码。
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from typing import Any, Optional
 
@@ -80,10 +84,21 @@ class PendingReply:
 
 
 class QQReplyBufferService:
-    """LLM 驱动的异步回复缓冲"""
+    """异步回复缓冲。
 
-    DEFAULT_WAIT_SECONDS = 3.0      # 群聊默认等待 3 秒
-    DEFAULT_WAIT_PRIVATE = 6.0      # 私聊默认等待 6 秒（对方往往在连续输出）
+    合并/替换/丢弃的决策仍由 LLM 做；**发送延迟不是** —— 它由
+    :meth:`sample_wait_seconds` 按正态分布取样（见模块 docstring）。
+    """
+
+    DEFAULT_WAIT_SECONDS = 3.0      # 群聊延迟基数（正态分布中心）
+    DEFAULT_WAIT_PRIVATE = 6.0      # 私聊基数：对方往往在连续输出，等久一点
+
+    #: 延迟取样的标准差，取基数的一半左右 —— 约 2/3 的取值落在基数 ±σ 内。
+    WAIT_SIGMA_SECONDS = 1.5
+    WAIT_SIGMA_PRIVATE = 3.0
+    #: 夹住正态分布的尾巴：不夹的话偶尔会甩出一个十几秒的静默。
+    MIN_WAIT_SECONDS = 1.5
+    MAX_WAIT_SECONDS = 10.0
 
     @staticmethod
     def _participant_memory_at_receipt(pending: PendingReply) -> bool | None:
@@ -229,28 +244,45 @@ class QQReplyBufferService:
             for delivered in pending.draft_rows:
                 rows[:] = [row for row in rows if row is not delivered]
         self._settle_provisional(user_data, pending)
-    MAX_WAIT_SECONDS = 10.0         # 最多等 10 秒
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._pending: dict[str, PendingReply] = {}  # session_key → PendingReply
 
-    # ── 提取 LLM 指定的等待时间 ──
+    # ── 开关 ──
+
+    #: 两个独立开关的配置键。群聊与私聊**分开**控制，因为缓冲动机不同：
+    #: 群聊是为了不逐条抢话，私聊是为了等对方把话说完 —— 有人只想关掉其中一边。
+    GROUP_ENABLED_KEY = "group_buffer_enabled"
+    PRIVATE_ENABLED_KEY = "private_buffer_enabled"
 
     @classmethod
-    def extract_wait_seconds(cls, raw_text: str) -> tuple[str, float]:
-        """从 LLM 输出中提取 <wait>N</wait> 标签，返回 (清理后文本, 等待秒数)。"""
-        import re
-        match = re.search(r"<wait>(\d+(?:\.\d+)?)</wait>", raw_text, re.IGNORECASE)
-        if match:
-            try:
-                secs = float(match.group(1))
-                secs = max(0.0, min(cls.MAX_WAIT_SECONDS, secs))
-                clean = re.sub(r"<wait>\d+(?:\.\d+)?</wait>", "", raw_text, count=1, flags=re.IGNORECASE)
-                return clean.strip(), secs
-            except ValueError:
-                pass
-        return raw_text, cls.DEFAULT_WAIT_SECONDS
+    def is_enabled(cls, settings: Any, *, is_group: bool) -> bool:
+        """这类会话是否启用缓冲。
+
+        **缺键按"开"处理** —— 老配置里没有这两个键，默认开才与历史行为一致。
+        关掉之后该类会话不再排队等待：每条消息各自走一遍 pipeline 并立即投递。
+        """
+        key = cls.GROUP_ENABLED_KEY if is_group else cls.PRIVATE_ENABLED_KEY
+        return bool((settings or {}).get(key, True))
+
+    # ── 发送延迟：脚本取样，不问 LLM ──
+
+    @classmethod
+    def sample_wait_seconds(cls, *, private: bool = False) -> float:
+        """按正态分布取一个发送延迟（秒）。
+
+        原先由 LLM 在正文里用 ``<wait>N</wait>`` 指定 —— 那既占生成预算，又要求模型
+        每次自己"随机变化"，实测并不稳定。改成一行正态取样后节奏更像人，提示词里
+        那段要求也一并去掉了。
+
+        中心取该会话类型的基数（群聊 :attr:`DEFAULT_WAIT_SECONDS` / 私聊
+        :attr:`DEFAULT_WAIT_PRIVATE`），最后夹到 ``[MIN_WAIT_SECONDS, MAX_WAIT_SECONDS]``
+        —— 正态分布的尾巴理论无界，不夹会偶尔甩出十几秒的静默。
+        """
+        base = cls.DEFAULT_WAIT_PRIVATE if private else cls.DEFAULT_WAIT_SECONDS
+        sigma = cls.WAIT_SIGMA_PRIVATE if private else cls.WAIT_SIGMA_SECONDS
+        return max(cls.MIN_WAIT_SECONDS, min(cls.MAX_WAIT_SECONDS, random.gauss(base, sigma)))
 
     # ── 话题摘要 ──
 
@@ -280,6 +312,25 @@ class QQReplyBufferService:
         if removed is not None:
             getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
         return removed
+
+    def abandon_unfilled_placeholder(self, session_key: str) -> bool:
+        """pipeline 结束却没产出回复时，摘掉 pre_buffer 留下的占位。
+
+        ``pre_buffer`` 把 ``task is None`` 读作「pipeline 正在跑，回复马上到」，
+        所以占位会挡下后续消息、让它们跳过自己的 pipeline。但 pipeline 以
+        ``ignore``/``relay`` 收场时 ``schedule_reply`` 从不会被调用，占位永远
+        填不上——它变成一段惰性缓冲：后来的消息全被追加进去、谁也不生成回复，
+        只有总结轮兜底，而总结轮的决策判据与当初那次 ignore 完全相同，于是继续
+        ignore。摘掉它，下一条消息才能重新独立判定一次。
+
+        ``task`` 已存在（回复已排期）时不动——那是正常的等待中缓冲。
+        返回是否真的摘掉了。
+        """
+        pending = self._pending.get(session_key)
+        if pending is None or getattr(pending, "task", None) is not None:
+            return False
+        self._pop_pending(session_key)
+        return True
 
     def pre_buffer(
         self,
@@ -383,7 +434,6 @@ class QQReplyBufferService:
         history_backed=False：本轮回复来自直连 LLM fallback，共享会话历史
         没有本轮的 ai 行——反扫会误把上一条已投递回复记成未投递草稿。"""
         # 存入缓冲前去除 XML 标签（raw_text 可能含 <msg><text> 等）
-        import re
         clean_text = re.sub(r"<[^>]+>", "", str(reply_text or raw_text or "")).strip()
         if not clean_text:
             clean_text = str(reply_text or raw_text or "").strip()

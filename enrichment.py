@@ -1,6 +1,6 @@
 """Plugin-side message enrichment: expand reply/forward/voice/file + VLM.
 
-Moved out of the connector (``utils/connection/qq``): enrichment is business/LLM
+Moved out of the connector (``utils/connection/onebot``): enrichment is business/LLM
 pre-processing, so it lives in the plugin. The connector only does transport +
 normalization + send primitives; it exposes the *data* API (``get_msg``,
 ``get_forward_msg``, ``get_record``, ``get_*_file_url``, ``get_*_member_info``,
@@ -45,7 +45,7 @@ _IMAGE_FILE_EXTENSIONS = frozenset(
 class QQMessageEnricher:
     """Enhance a normalized QQ message for LLM consumption.
 
-    ``client`` is the connector (a ``QQConnectionBase``); it supplies the *data*
+    ``client`` is the connector (a ``OneBotConnectionBase``); it supplies the *data*
     API used to pull quoted / forwarded / voice / file content. ``image_describer``
     and ``voice_transcriber`` are the optional VLM / STT callbacks (business-owned).
     """

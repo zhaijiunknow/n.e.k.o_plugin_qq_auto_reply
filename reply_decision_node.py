@@ -53,7 +53,12 @@ class QQReplyDecisionNode:
             return QQReplyDecision(action="reply", permission_level=real_level if real_level != "none" else "open")
         permission_level = self.plugin.permission_mgr.get_permission_level(request.sender_id) if self.plugin.permission_mgr else "none"
         if permission_level == "none":
-            return QQReplyDecision(action="ignore", permission_level=permission_level)
+            # 带上原因，与群聊分支同口径：否则私聊只有一句 action=ignore，
+            # 排查时看不出是「发送者不在信任用户/管理员列表」而非别的门控。
+            return QQReplyDecision(
+                action="ignore", permission_level=permission_level,
+                attention_gate_reason="permission_none",
+            )
         if permission_level == "normal":
             relay_probability = self.plugin.permission_mgr.get_normal_relay_probability(request.sender_id) if self.plugin.permission_mgr else None
             return QQReplyDecision(action="relay", permission_level=permission_level, relay_probability=relay_probability)

@@ -81,9 +81,16 @@ def test_wait_returns_true_when_connected():
     assert service.get_startup_error() == ""  # clear_startup_error 已执行
 
 
-def test_ensure_started_no_dir_stays_silent_for_manual_launch():
-    """Unset napcat_directory → no error, no launch: the user may start NapCat manually,
-    and wait_for_onebot_ready still polls for that OneBot connection."""
+def test_ensure_started_no_dir_stays_silent_for_manual_launch(monkeypatch, tmp_path):
+    """Unset napcat_directory AND no bundled NapCat → no error, no launch: the user may
+    start NapCat manually, and wait_for_onebot_ready still polls for that connection.
+
+    自带位置必须指到空目录：真实插件目录里可能就装着 NapCat（一键部署装在那儿），
+    不隔离的话这条断言会随开发机上装没装而变 —— 那是在测环境，不是在测行为。
+    """
+    from plugin.plugins.qq_auto_reply import napcat_service as ns
+    monkeypatch.setattr(ns, "bundled_napcat_dir", lambda: tmp_path)
+
     plugin = _plugin(qq_settings={})
     service = _make_service(plugin)
 
@@ -93,6 +100,45 @@ def test_ensure_started_no_dir_stays_silent_for_manual_launch():
     assert service.napcat_process is None
     # Unconfigured is not a hard failure: wait_for_onebot_ready keeps polling for a manually started OneBot
     assert not service.has_hard_startup_error()
+
+
+def test_ensure_started_finds_bundled_napcat_without_config(monkeypatch, tmp_path):
+    """自带位置有启动器时，**未配置也要启动**。
+
+    一键部署把 NapCat 装到 ``<插件目录>/NapCat.Shell``，用户不填 napcat_directory
+    是正常状态。这里曾经按「设置项填没填」判断，导致那种情况永远不启动、且毫无报错
+    —— 表现就是"打开界面 NapCat 没起来"，没有任何线索可查。
+    """
+    from plugin.plugins.qq_auto_reply import napcat_service as ns
+    (tmp_path / "launcher-user.bat").write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(ns, "bundled_napcat_dir", lambda: tmp_path)
+
+    launched: list = []
+
+    class _Proc:
+        pid = 4242
+        returncode = None
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    async def _fake_exec(*args, **kwargs):
+        launched.append(args)
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    plugin = _plugin(qq_settings={})
+    service = _make_service(plugin)
+
+    asyncio.run(service.ensure_napcat_started())
+
+    assert launched, "自带 NapCat 且未配置 napcat_directory 时应当启动"
+    assert service.get_startup_error() == ""
+    assert service.napcat_process is not None
 
 
 def test_ensure_started_sets_hard_error_when_configured_dir_missing():

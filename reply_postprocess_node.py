@@ -12,19 +12,12 @@ class QQReplyPostprocessNode:
 
     @staticmethod
     def _clean_dynamic_prefix(text: str) -> str:
-        """Remove dynamic-format directives surrounding a literal prefix."""
+        """Remove the trailing opening fence from a literal prefix."""
         import re as _re
 
+        # 前缀末尾的 opening fence 要拿掉，否则 ```xml 会被当成可见的 pre-tool 文本。
         cleaned = _re.sub(
-            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
-            "",
-            text,
-            flags=_re.IGNORECASE,
-        )
-        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
-        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
-        cleaned = _re.sub(
-            r"```(?:xml)?\s*$", "", cleaned, flags=_re.IGNORECASE,
+            r"```(?:xml)?\s*$", "", text, flags=_re.IGNORECASE,
         )
         return cleaned.strip()
 
@@ -274,7 +267,8 @@ class QQReplyPostprocessNode:
             if known_pre_tool and reply_text.startswith(known_pre_tool)
             else ""
         )
-        wait_directive_text = (
+        # 真实 tool 边界之后的最终段：buffer 用它判断"是否空回复"、并作为汇总的输入。
+        post_tool_text = (
             reply_text[len(structural_pre_tool):]
             if structural_pre_tool
             else reply_text
@@ -293,10 +287,6 @@ class QQReplyPostprocessNode:
 
         if strategy_mode == "neko_dynamic" and reply_text:
             import re
-            # 先提取 <wait> 标签（XML 解析会忽略它），保存到 raw_reply_text 供 buffer 读取
-            wm = re.search(r"<wait>(\d+(?:\.\d+)?)</wait>", reply_text, re.IGNORECASE)
-            if wm:
-                pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
             # --- 提取独立标签（仅限 <msg> 之外的标签，不碰块内内容）---
             # 计算 <msg> 块区间，辅助判断标签是否在块外
             _msg_ranges = [(m.start(), m.end()) for m in re.finditer(r"<msg[\s>][\s\S]*?</msg>", reply_text, re.IGNORECASE)]
@@ -329,17 +319,17 @@ class QQReplyPostprocessNode:
                 reply_text = reply_text[:fw.start()] + reply_text[fw.end():]
                 reply_text = reply_text.strip()
 
-            # 刷新 wait_directive_text：上面可能剥离了 <feeling>/<emoji>/<mark>/<forward>，
+            # 刷新 post_tool_text：上面可能剥离了 <feeling>/<emoji>/<mark>/<forward>，
             # 用旧值会导致 buffer 把空 feeling 当成有待投递内容
-            wait_directive_text = reply_text
+            post_tool_text = reply_text
 
             # --- 处理 pre-tool 文本（core 在 tool-round start 捕获的模型文本）---
             explicit_prefix = ""
             parse_text = reply_text
             if structural_pre_tool:
                 # 这是 core 在真实 tool-round start 捕获的模型文本，不是
-                # dynamic XML 的格式前缀。完整 Markdown 围栏、<wait> 等
-                # 字面内容都属于助手输出，不能再用启发式清理器裁剪。
+                # dynamic XML 的格式前缀。完整 Markdown 围栏等字面内容都属于
+                # 助手输出，不能再用启发式清理器裁剪。
                 explicit_prefix = structural_pre_tool.strip()
                 parse_text = reply_text[len(structural_pre_tool):]
 
@@ -404,7 +394,7 @@ class QQReplyPostprocessNode:
                 reply_text=reply_text,
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
-                wait_directive_text=wait_directive_text,
+                post_tool_text=post_tool_text,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
@@ -421,7 +411,7 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
-                wait_directive_text=wait_directive_text,
+                post_tool_text=post_tool_text,
                 postprocess_reason="empty",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
                 feeling=feeling,
@@ -439,7 +429,7 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
-                wait_directive_text=wait_directive_text,
+                post_tool_text=post_tool_text,
                 postprocess_reason="llm_skip",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
                 feeling=feeling,
@@ -457,7 +447,7 @@ class QQReplyPostprocessNode:
             used_default_message=True,
             raw_reply_text=raw_reply_text,
             pre_tool_text=structural_pre_tool,
-            wait_directive_text=wait_directive_text,
+            post_tool_text=post_tool_text,
             postprocess_reason="default",
             used_fallback=bool(getattr(model_result, "used_fallback", False)),
             feeling=feeling,

@@ -75,6 +75,9 @@ class QQDashboardService:
                 "group_member_memory_enabled": bool(settings.get("group_member_memory_enabled", False)),
                 "private_participant_memory_enabled": bool(settings.get("private_participant_memory_enabled", False)),
                 "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
+                # 缺键按"开" —— 与 QQReplyBufferService.is_enabled 同一口径
+                "group_buffer_enabled": bool(settings.get("group_buffer_enabled", True)),
+                "private_buffer_enabled": bool(settings.get("private_buffer_enabled", True)),
                 "group_attention_max_score": float(settings.get("group_attention_max_score") if settings.get("group_attention_max_score") is not None else 10.0),
                 "group_attention_focus_threshold": float(settings.get("group_attention_focus_threshold") if settings.get("group_attention_focus_threshold") is not None else 4.0),
                 "group_attention_focus_send_threshold": float(settings.get("group_attention_focus_send_threshold") if settings.get("group_attention_focus_send_threshold") is not None else 2.0),
@@ -118,25 +121,15 @@ class QQDashboardService:
         }
 
     async def build_dashboard_context(self) -> dict[str, Any]:
+        """仪表盘上下文。
+
+        **不在这里写 `actions`**：宿主的 `plugin/core/host.py` 会用
+        `{**context_payload, "actions": actions}` 把它整个覆盖成从 `@ui.action`
+        推导出来的那份，插件写的永远是死的。此前这里有一份手写清单，随着入口
+        合并悄悄漂移（还留着已删除的 `start_auto_reply`），现已移除。
+        """
         state = await self.build_dashboard_state()
-        return {
-            **state,
-            "actions": [
-                {"id": "init_config", "entry_id": "init_config"},
-                {"id": "save_settings", "entry_id": "save_settings"},
-                {"id": "refresh_actual_contacts", "entry_id": "refresh_actual_contacts"},
-                {"id": "add_trusted_user", "entry_id": "add_trusted_user"},
-                {"id": "list_identity_claims", "entry_id": "list_identity_claims"},
-                {"id": "bind_identity_account", "entry_id": "bind_identity_account"},
-                {"id": "unbind_identity_account", "entry_id": "unbind_identity_account"},
-                {"id": "remove_trusted_user", "entry_id": "remove_trusted_user"},
-                {"id": "set_user_nickname", "entry_id": "set_user_nickname"},
-                {"id": "add_trusted_group", "entry_id": "add_trusted_group"},
-                {"id": "remove_trusted_group", "entry_id": "remove_trusted_group"},
-                {"id": "start_auto_reply", "entry_id": "start_auto_reply"},
-                {"id": "stop_auto_reply", "entry_id": "stop_auto_reply"},
-            ],
-        }
+        return {**state}
 
     async def open_ui(self):
         return Ok(self._build_open_ui_payload(available=True))
@@ -213,7 +206,10 @@ class QQDashboardService:
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
         qq_open_identity_probe_enabled: Optional[bool] = None,
+        qq_open_sandbox_enabled: Optional[bool] = None,
         local_stt_url: Optional[str] = None,
+        group_buffer_enabled: Optional[bool] = None,
+        private_buffer_enabled: Optional[bool] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -253,7 +249,10 @@ class QQDashboardService:
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
                 qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
+                qq_open_sandbox_enabled=qq_open_sandbox_enabled,
                 local_stt_url=local_stt_url,
+                group_buffer_enabled=group_buffer_enabled,
+                private_buffer_enabled=private_buffer_enabled,
             )
         except ValueError as exc:
             message = str(exc)

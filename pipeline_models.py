@@ -287,7 +287,9 @@ class QQReplyOutcome:
     used_fallback: bool = False
     raw_reply_text: str | None = None
     pre_tool_text: str = ""
-    wait_directive_text: str | None = None
+    #: 真实 tool 边界之后的最终段（原名 wait_directive_text，随 <wait> 功能一并改名）：
+    #: buffer 用它判断"是否空回复"，并作为汇总的输入。
+    post_tool_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
     emoji_reaction_id: str = ""

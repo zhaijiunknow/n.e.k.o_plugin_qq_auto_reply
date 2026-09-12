@@ -107,7 +107,7 @@ def test_group_persist_policy_decoupled_from_turn_recall():
 
 def test_open_platform_group_mentions_distinguish_bot_from_other_users():
     QQOpenPlatformConnection = pytest.importorskip(
-        "utils.connection.qq.qq_open_plat"
+        "utils.connection.onebot.qq_open_plat"
     ).QQOpenPlatformConnection
 
     conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)

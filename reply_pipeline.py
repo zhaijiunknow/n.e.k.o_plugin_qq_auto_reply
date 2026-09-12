@@ -22,6 +22,27 @@ class QQReplyPipelineRunner:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    def _abandon_placeholder(self, request: QQReplyRequest, action: str) -> None:
+        """非回复结局（ignore/relay）后，摘掉 ``pre_buffer`` 留下的未填充占位。
+
+        这类结局不会调 ``schedule_reply``，占位就永远填不上；留着它会挡住后续
+        消息——那些消息被追加进占位、跳过自己的 pipeline，而总结轮的判定判据
+        与本次一模一样，于是同样不回复。摘掉后下一条消息能重新独立判定。
+        详见 ``QQReplyBufferService.abandon_unfilled_placeholder``。"""
+        buffer_service = getattr(self.plugin, "reply_buffer_service", None)
+        if buffer_service is None:
+            return
+        session_key = self.plugin._build_session_key(
+            sender_id=request.sender_id,
+            is_group=bool(request.is_group),
+            group_id=request.group_id if request.is_group else None,
+        )
+        if buffer_service.abandon_unfilled_placeholder(session_key):
+            self.plugin._emit_log(
+                "DEBUG",
+                f"[Buffer] {action} 结局，摘除未填充的预缓冲占位: {session_key}",
+            )
+
     async def run(self, request: QQReplyRequest) -> QQReplyOutcome:
         decision = self._run_decision(request)
         decision_trace = QQPipelineStageTrace(
@@ -45,9 +66,12 @@ class QQReplyPipelineRunner:
             },
         )
         if decision.action == "ignore":
+            self._abandon_placeholder(request, decision.action)
             return QQReplyOutcome(action="ignore", traces=[decision_trace])
         if decision.action == "relay":
-            return await self._run_relay(request, decision, decision_trace)
+            outcome = await self._run_relay(request, decision, decision_trace)
+            self._abandon_placeholder(request, decision.action)
+            return outcome
 
         context = await self._run_context(request, decision)
         model_result = await self._run_model(context)
@@ -299,9 +323,17 @@ class QQReplyPipelineRunner:
 
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
-        if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
-            # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
-            raw = getattr(outcome, "wait_directive_text", None)
+        # 缓冲可按群聊/私聊分别关闭；关掉的那一类走正常投递，不再排队等待。
+        buffer_on = bool(
+            self.plugin.reply_buffer_service
+            and self.plugin.reply_buffer_service.is_enabled(
+                getattr(self.plugin, "_qq_settings", {}) or {},
+                is_group=bool(getattr(request, "is_group", False)),
+            )
+        )
+        if not skip_buffer and buffer_on and request and delivery_plan and delivery_plan.blocks:
+            # 取真实 tool 边界之后的最终段：pre-tool 里的内容不该参与"是否空回复"判定。
+            raw = getattr(outcome, "post_tool_text", None)
             if raw is None:
                 raw = (outcome.raw_reply_text if outcome else "") or ""
                 structural_pre_tool = str(
@@ -309,15 +341,10 @@ class QQReplyPipelineRunner:
                 )
                 if structural_pre_tool and raw.startswith(structural_pre_tool):
                     raw = raw[len(structural_pre_tool):]
-            raw = str(raw or "")
-            # postprocess 直接携带 sanitizer 后、真实 tool 边界之后的最终段；
-            # 因此 hidden/literal pre-tool 内的 <wait> 都不能成为 buffer 指令。
-            clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
-            # 默认等待加随机抖动（±40%），避免每次都一样
-            if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:
-                import random
-                wait_sec = max(1.5, wait_sec * random.uniform(0.6, 1.4))
-            # 私聊默认等更久（对方在讲故事/连续输出）
+            clean = str(raw or "").strip()
+            # 发送延迟由脚本按正态分布取样 —— 与提示词无关，模型不参与
+            wait_sec = QQReplyBufferService.sample_wait_seconds(
+                private=not bool(request.is_group))
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
             visible_text = delivered_blocks_text(delivery_plan.blocks)
             # 检查是否有实际内容（text/record/sticker/poke/emoji 任一非空即有效）
@@ -601,9 +628,8 @@ class QQReplyPipelineRunner:
         """解析表情包 ID 到文件路径。"""
         import json
         import os
-        sticker_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json",
-        )
+        # 走 SDK 状态根（data_path）；__file__ 相对路径指向代码根，迁移后读不到存档
+        sticker_path = self.plugin.data_path("sticker.json")
         try:
             with open(sticker_path, "r", encoding="utf-8") as f:
                 sticker_data = json.loads(f.read())
@@ -615,7 +641,7 @@ class QQReplyPipelineRunner:
         img_path = info.get("path", "")
         if not img_path:
             return ""
-        full_path = os.path.join(os.path.dirname(sticker_path), "sticker", img_path)
+        full_path = sticker_path.parent / "sticker" / img_path
         if os.path.exists(full_path):
             return f"file://{full_path}"
         return img_path

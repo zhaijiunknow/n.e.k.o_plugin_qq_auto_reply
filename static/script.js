@@ -71,7 +71,7 @@ const pluginId = 'qq_auto_reply';
 
         async function initConfig() {
             try {
-                const payload = await callPlugin('init_config', {});
+                const payload = await callPlugin('config', {action:'init'});
                 applyDashboardState(payload);
             } catch (error) {
                 showToast(error.message || t('ui.toast.load_failed', '加载失败'));
@@ -93,7 +93,7 @@ const pluginId = 'qq_auto_reply';
 
         async function confirmStep1GuideModal() {
             try {
-                await callPlugin('save_settings', { guide_step_napcat_done: true });
+                await callPlugin('config', {action:'save',  guide_step_napcat_done: true });
                 await reloadDashboard();
                 closeStep1GuideModal();
                 showToast(t('ui.toast.saved', '设置已保存'));
@@ -279,7 +279,7 @@ const pluginId = 'qq_auto_reply';
 
         async function refreshQrcode() {
             state.qrcodeLoaded = true;
-            const payload = await callPlugin('sync_qrcode', {});
+            const payload = await callPlugin('deploy', {action:'qrcode_sync'});
             applyDashboardState(payload);
         }
 
@@ -604,7 +604,8 @@ const pluginId = 'qq_auto_reply';
                 return;
             }
             try {
-                await callPlugin('send_backlog_reply_direct', {
+                await callPlugin('send', {
+                    action: 'backlog_reply',
                     source_type: String(item.source_type || ''),
                     target_id: String(item.target_id || ''),
                     sender_id: String(item.sender_id || ''),
@@ -819,7 +820,7 @@ const pluginId = 'qq_auto_reply';
 
         async function loadBacklogSummary() {
             try {
-                const payload = await callPlugin('get_backlog_summary', {});
+                const payload = await callPlugin('query', {action:'backlog_summary'}, {});
                 const data = payload?.value || payload?.data || payload || {};
                 state.backlogSummary = data;
                 renderBacklogSummary();
@@ -847,7 +848,7 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('backlog-review-button').disabled = false;
             renderBacklogSummary();
             try {
-                const payload = await callPlugin('get_group_backlog_detail', { group_id: normalizedGroupId });
+                const payload = await callPlugin('query', {action:'backlog_detail',  group_id: normalizedGroupId });
                 state.backlogDetail = payload?.value || payload?.data || payload || null;
                 renderBacklogDetail();
             } catch (error) {
@@ -866,7 +867,7 @@ const pluginId = 'qq_auto_reply';
                 return;
             }
             try {
-                const payload = await callPlugin('mark_group_backlog_reviewed', { group_id: normalizedGroupId });
+                const payload = await callPlugin('send', { action: 'backlog_review', group_id: normalizedGroupId });
                 const data = payload?.value || payload?.data || payload || {};
                 state.backlogSummary = {
                     ...(state.backlogSummary || {}),
@@ -899,7 +900,7 @@ const pluginId = 'qq_auto_reply';
 
         async function persistBacklogLabels(options = {}) {
             const { successMessage = t('ui.toast.saved', '设置已保存') } = options;
-            await callPlugin('save_settings', {
+            await callPlugin('config', {action:'save', 
                 backlog_labels: buildBacklogLabelsPayload(),
             });
             await reloadDashboard();
@@ -926,7 +927,7 @@ const pluginId = 'qq_auto_reply';
                     if (!isMaskedTokenPlaceholder(tokenValue)) {
                         args.token = tokenValue;
                     }
-                    await callPlugin('save_settings', args);
+                    await callPlugin('config', {action:'save', ...args});
                     await reloadDashboard();
                     await loadBacklogSummary();
                     showToast(t('ui.toast.saved', '设置已保存'));
@@ -939,13 +940,13 @@ const pluginId = 'qq_auto_reply';
         }
         async function refreshContacts() {
             try {
-                const refreshed = await callPlugin('refresh_actual_contacts', {});
+                const refreshed = await callPlugin('trust', {action:'refresh_contacts'}, {});
                 applyDashboardState(refreshed);
                 showToast(t('ui.toast.refreshed', '联系人已刷新'));
             } catch (error) { showToast(error.message || t('ui.toast.refresh_failed', '刷新失败')); }
         }
         async function reloadDashboard() {
-            const payload = await callPlugin('get_dashboard_state', {});
+            const payload = await callPlugin('query', {action:'dashboard'}, {});
             applyDashboardState(payload);
             return payload;
         }
@@ -1057,7 +1058,7 @@ const pluginId = 'qq_auto_reply';
             }
             try {
                 const payload = { qq_number: qqNumber, level, nickname };
-                await callPlugin('add_trusted_user', payload);
+                await callPlugin('trust', {action:'user_add', ...payload});
                 await reloadDashboard();
                 closeEntityForm();
                 showToast(t('ui.toast.saved', '设置已保存'));
@@ -1066,7 +1067,7 @@ const pluginId = 'qq_auto_reply';
         async function saveGroup(groupId, level) {
             try {
                 const payload = { group_id: groupId, level };
-                await callPlugin('add_trusted_group', payload);
+                await callPlugin('trust', {action:'group_add', ...payload});
                 optimisticUpsertGroup({ group_id: groupId, level });
                 renderList();
                 renderBacklogSummary();
@@ -1082,10 +1083,10 @@ const pluginId = 'qq_auto_reply';
                 const item = items[index];
                 if (!item) return;
                 if (state.currentTab === 'users') {
-                    await callPlugin('remove_trusted_user', { qq_number: item.qq });
+                    await callPlugin('trust', {action:'user_remove',  qq_number: item.qq });
                     await reloadDashboard();
                 } else {
-                    await callPlugin('remove_trusted_group', { group_id: item.group_id });
+                    await callPlugin('trust', {action:'group_remove',  group_id: item.group_id });
                     optimisticRemoveGroup(item.group_id);
                     renderList();
                     renderBacklogSummary();
@@ -1122,13 +1123,13 @@ const pluginId = 'qq_auto_reply';
             const runtimeRunning = !!(state.dashboard && state.dashboard.runtime && state.dashboard.runtime.auto_reply_running);
             try {
                 if (runtimeRunning) {
-                    await callPlugin('stop_auto_reply', {});
-                    await callPlugin('save_settings', { guide_step_runtime_done: false });
+                    await callPlugin('runtime', {action:'stop'});
+                    await callPlugin('config', {action:'save',  guide_step_runtime_done: false });
                     await reloadDashboard();
                     showToast(t('ui.toast.stopped', '自动回复已停止'));
                 } else {
-                    await callPlugin('start_auto_reply', {});
-                    await callPlugin('save_settings', { guide_step_runtime_done: true });
+                    await callPlugin('runtime', {action:'start'});
+                    await callPlugin('config', {action:'save',  guide_step_runtime_done: true });
                     await reloadDashboard();
                     showToast(t('ui.toast.started', '自动回复已启动'));
                 }

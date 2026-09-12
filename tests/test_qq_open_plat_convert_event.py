@@ -19,7 +19,7 @@ actually comes from.
 
 import pytest
 
-QQOpenPlatformConnection = pytest.importorskip("utils.connection.qq.qq_open_plat").QQOpenPlatformConnection
+QQOpenPlatformConnection = pytest.importorskip("utils.connection.onebot.qq_open_plat").QQOpenPlatformConnection
 
 
 def _connection() -> QQOpenPlatformConnection:

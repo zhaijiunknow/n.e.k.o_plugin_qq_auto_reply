@@ -1,4 +1,4 @@
-"""`adjust_group_attention` entry: positive delta boosts, negative consumes, zero no-ops."""
+"""`config(action="attention_adjust")`: positive delta boosts, negative consumes, zero no-ops."""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +33,7 @@ def _plugin(attention=None):
 
 
 async def _adjust(plugin, gid, delta):
-    return await plugin.adjust_group_attention(group_id=gid, delta=delta)
+    return await plugin.config(action="attention_adjust", group_id=gid, delta=delta)
 
 
 def test_positive_delta_boosts():

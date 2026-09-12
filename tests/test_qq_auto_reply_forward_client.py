@@ -1,6 +1,6 @@
 """Unit tests for the forward WebSocket connection (napcat_forward).
 
-Covers QQClient's forward branch: dial URL / auth, receive -> normalization,
+Covers OneBotClient's forward branch: dial URL / auth, receive -> normalization,
 ``call_action`` echo correlation, connect/disconnect state, and the
 ``_make_qq_connection`` mode dispatch. The reverse mode (``websockets.serve``)
 and the open-platform channel are not covered here; see their own regression
@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-QQClient = pytest.importorskip("utils.connection.qq.qq_client").QQClient
+OneBotClient = pytest.importorskip("utils.connection.onebot.onebot_client").OneBotClient
 
 
 class _FakeWS:
@@ -45,8 +45,8 @@ class _FakeWS:
         return _gen()
 
 
-def _make_forward_client(*, onebot_url: str = "ws://127.0.0.1:3001", token: str = "") -> QQClient:
-    client = QQClient(onebot_url=onebot_url, token=token, direction="forward")
+def _make_forward_client(*, onebot_url: str = "ws://127.0.0.1:3001", token: str = "") -> OneBotClient:
+    client = OneBotClient(onebot_url=onebot_url, token=token, direction="forward")
     # Skip the async login-info fetch on first connect so no background task lingers.
     client._self_id = "10001"
     return client
@@ -323,7 +323,7 @@ def _plugin_stub(*, mode: str):
 def test_make_qq_connection_dispatches_napcat_forward():
     plugin = _plugin_stub(mode="napcat_forward")
     client = plugin._make_qq_connection()
-    assert isinstance(client, QQClient)
+    assert isinstance(client, OneBotClient)
     assert client.direction == "forward"
     assert client.mode == "napcat_forward"
 
@@ -331,7 +331,7 @@ def test_make_qq_connection_dispatches_napcat_forward():
 def test_make_qq_connection_defaults_to_reverse():
     plugin = _plugin_stub(mode="napcat")
     client = plugin._make_qq_connection()
-    assert isinstance(client, QQClient)
+    assert isinstance(client, OneBotClient)
     assert client.direction == "reverse"
     assert client.mode == "napcat"
 

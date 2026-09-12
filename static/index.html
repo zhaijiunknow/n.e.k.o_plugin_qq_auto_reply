@@ -26,6 +26,15 @@ h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
     <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
     <div class="wrap">
+        <a class="card" href="status.html">
+            <div class="icon">◉</div>
+            <h2 data-i18n="ui.index.status.title">一键部署</h2>
+            <p>
+                <span data-i18n="ui.index.status.desc1">自动下载并配置 NapCat</span><br>
+                <span data-i18n="ui.index.status.desc2">启动后出登录二维码，扫码即用</span>
+            </p>
+            <span class="tag tag-ok" data-i18n="ui.index.status.tag">自动化</span>
+        </a>
         <a class="card" href="napcat.html?v=3" onclick="go('napcat'); return false;">
             <div class="icon">N</div>
             <h2>NapCat</h2>
@@ -37,7 +46,7 @@ h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
         </a>
-        <a class="card" href="open_platform.html?v=3" onclick="go('open_platform'); return false;">
+        <a class="card" href="open_platform.html?v=4" onclick="go('open_platform'); return false;">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -71,7 +80,7 @@ function go(mode) {
         return;
     }
     localStorage.setItem('qq_connection_mode', mode);
-    location.href = mode === 'napcat' ? 'napcat.html?v=3' : 'open_platform.html?v=3';
+    location.href = mode === 'napcat' ? 'napcat.html?v=3' : 'open_platform.html?v=4';
 }
 </script>
 </body>

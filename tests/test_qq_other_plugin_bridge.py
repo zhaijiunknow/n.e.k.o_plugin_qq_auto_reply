@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
 
 def _new_plugin() -> QQAutoReplyPlugin:
@@ -83,46 +84,77 @@ async def test_broadcast_swallows_errors():
 
 # ── 发送：其它插件 call_entry 到 qq_auto_reply 的发送入口 ─────────────────
 
-def test_send_entries_are_exposed():
-    """qq_auto_reply 必须暴露其它插件可 call_entry 的发送入口。"""
-    for name in ("send_group_proactive_message", "send_private_proactive_message",
+def test_send_entry_is_exposed_with_the_four_actions():
+    """其它插件 call_entry 的是**一个** `send` 入口，动作由 action 参数选。"""
+    assert callable(getattr(QQAutoReplyPlugin, "send"))
+    meta = getattr(QQAutoReplyPlugin.send, EVENT_META_ATTR)
+    actions = meta.input_schema["properties"]["action"]["enum"]
+    assert set(actions) == {"private", "group", "backlog_reply", "backlog_review"}
+    # 老入口必须彻底消失，不留兼容别名
+    for gone in ("send_group_proactive_message", "send_private_proactive_message",
                  "send_backlog_reply_direct"):
-        assert callable(getattr(QQAutoReplyPlugin, name)), name
+        assert not hasattr(QQAutoReplyPlugin, gone), gone
 
 
-async def test_send_group_proactive_message_entry_invokes_service():
-    """另一个插件 call_entry 触发 send_group_proactive_message 时，会真的调发送服务。"""
+async def test_send_group_invokes_service():
+    """call_entry("qq_auto_reply:send", {"action": "group", ...}) → 真的调群发服务。"""
     plugin = _new_plugin()
     plugin.proactive_message_service = SimpleNamespace(
         send_group_message=AsyncMock(return_value={"message_id": "sent-1"}),
     )
-    result = await plugin.send_group_proactive_message("123", "你好")
+    result = await plugin.send(action="group", group_id="123", message="你好")
+
     plugin.proactive_message_service.send_group_message.assert_awaited_once_with(
-        group_id="123", message="你好", verbatim=False,
-    )
-    # 该入口直接把发送服务的结果透传出去（其它插件的 call_entry 拿到它）
+        group_id="123", message="你好", verbatim=False)
+    # 该入口把发送服务的结果原样透传（其它插件的 call_entry 拿到它）
     assert result == {"message_id": "sent-1"}
 
 
-async def test_send_private_proactive_message_entry_invokes_service():
+async def test_send_private_invokes_service():
     plugin = _new_plugin()
     plugin.proactive_message_service = SimpleNamespace(
         send_private_message=AsyncMock(return_value={}),
     )
-    await plugin.send_private_proactive_message("888", "私聊你好")
+    await plugin.send(action="private", target="888", message="私聊你好")
+
     plugin.proactive_message_service.send_private_message.assert_awaited_once_with(
-        target="888", message="私聊你好", verbatim=False,
-    )
+        target="888", message="私聊你好", verbatim=False)
 
 
-async def test_send_group_proactive_verbatim_forwards_flag():
+async def test_send_group_verbatim_forwards_flag():
     """verbatim=true 时应把开关透传给发送服务（原文直发，不经 LLM 生成）。"""
     plugin = _new_plugin()
     plugin.proactive_message_service = SimpleNamespace(
         send_group_message=AsyncMock(return_value={"status": "sent", "verbatim": True, "message_id": "m-1"}),
     )
-    result = await plugin.send_group_proactive_message("123", "原文直发", verbatim=True)
+    result = await plugin.send(action="group", group_id="123", message="原文直发", verbatim=True)
+
     plugin.proactive_message_service.send_group_message.assert_awaited_once_with(
-        group_id="123", message="原文直发", verbatim=True,
-    )
+        group_id="123", message="原文直发", verbatim=True)
     assert result == {"status": "sent", "verbatim": True, "message_id": "m-1"}
+
+
+async def test_send_verbatim_string_is_coerced():
+    """JSON 来的 verbatim 可能是字符串 —— "false" 是真值，必须统一转 bool。"""
+    plugin = _new_plugin()
+    plugin.proactive_message_service = SimpleNamespace(
+        send_group_message=AsyncMock(return_value={}),
+    )
+    await plugin.send(action="group", group_id="1", message="x", verbatim="false")
+
+    assert plugin.proactive_message_service.send_group_message.await_args.kwargs["verbatim"] is True  # 非空字符串 → True，与旧行为一致
+
+
+async def test_send_rejects_missing_required_params():
+    plugin = _new_plugin()
+    plugin.proactive_message_service = SimpleNamespace(send_group_message=AsyncMock())
+
+    r = await plugin.send(action="group", group_id="", message="")
+    assert r.is_err() and "INVALID_INPUT" in str(r.error)
+    plugin.proactive_message_service.send_group_message.assert_not_awaited()
+
+
+async def test_send_rejects_unknown_action():
+    plugin = _new_plugin()
+    r = await plugin.send(action="broadcast")
+    assert r.is_err() and "BAD_ACTION" in str(r.error)

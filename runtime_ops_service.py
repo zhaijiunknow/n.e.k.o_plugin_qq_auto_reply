@@ -102,16 +102,46 @@ class QQRuntimeOpsService:
             # 退避重试，连接状态由状态指示灯/SSE 体现，start 只管把管线拉起来。
             return Ok({"status": "started"})
         except Exception as e:
-            self.plugin._emit_log("ERROR", f"启动失败: {e}")
-            startup_error = self.plugin.napcat_service.get_startup_error()
-            if not startup_error:
-                startup_error = str(e)
+            hint = self._bind_conflict_hint(e)
+            self.plugin._emit_log(
+                "ERROR", f"启动失败: {e}{(' —— ' + hint) if hint else ''}",
+            )
+            if hint:
+                startup_error = f"{hint}（原始错误: {e}）"
+            else:
+                startup_error = self.plugin.napcat_service.get_startup_error() or str(e)
             self.plugin.napcat_service.set_startup_error(startup_error)
             self.plugin.logger.exception("Failed to start auto reply")
             # 反向 serve 失败等真实异常走这里；正向 connect() 不 raise（后台重试）。
             return Err(SdkError(
                 f"START_ERROR: {self.plugin.i18n.t('errors.start_connect_failed', default='反向 WS 服务器已启动 ({url})，但没有 NapCat 客户端连接: {error}', url=self.plugin.qq_client.onebot_url, error=startup_error)}"
             ))
+
+    #: 端口占用的错误码：Windows 是 WSAEADDRINUSE(10048)，POSIX 是 EADDRINUSE(98)。
+    _ADDR_IN_USE = frozenset({10048, 98})
+
+    def _bind_conflict_hint(self, exc: Exception) -> str:
+        """把"端口已被占用"翻译成人话；不是这种情况返回空串。
+
+        反向模式下最常见的成因是 ``onebot_url`` 沿用了正向的目标地址 —— 那是 NapCat
+        的服务端口，于是 N.E.K.O 去监听 NapCat 正在监听的端口。原生报错只会说
+        "每个套接字地址(协议/网络地址/端口)只允许使用一次"，从字面完全看不出这层，
+        而用户在两种模式之间切换时几乎必然踩到。
+
+        正向模式不提示：它只拨出不监听，出现端口冲突是别的原因。
+        """
+        if not isinstance(exc, OSError) or getattr(exc, "errno", None) not in self._ADDR_IN_USE:
+            return ""
+        mode = str((self.plugin._qq_settings or {}).get("qq_connection_mode") or "napcat").strip()
+        if mode == "napcat_forward":
+            return ""
+        url = str(getattr(self.plugin.qq_client, "onebot_url", "") or "") or "(空)"
+        return (
+            f"反向模式需要的是 N.E.K.O 自己的**监听**地址（默认 ws://0.0.0.0:6199），"
+            f"当前填的是 {url}，该端口已被占用。若这个端口是 NapCat 在监听"
+            f"（正向模式的目标地址通常是 ws://127.0.0.1:3001），两者会直接冲突 —— "
+            f"反向模式请改用 ws://0.0.0.0:6199，或把连接模式切回正向。"
+        )
 
     async def stop_auto_reply(self):
         if not self.plugin._running and not self.plugin._message_task:

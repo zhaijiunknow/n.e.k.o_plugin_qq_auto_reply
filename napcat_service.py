@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
+import shutil
 from pathlib import Path
 from typing import Any, Callable
+
+from . import napcat_platform
+
+
+def bundled_napcat_dir() -> Path:
+    """插件自带 NapCat 的默认位置：``<插件包目录>/NapCat.Shell``。
+
+    一键部署下载来的 NapCat 装在这里，打包链路（``prepare_nuitka_plugins``）也按这个
+    位置把它搬进分发包 —— 两边约定同一个路径，所以部署完不需要用户再填
+    ``napcat_directory``。
+    """
+    return Path(__file__).parent / "NapCat.Shell"
+
+
+def _copy_over(src: Path, dst: Path) -> None:
+    """把 src 覆盖拷贝到 dst，父目录按需创建。
+
+    走 ``asyncio.to_thread`` 调用：``shutil.copyfile`` 是阻塞 IO，即使文件很小也不该
+    占着事件循环。
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
 
 
 class QQNapcatService:
@@ -34,7 +56,10 @@ class QQNapcatService:
     ):
         self._get_settings = get_settings or (lambda: {})
         self._get_qq_client = get_qq_client or (lambda: None)
-        self._config_dir = Path(config_dir) if config_dir else (Path(__file__).parent / "static")
+        # ``config_dir`` 的语义是**插件包目录**（SDK 的 config_dir 是 plugin_dir 的别名），
+        # 静态资源在它下面的 static/。这里曾经多带一层 "static"，会让二维码落到
+        # <包>/static/static/cache/ 而前端读 <包>/static/cache/ 读不到。
+        self._config_dir = Path(config_dir) if config_dir else Path(__file__).parent
         self.logger = logger
         self._emit_log = emit_log or (lambda level, msg: None)
         # Process / error state owned by the transport layer.
@@ -94,10 +119,13 @@ class QQNapcatService:
             if configured_path.is_file():
                 return configured_path.parent
             return configured_path
-        # The bundled NapCat.Shell ships with the plugin, which now lives in the
-        # market (no longer built in); this connector does not bundle it, so an
-        # empty napcat_directory simply means "not configured" -- do not derive a
-        # path from this module's relocated location (see test_prepare_nuitka).
+        # 未配置时回落到插件自带位置（一键部署装在那里，打包也搬那里）。
+        # 只在**确实存在启动器**时才认：否则维持"未配置"语义，让
+        # ensure_napcat_started 保持"用户可能自己开着 NapCat"的宽容行为 ——
+        # 返回一个空目录会让它报一个其实没发生的硬错误。
+        bundled = bundled_napcat_dir()
+        if napcat_platform.find_launcher(bundled) is not None:
+            return bundled
         return Path()
 
     def get_napcat_launch_target(self) -> Path:
@@ -107,18 +135,16 @@ class QQNapcatService:
         return self.get_napcat_directory()
 
     def find_napcat_launcher(self) -> Path | None:
+        """定位 NapCat 启动器。
+
+        ``napcat_directory`` 按历史契约可以直接指向启动器文件本身，也可以指目录 ——
+        前者原样返回，后者交给 :mod:`napcat_platform` 按平台挑候选（Windows 是 .bat
+        系列，POSIX 是 ``napcat.mjs``）。
+        """
         launch_target = self.get_napcat_launch_target()
         if launch_target.is_file():
             return launch_target
-        root = launch_target
-        candidates = [
-            root / "launcher-user.bat",
-            root / "launcher.bat",
-        ]
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
-        return None
+        return napcat_platform.find_launcher(launch_target)
 
     def _build_missing_launcher_error(self) -> str:
         launch_target = self.get_napcat_launch_target()
@@ -223,6 +249,47 @@ class QQNapcatService:
         except Exception:
             return ""
 
+    # ── 登录二维码 ────────────────────────────────────────────
+
+    def get_napcat_qrcode_path(self) -> Path:
+        """NapCat 写登录二维码的位置。
+
+        未登录时 NapCat 会不断重写这个文件（实测 147×147 PNG），登录成功后就不再更新。
+        """
+        return self.get_napcat_directory() / "cache" / "qrcode.png"
+
+    def _qrcode_static_path(self) -> Path:
+        """插件静态目录里的二维码副本 —— 前端通过 ``ui/cache/qrcode.png`` 读它。
+
+        ``_config_dir`` 是**插件包目录**（SDK 的 ``config_dir`` 是 ``plugin_dir`` 的
+        兼容别名），所以落点是 ``<包>/static/cache/qrcode.png``，与
+        ``runtime_service.build_runtime_status()`` 的判断和静态 UI 的挂载点一致。
+        """
+        return self._config_dir / "static" / "cache" / "qrcode.png"
+
+    async def sync_napcat_qrcode_into_static(self) -> bool:
+        """把 NapCat 当前的登录二维码拷进插件静态目录；返回是否有可用二维码。
+
+        二维码的源在 NapCat 那边，插件静态目录是前端唯一能取到的路径（``runtime_service``
+        靠 ``static/cache/qrcode.png`` 是否存在来决定要不要给前端 ``qrcode_url``）。
+        NapCat 未登录期间每次都会重写源文件，所以这里每次都覆盖拷贝。
+
+        **源不存在时会一并删掉副本**：否则登录成功后界面会一直挂着一张早就失效的二维码，
+        而用户无从判断它已经没用了 —— 清掉后前端会显示「暂未检测到二维码」。
+        """
+        src = self.get_napcat_qrcode_path()
+        dst = self._qrcode_static_path()
+        try:
+            if not src.is_file():
+                if dst.is_file():
+                    await asyncio.to_thread(dst.unlink)
+                return False
+            await asyncio.to_thread(_copy_over, src, dst)
+            return True
+        except Exception as e:
+            self._emit_log("DEBUG", f"同步登录二维码失败: {e}")
+            return False
+
     async def _read_napcat_webui_lines(self) -> list[str]:
         """Return NapCat WebUI access info."""
         url = self.get_webui_url()
@@ -236,12 +303,16 @@ class QQNapcatService:
         # and the frontend gets no clear failure reason.
         if self.has_hard_startup_error():
             return
-        configured_path = self.get_configured_napcat_path()
-        if not configured_path:
-            # napcat_directory unset -> don't auto-start NapCat (user may launch it
-            # manually). This is not a hard failure: wait_for_onebot_ready still polls
-            # for a manually started OneBot, so don't set a hard error that would
-            # prevent ensure_napcat from completing that connection.
+        # 判「有没有可用的 NapCat」而不是「设置项填没填」。插件自带 NapCat 时
+        # （一键部署装到 <插件目录>/NapCat.Shell）用户根本没填 napcat_directory，
+        # 但目录是可用的 —— 按设置项判会让这种情况**永远不启动**且毫无报错，
+        # 表现就是"打开界面 NapCat 没起来"。
+        #
+        # ⚠️ 不能写成 ``if not self.get_napcat_directory()``：``pathlib.Path`` 没有
+        # ``__bool__``，空 Path 也是 truthy，那个判据恒不成立（实测踩过）。
+        # 只有"既没配置、自带位置也找不到启动器"才静默返回 —— 那是用户可能自己
+        # 开着 NapCat 的情况，仍不是硬失败：wait_for_onebot_ready 会继续轮询它。
+        if not self.get_configured_napcat_path() and self.find_napcat_launcher() is None:
             return
         if self._napcat_process and self._napcat_process.returncode is None:
             return
@@ -260,17 +331,16 @@ class QQNapcatService:
             return
         try:
             show_window = bool((self._get_settings() or {}).get("show_napcat_window", True))
-            creationflags = 0
-            if show_window:
-                creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
-            else:
-                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            # 平台差异全在 launch_spec 里：Windows 走 cmd.exe + creationflags，
+            # POSIX 走 node + start_new_session。这里不再无条件传 creationflags
+            # —— 那个 kwarg 在 POSIX 上非法，会让启动直接抛错。
+            spec = napcat_platform.launch_spec(launcher, show_window=show_window)
             self._napcat_process = await asyncio.create_subprocess_exec(
-                "cmd.exe", "/c", str(launcher),
-                cwd=str(launcher.parent),
+                *spec.argv,
+                cwd=str(spec.cwd),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
-                creationflags=creationflags,
+                **spec.kwargs,
             )
             self._manages_napcat_process = True
             self.clear_startup_error()
@@ -295,14 +365,22 @@ class QQNapcatService:
             return
         pid = process.pid
         try:
-            # Use /T to kill the process tree recursively so NapCat and its cmd
-            # wrapper both terminate.
-            kill_proc = await asyncio.create_subprocess_exec(
-                "taskkill", "/PID", str(pid), "/T", "/F",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            )
-            await kill_proc.wait()
-            self._emit_log("INFO", f"NapCat 进程树已终止 PID={pid}")
+            argv = napcat_platform.taskkill_argv(pid)
+            if argv:
+                # Windows：/T 连带子进程一起杀 —— NapCat 会拉起 QQ 本体，只杀
+                # cmd 包装器会留下孤儿进程占着端口。
+                kill_proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                await kill_proc.wait()
+                self._emit_log("INFO", f"NapCat 进程树已终止 PID={pid}")
+            elif napcat_platform.signal_terminate(pid):
+                # POSIX：``launch_spec`` 用了 start_new_session，子进程即进程组组长，
+                # 整组发 SIGTERM。同样是为了带走 NapCat 拉起的 QQ 本体。
+                self._emit_log("INFO", f"NapCat 进程组已终止 PID={pid}")
+            else:
+                raise RuntimeError("该平台没有可用的终止手段")
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"Failed to kill NapCat process tree (PID={pid}): {e}")
@@ -313,4 +391,9 @@ class QQNapcatService:
         try:
             await asyncio.wait_for(process.wait(), timeout=3.0)
         except asyncio.TimeoutError:
-            pass
+            # SIGTERM 没送走（POSIX 上 NapCat 带着子进程时常见）：补一发 SIGKILL。
+            if not napcat_platform.is_windows() and napcat_platform.signal_terminate(pid, force=True):
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    pass

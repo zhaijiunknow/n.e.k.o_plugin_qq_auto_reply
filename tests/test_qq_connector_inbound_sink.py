@@ -11,13 +11,13 @@ import asyncio
 
 import pytest
 
-_qq_conn = pytest.importorskip("utils.connection.qq")
-QQClient = _qq_conn.QQClient
+_qq_conn = pytest.importorskip("utils.connection.onebot")
+OneBotClient = _qq_conn.OneBotClient
 QQOpenPlatformConnection = _qq_conn.QQOpenPlatformConnection
 
 
-def _make_onebot_client() -> QQClient:
-    return QQClient(onebot_url="ws://0.0.0.0:6199", emit_log=lambda *a, **k: None)
+def _make_onebot_client() -> OneBotClient:
+    return OneBotClient(onebot_url="ws://0.0.0.0:6199", emit_log=lambda *a, **k: None)
 
 
 async def test_set_inbound_sink_receives_dispatched_message():
@@ -61,7 +61,7 @@ async def test_set_inbound_sink_none_clears():
 
 
 async def test_open_platform_connector_has_same_hook():
-    # QQOpenPlatformConnection also inherits the hook from QQConnectionBase.
+    # QQOpenPlatformConnection also inherits the hook from OneBotConnectionBase.
     conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
     received: list = []
 
@@ -78,8 +78,8 @@ async def test_open_platform_connector_has_same_hook():
 def test_sink_attached_before_connect_via_factory():
     # The factory builds the concrete connection; a plugin sets the sink on it
     # after creation. Sanity: the returned object exposes set_inbound_sink.
-    from utils.connection.qq import create_qq_connection
+    from utils.connection.onebot import create_onebot_connection
 
-    conn = create_qq_connection({"qq_connection_mode": "napcat"})
+    conn = create_onebot_connection({"qq_connection_mode": "napcat"})
     assert hasattr(conn, "set_inbound_sink")
     assert conn.inbound_sink is None

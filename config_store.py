@@ -82,6 +82,10 @@ class QQAutoReplyConfigStore:
             # QQ 开放平台
             "qq_open_app_id": "",
             "qq_open_client_secret": "",
+            # 沙箱环境开关。未上线的机器人只存在于沙箱域名下：连正式环境会握手成功、
+            # 拿到 READY，但**平台侧一直显示离线、也收不到任何事件**。默认关（已上线的
+            # 机器人走正式环境）。
+            "qq_open_sandbox_enabled": False,
             # R11 身份作用域取证开关（qq_open_plat.py 顶部有完整说明）。默认
             # 关：打开后每条群/私聊事件都会往持久日志里写一行标识符字段，只有
             # 维护者做那次取证时才需要。
@@ -134,6 +138,10 @@ class QQAutoReplyConfigStore:
             # 回溯补回参数
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
+            # 回复缓冲：群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
+            # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。
+            "group_buffer_enabled": True,
+            "private_buffer_enabled": True,
             # 疲劳系统参数（KiraAI-style 动态行为约束）
             "fatigue_enabled": True,
             "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
