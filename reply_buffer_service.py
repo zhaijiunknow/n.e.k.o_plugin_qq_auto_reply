@@ -90,12 +90,14 @@ class QQReplyBufferService:
     :meth:`sample_wait_seconds` 按正态分布取样（见模块 docstring）。
     """
 
-    DEFAULT_WAIT_SECONDS = 3.0      # 群聊延迟基数（正态分布中心）
-    DEFAULT_WAIT_PRIVATE = 6.0      # 私聊基数：对方往往在连续输出，等久一点
+    # 群聊等得**更久**：一屋子人在聊，晚一点插话更自然，也留出"话题会不会自己
+    # 走开"的观察窗口。私聊是两个人面对面，对方正等着你回，拖久了像已读不回。
+    DEFAULT_WAIT_SECONDS = 6.0      # 群聊延迟基数（正态分布中心）
+    DEFAULT_WAIT_PRIVATE = 3.0      # 私聊基数
 
     #: 延迟取样的标准差，取基数的一半左右 —— 约 2/3 的取值落在基数 ±σ 内。
-    WAIT_SIGMA_SECONDS = 1.5
-    WAIT_SIGMA_PRIVATE = 3.0
+    WAIT_SIGMA_SECONDS = 3.0
+    WAIT_SIGMA_PRIVATE = 1.5
     #: 夹住正态分布的尾巴：不夹的话偶尔会甩出一个十几秒的静默。
     MIN_WAIT_SECONDS = 1.5
     MAX_WAIT_SECONDS = 10.0

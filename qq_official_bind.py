@@ -198,7 +198,8 @@ async def poll_bind_result(session: BindSession, *, host: str = BIND_HOST) -> di
     """轮询一次绑定结果。
 
     返回 ``{"status": "pending"|"completed"|"expired"|"none", ...}``；``completed`` 时
-    额外带 ``appid`` 与已解密的 ``secret``。
+    额外带 ``appid``、已解密的 ``secret``，以及 **``user_openid``**（扫码者本人的
+    openid —— 调用方用它把扫码者设成管理员）。
     """
     data = await _post_json(f"https://{host}{POLL_PATH}", {"task_id": session.task_id})
     payload = data.get("data")
@@ -225,6 +226,9 @@ async def poll_bind_result(session: BindSession, *, host: str = BIND_HOST) -> di
         return out
     out["appid"] = appid
     out["secret"] = decrypt_bot_secret(encrypted, session.bind_key)
+    # 扫码者本人的 openid。开放平台拿不到 QQ 号、只给 openid，而这是唯一一个
+    # "扫码的人是谁"由平台背书的时刻 —— 调用方拿它把扫码者设成管理员。
+    out["user_openid"] = str(payload.get("user_openid") or "").strip()
     return out
 
 

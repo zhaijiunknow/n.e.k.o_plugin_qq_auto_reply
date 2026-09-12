@@ -28,7 +28,7 @@ def test_keyword_boost_ratio_forwarded_to_dashboard():
     inst._qq_settings = {}
     inst._emit_log = lambda *a, **k: None
 
-    asyncio.run(inst.config(action="save", attention_keyword_boost_ratio=2.5))
+    asyncio.run(inst.config_entry(action="save", attention_keyword_boost_ratio=2.5))
 
     assert dash.received.get("attention_keyword_boost_ratio") == 2.5
 
@@ -41,7 +41,7 @@ def test_keyword_boost_ratio_passed_with_other_params():
     inst._qq_settings = {}
     inst._emit_log = lambda *a, **k: None
 
-    asyncio.run(inst.config(action="save", 
+    asyncio.run(inst.config_entry(action="save", 
         attention_message_boost=0.3,
         attention_keyword_boost_ratio=1.8,
         attention_honeymoon_seconds=60,

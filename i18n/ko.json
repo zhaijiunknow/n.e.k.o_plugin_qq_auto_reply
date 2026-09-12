@@ -610,5 +610,14 @@
   "entries.deploy.name": "연결과 배포",
   "entries.deploy.description": "NapCat 시작, 원클릭 배포, OneBot 설정 재기록, 오픈 플랫폼 QR 바인딩과 봇 전환.",
   "entries.asset.name": "스티커와 주의력",
-  "entries.asset.description": "스티커 목록 읽기·쓰기와 주의력 조회."
+  "entries.asset.description": "스티커 목록 읽기·쓰기와 주의력 조회.",
+  "ui.napcat.status.shortcuts": "빠른 설정",
+  "ui.status.autostart": "시작 시 자동 실행",
+  "ui.status.autostart_on": "플러그인 시작 시 NapCat 을 실행하고 자동 응답을 켭니다",
+  "ui.qrcode.which_account": "「냥냥이가 로그인할 QQ 번호」로 스캔하세요",
+  "ui.qrcode.chat_with_other": "그다음 「다른 QQ 번호」로 말을 걸어 주세요 — 자기 번호로는 자기에게 보낼 수 없습니다",
+  "ui.openplat.scan_hint": "「냥냥이와 대화할 QQ 번호」로 스캔하세요",
+  "ui.openplat.bind_desc": "스캔하면 플랫폼이 자격 증명을 발급하고 설정에 자동으로 기록됩니다. 연결 페이지에서 새 봇을 만들거나 기존 봇을 선택할 수 있습니다.",
+  "ui.status.flow_napcat": "흐름: NapCat 배포 → 스캔 로그인 → 설정 자동 기록 및 자동 응답 시작. <b>아래 「신뢰 목록」에서 자기 QQ 번호를 관리자로 설정하세요</b> — 관리자만 「주인」이고 나머지는 친구입니다.",
+  "ui.status.flow_openplat": "흐름: 스캔하여 바인딩 → 자격 증명 기록 및 자동 응답 시작. <b>스캔한 사람이 자동으로 관리자가 됩니다</b>. 다른 사람의 그룹 openid 는 QQ 번호와 일치하지 않으므로, 같은 사람으로 취급하려면 직접 「신원 병합」을 해야 합니다."
 }

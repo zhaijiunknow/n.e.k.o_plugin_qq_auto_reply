@@ -33,7 +33,7 @@ def _plugin(attention=None):
 
 
 async def _adjust(plugin, gid, delta):
-    return await plugin.config(action="attention_adjust", group_id=gid, delta=delta)
+    return await plugin.config_entry(action="attention_adjust", group_id=gid, delta=delta)
 
 
 def test_positive_delta_boosts():

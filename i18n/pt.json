@@ -610,5 +610,14 @@
   "entries.deploy.name": "Conexão e implantação",
   "entries.deploy.description": "Iniciar o NapCat, implantação em um clique, reescrever a configuração do OneBot, vínculo por QR e troca de bot.",
   "entries.asset.name": "Stickers e atenção",
-  "entries.asset.description": "Leitura e gravação do catálogo de stickers, e leitura da atenção."
+  "entries.asset.description": "Leitura e gravação do catálogo de stickers, e leitura da atenção.",
+  "ui.napcat.status.shortcuts": "Configuração rápida",
+  "ui.status.autostart": "Início automático",
+  "ui.status.autostart_on": "Iniciar o NapCat e ativar a resposta automática ao iniciar o plugin",
+  "ui.qrcode.which_account": "Escaneie com a conta QQ com que a garota-gato deve entrar",
+  "ui.qrcode.chat_with_other": "Depois converse com ela de outra conta QQ — a própria conta não pode enviar mensagem para si",
+  "ui.openplat.scan_hint": "Escaneie com a conta QQ com que você quer conversar com a garota-gato",
+  "ui.openplat.bind_desc": "Após escanear, a plataforma emite as credenciais e elas são gravadas na configuração automaticamente. A página de conexão permite criar um bot novo ou escolher um existente.",
+  "ui.status.flow_napcat": "Fluxo: implantar o NapCat → escanear para entrar → a configuração é gravada e a resposta automática inicia.<b>Lembre-se de definir o seu próprio número QQ como administrador na lista de confiança</b> — só um administrador conta como dono; os outros são apenas amigos.",
+  "ui.status.flow_openplat": "Fluxo: escanear para vincular → as credenciais são gravadas e a resposta automática inicia; <b>quem escaneia vira administrador automaticamente</b>. Os openid de grupo das outras pessoas não correspondem a números QQ — faça a fusão de identidade manualmente para tratá-las como a mesma pessoa."
 }

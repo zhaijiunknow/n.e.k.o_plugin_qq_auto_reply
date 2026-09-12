@@ -56,8 +56,17 @@ class QQDashboardService:
                 ),
                 "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
-                "napcat_directory": str(napcat_dir),
+                # 暴露**用户配置的**值，不是解析后的路径。
+                #
+                # 这个字段在界面上是个可编辑输入框（占位符「留空使用内置」），
+                # `applySettings` 会把它填回去、保存时再原样提交。若这里给的是
+                # 解析结果，未配置时会得到 `str(Path())` == "."，于是被当作用户
+                # 显式填的目录存下来 —— 一键部署随即认定"目录里没有启动器"而拒绝
+                # 安装，且每开一次配置页保存一次就固化一次。
+                "napcat_directory": self.plugin.napcat_service.get_configured_napcat_path(),
+                # 是否存在仍按**解析后**的位置判断（那才是 NapCat 实际在哪）。
                 "napcat_directory_exists": napcat_dir.exists(),
+                "napcat_directory_resolved": str(napcat_dir),
                 "show_napcat_window": bool(settings.get("show_napcat_window", True)),
                 "reply_mode": self.plugin.config_store.normalize_reply_mode(settings.get("reply_mode")),
                 "show_onboarding": bool(settings.get("show_onboarding", True)),
@@ -76,6 +85,7 @@ class QQDashboardService:
                 "private_participant_memory_enabled": bool(settings.get("private_participant_memory_enabled", False)),
                 "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
                 # 缺键按"开" —— 与 QQReplyBufferService.is_enabled 同一口径
+                "auto_start_on_launch": bool(settings.get("auto_start_on_launch", False)),
                 "group_buffer_enabled": bool(settings.get("group_buffer_enabled", True)),
                 "private_buffer_enabled": bool(settings.get("private_buffer_enabled", True)),
                 "group_attention_max_score": float(settings.get("group_attention_max_score") if settings.get("group_attention_max_score") is not None else 10.0),
@@ -208,8 +218,10 @@ class QQDashboardService:
         qq_open_identity_probe_enabled: Optional[bool] = None,
         qq_open_sandbox_enabled: Optional[bool] = None,
         local_stt_url: Optional[str] = None,
+        auto_start_on_launch: Optional[bool] = None,
         group_buffer_enabled: Optional[bool] = None,
         private_buffer_enabled: Optional[bool] = None,
+        enable_group_attention: Optional[bool] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -251,8 +263,10 @@ class QQDashboardService:
                 qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
                 qq_open_sandbox_enabled=qq_open_sandbox_enabled,
                 local_stt_url=local_stt_url,
+                auto_start_on_launch=auto_start_on_launch,
                 group_buffer_enabled=group_buffer_enabled,
                 private_buffer_enabled=private_buffer_enabled,
+                enable_group_attention=enable_group_attention,
             )
         except ValueError as exc:
             message = str(exc)

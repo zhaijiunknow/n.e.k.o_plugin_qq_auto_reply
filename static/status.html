@@ -31,7 +31,7 @@ label.auto { font-size:13px; color:#4b5563; display:flex; align-items:center; ga
 #qrbox .empty { color:#94a3b8; font-size:13px; }
 .muted { color:#94a3b8; font-size:12px; }
 
-/* 连接方式：三张按钮卡片，当前生效的那张高亮 */
+/* 连接方式：按钮卡片，当前生效的那张高亮 */
 .modes { display:flex; gap:10px; flex-wrap:wrap; }
 button.mode { flex:1 1 170px; min-width:150px; text-align:left; background:#fff; color:#4b5563;
   border:2px solid #e8ecf1; border-radius:10px; padding:10px 13px; cursor:pointer;
@@ -70,30 +70,30 @@ ul.list .empty { color:#94a3b8; font-size:12px; padding:4px 0; }
     <h2 data-i18n="ui.status.mode">连接方式</h2>
     <div class="modes" id="modes">
       <button class="mode" data-mode="napcat">
-        <b data-i18n="ui.status.mode_napcat">NapCat（反向）</b>
-        <span data-i18n="ui.status.mode_napcat_hint">插件监听端口，NapCat 拨进来</span>
-      </button>
-      <button class="mode" data-mode="napcat_forward">
-        <b data-i18n="ui.status.mode_forward">NapCat（正向）</b>
-        <span data-i18n="ui.status.mode_forward_hint">插件拨到 NapCat 的服务端</span>
+        <b data-i18n="ui.status.mode_napcat">OneBot（NapCat）</b>
+        <span data-i18n="ui.status.mode_napcat_hint">插件监听端口，NapCat 启动后拨进来</span>
       </button>
       <button class="mode" data-mode="open_platform">
         <b data-i18n="ui.status.mode_openplat">QQ 开放平台</b>
         <span data-i18n="ui.status.mode_openplat_hint">官方 Bot API，不需要额外进程</span>
       </button>
     </div>
+
+    <!-- 流程小字 + 管理员提醒。两种模式的流程不同，按当前模式显示其中一条。
+         "配管理员"这步最容易漏：漏了的现象是"连上了、也收到消息了，但她一声不吭"。 -->
+    <div class="muted" style="margin-top:12px;line-height:1.8">
+      <span id="mode-hint-napcat" data-i18n="ui.status.flow_napcat">流程：部署 NapCat → 扫码登录 → 自动补写配置并启动自动回复。<b>记得在下方「信任名单」把自己的 QQ 号设为管理员</b> —— 管理员才是「主人」，其余人只是好友。</span>
+      <span id="mode-hint-openplat" style="display:none" data-i18n="ui.status.flow_openplat">流程：扫码绑定 → 自动写入凭据并启动自动回复，<b>扫码的人会自动成为管理员</b>。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。</span>
+    </div>
   </div>
 
-  <!-- 回复缓冲：群聊与私聊各自独立。关掉的那一类不再排队等待，每条消息立即投递 -->
+  <!-- 自启：整机级自动化开关 —— 开了之后每次插件启动都拉起 NapCat 并接上自动回复 -->
   <div class="card">
-    <h2 data-i18n="ui.status.buffer">回复缓冲</h2>
+    <h2 data-i18n="ui.status.autostart">开机自启</h2>
     <div class="muted" style="margin-bottom:10px;line-height:1.7">
-      开启时先压一小会儿再发（更自然）；关闭则每条消息各自判定、立即回复。
+      开启后每次插件启动都会自动拉起 NapCat 并启动自动回复，不必再手动点。
     </div>
-    <div style="display:flex;flex-direction:column;gap:6px">
-      <label class="auto"><input type="checkbox" id="buf-group"><span data-i18n="ui.status.buffer_group">群聊缓冲</span></label>
-      <label class="auto"><input type="checkbox" id="buf-private"><span data-i18n="ui.status.buffer_private">私聊缓冲</span></label>
-    </div>
+    <label class="auto"><input type="checkbox" id="autostart"><span data-i18n="ui.status.autostart_on">启动插件时自动拉起 NapCat 并开启自动回复</span></label>
   </div>
 
   <!-- NapCat / OneBot 那一套：部署 + 登录二维码。开放平台模式下整块隐藏 -->
@@ -110,6 +110,12 @@ ul.list .empty { color:#94a3b8; font-size:12px; padding:4px 0; }
 
   <div class="card">
     <h2 data-i18n="ui.qrcode.title">登录二维码</h2>
+    <!-- 这句放在码**上面**：得先读到再扫。扫错号的代价是"登录成功了，却发现
+         没人和她说话"。 -->
+    <div class="muted" style="margin-bottom:12px;line-height:1.8">
+      <span data-i18n="ui.qrcode.which_account">用「猫娘要登录的那个 QQ 号」扫码</span><br>
+      <span data-i18n="ui.qrcode.chat_with_other">然后用「另一个 QQ 号」去找她聊天 —— 她自己那个号没法跟自己聊</span>
+    </div>
     <div id="qrbox">
       <img id="qr" alt="QR" style="display:none">
       <div class="empty" id="qr-empty" data-i18n="ui.qrcode.empty">暂未检测到二维码，请先启动 NapCat。</div>
@@ -122,8 +128,9 @@ ul.list .empty { color:#94a3b8; font-size:12px; padding:4px 0; }
   <div id="sec-openplat" style="display:none">
   <div class="card">
     <h2 data-i18n="ui.status.bind">扫码绑定机器人</h2>
-    <div class="muted" style="margin-bottom:10px;line-height:1.7">
-      扫码后由平台下发凭据，自动写入配置并启动自动回复。连接页会让你选<b>创建新的机器人</b>还是<b>选择已有的机器人</b>。
+    <div class="muted" style="margin-bottom:10px;line-height:1.8">
+      <span data-i18n="ui.openplat.scan_hint">用「需要和猫娘交流的那个 QQ 号」扫码</span><br>
+      <span data-i18n="ui.openplat.bind_desc">扫码后由平台下发凭据并自动写入配置；连接页会让你选是「创建新的机器人」还是「选择已有的机器人」。</span>
     </div>
     <div class="row">
       <button id="btn-bind" data-i18n="ui.status.bind_btn">开始扫码绑定</button>
@@ -264,8 +271,15 @@ function applyMode(mode) {
   const openplat = mode === 'open_platform';
   /* 卡片高亮始终对齐真实值 —— 切换失败时可以靠它把 UI 滚回去 */
   document.querySelectorAll('#modes .mode').forEach(b => {
-    b.classList.toggle('active', b.dataset.mode === mode);
+    /* 这页只提供 OneBot / 开放平台两张卡。正向（napcat_forward）仍能从 NapCat
+       配置页切，落回这张页时归到 OneBot 那张 —— 否则两张都不亮，像没选。 */
+    const on = b.dataset.mode === 'napcat' ? mode !== 'open_platform' : b.dataset.mode === mode;
+    b.classList.toggle('active', on);
   });
+  const hintNapcat = document.getElementById('mode-hint-napcat');
+  const hintOpen = document.getElementById('mode-hint-openplat');
+  if (hintNapcat) hintNapcat.style.display = openplat ? 'none' : '';
+  if (hintOpen) hintOpen.style.display = openplat ? '' : 'none';
   if (mode === lastMode) return openplat;
   lastMode = mode;
   document.getElementById('sec-napcat').style.display = openplat ? 'none' : '';
@@ -282,21 +296,27 @@ async function load() {
   let d;
   try { d = await call('query', {action:'dashboard'}); }
   catch (e) { showErr('读取状态失败：' + ((e && e.message) ? e.message : e)); return; }
+  /* 每一段各自 try：页面刚打开时任何一段抛了都不该把后面全带下去 ——
+     那种"开页空白、点一下刷新才出来"的现象就是这么来的。 */
   const st = d.settings || {};
   const openplat = applyMode(st.qq_connection_mode || 'napcat');
-  /* 缺键按"开" —— 与后端 QQReplyBufferService.is_enabled 同一口径 */
-  document.getElementById('buf-group').checked = st.group_buffer_enabled !== false;
-  document.getElementById('buf-private').checked = st.private_buffer_enabled !== false;
+  const ast = document.getElementById('autostart');
+  if (ast) ast.checked = st.auto_start_on_launch === true;
   const rt = d.runtime || {};
-  if (!openplat) {
-    /* NapCat 登录二维码只对 OneBot 那套有意义 */
-    const qr = rt.qrcode_url || '';
-    const img = document.getElementById('qr');
-    img.style.display = qr ? '' : 'none';
-    if (qr) img.src = qr + '?_ts=' + Date.now();
-    document.getElementById('qr-empty').style.display = qr ? 'none' : '';
-  }
-  renderLists(d.permissions || {});
+  try {
+    if (!openplat) {
+      /* NapCat 登录二维码只对 OneBot 那套有意义 */
+      const qr = rt.qrcode_url || '';
+      const img = document.getElementById('qr');
+      if (img) {
+        img.style.display = qr ? '' : 'none';
+        if (qr) img.src = qr + '?_ts=' + Date.now();
+      }
+      const empty = document.getElementById('qr-empty');
+      if (empty) empty.style.display = qr ? 'none' : '';
+    }
+  } catch (e) { /* 二维码区失败不该挡住下面的名单 */ }
+  try { renderLists(d.permissions || {}); } catch (e) { /* 同上 */ }
   const err = rt.startup_error;
   if (err) showErr(err); else showErr('');
 }
@@ -351,22 +371,19 @@ async function startBind() {
 
 document.getElementById('btn-bind').addEventListener('click', startBind);
 
-/* ── 回复缓冲开关（群聊 / 私聊各自独立）───────────────────── */
-document.querySelectorAll('#buf-group, #buf-private').forEach(el => {
-  el.addEventListener('change', async () => {
-    el.disabled = true;
-    try {
-      await call('config', { action: 'save', ...(el.id === 'buf-group'
-        ? { group_buffer_enabled: el.checked }
-        : { private_buffer_enabled: el.checked }) });
-      showErr('');
-    } catch (e) {
-      showErr('保存回复缓冲开关失败：' + ((e && e.message) ? e.message : e));
-    } finally {
-      el.disabled = false;
-      await load();   /* 无论成败都按服务端真实值重画 —— 失败时勾选会退回去 */
-    }
-  });
+/* 自启开关。与缓冲开关同一写法：无论成败都重新 load()，失败时勾选会退回真实值。 */
+document.getElementById('autostart').addEventListener('change', async (e) => {
+  const el = e.target;
+  el.disabled = true;
+  try {
+    await call('config', { action: 'save', auto_start_on_launch: el.checked });
+    showErr('');
+  } catch (err) {
+    showErr('保存自启开关失败：' + ((err && err.message) ? err.message : err));
+  } finally {
+    el.disabled = false;
+    await load();
+  }
 });
 
 /* ── 切换连接方式 ──────────────────────────────────────────
@@ -448,14 +465,46 @@ if (window.UISSE && typeof UISSE.on === 'function') {
   });
 }
 
+/* ── 等扫码登录 ────────────────────────────────────────────
+   一键部署出码之后，用户还得拿手机扫 —— 这段时间没人盯着，以前得靠用户自己
+   想起来点「补写 OneBot 配置」。这里替用户盯着：每 5 秒问一次后端"登录了没"，
+   登录成功就由后端把收尾做完（补写配置 → 设自动登录 → 起自动回复）。
+   后端对同一个号有防重入，所以重复轮询不会反复重启 NapCat。 */
+let loginPollTimer = null;
+function stopLoginPoll(){ if (loginPollTimer) { clearInterval(loginPollTimer); loginPollTimer = null; } }
+function startLoginPoll(){
+  stopLoginPoll();
+  let asked = 0;
+  loginPollTimer = setInterval(async () => {
+    asked += 1;
+    let r;
+    try { r = await call('deploy', {action:'login_poll'}); } catch (e) { return; }
+    if (r.status === 'completed') {
+      stopLoginPoll();
+      deployLog('检测到登录成功（' + (r.uin || '?') + '）：已补写配置、设置自动登录并启动自动回复');
+      await load();
+    } else if (r.status === 'already') {
+      stopLoginPoll();          /* 已经收尾过了，别再打接口 */
+    } else if (asked % 12 === 0) {
+      deployLog('仍在等待扫码登录…');   /* 约每分钟提一次，免得日志刷屏 */
+    }
+  }, 5000);
+}
+
 document.getElementById('btn-deploy').addEventListener('click', async () => {
+  stopLoginPoll();
   busy('btn-deploy', true);
   document.getElementById('deploy-log').innerHTML = '';
   deployLog('开始一键部署（首次需要下载 NapCat，可能需要几分钟）…');
   try {
     const r = await call('deploy', {action:'one_click',  uin: document.getElementById('uin').value.trim() });
     deployLog(r.qrcode_ready ? '完成：二维码已就绪，请扫码登录' : '完成：暂未出现二维码，可稍后点「刷新二维码」');
-    if (r.needs_uin) deployLog('未填 QQ 号 —— 扫码登录成功后请点「补写 OneBot 配置」');
+    /* 登录成功后要补写配置、设自动登录并起自动回复 —— 以前这步要用户自己点
+       「补写 OneBot 配置」。现在开一个轮询替用户盯着，扫完就自动收尾。 */
+    if (r.needs_uin) {
+      deployLog('未填 QQ 号 —— 扫码登录后会自动收尾，不必手动点「补写 OneBot 配置」');
+      startLoginPoll();
+    }
     /* 自动回复的收尾结果单独报：反向模式下它是"先监听、等 NapCat 登录后自动接上"，
        所以此刻报"未启动"多半只是正向模式还没登录，不是部署失败。 */
     if (r.auto_started === true) deployLog('自动回复已启动（' + (r.auto_start_status || 'ok') + '）');
@@ -469,6 +518,7 @@ document.getElementById('btn-deploy').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-apply').addEventListener('click', async () => {
+  stopLoginPoll();   /* 手动补写了，轮询就别再收一次尾 */
   busy('btn-apply', true);
   deployLog('补写 OneBot 配置…');
   try {
@@ -482,8 +532,19 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
   } finally { busy('btn-apply', false); }
 });
 
-load();
-setAuto(true);
+(async () => {
+  await load();
+  setAuto(true);
+  /* 开页补一次二维码同步。`load()` 只读静态缓存里的那张码，而 NapCat 可能已经
+     换过码 —— 不补这一下，刚打开看到的可能是过期的二维码，得手动点「刷新二维码」。
+     开放平台那套没有登录码，跳过。 */
+  if (lastMode !== 'open_platform') {
+    try {
+      await call('deploy', {action: 'qrcode_sync'});
+      await load();
+    } catch (e) { /* 补同步失败不影响页面已经渲染出的内容 */ }
+  }
+})();
 </script>
 </body>
 </html>

@@ -635,5 +635,14 @@
   "entries.deploy.name": "Setup and deploy",
   "entries.deploy.description": "Start NapCat, one-click deploy, rewrite OneBot config, Open Platform QR binding and bot switching.",
   "entries.asset.name": "Stickers and attention",
-  "entries.asset.description": "Read and write the sticker catalog, and read attention state."
+  "entries.asset.description": "Read and write the sticker catalog, and read attention state.",
+  "ui.napcat.status.shortcuts": "Quick config",
+  "ui.status.autostart": "Auto-start",
+  "ui.status.autostart_on": "Start NapCat and enable auto-reply whenever the plugin starts",
+  "ui.qrcode.which_account": "Scan with the QQ account the catgirl should log in as",
+  "ui.qrcode.chat_with_other": "Then chat with her from a different QQ account — her own account cannot message itself",
+  "ui.openplat.scan_hint": "Scan with the QQ account you want to chat with the catgirl from",
+  "ui.openplat.bind_desc": "After scanning, the platform issues credentials and they are written to the config automatically. The connect page lets you create a new bot or pick an existing one.",
+  "ui.status.flow_napcat": "Flow: deploy NapCat → scan to log in → the plugin writes the config and starts auto-reply.<b>Remember to set your own QQ number as admin in the trust list below</b> — only an admin counts as the owner; everyone else is just a friend.",
+  "ui.status.flow_openplat": "Flow: scan to bind → credentials are written and auto-reply starts; <b>whoever scans becomes the admin automatically</b>. Other people's group openids do not match QQ numbers — merge their identity manually to treat them as the same person."
 }

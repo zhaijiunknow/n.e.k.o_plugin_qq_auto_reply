@@ -110,15 +110,24 @@ EXPECTED_ENTRIES = {"runtime", "config", "query", "send", "trust", "deploy", "as
 AGENT_HIDDEN = {"asset", "deploy"}
 
 
-def _plugin_entry_ids() -> set[str]:
+def _entry_attr_map() -> dict[str, str]:
+    """入口 id → 承载它的方法名。
+
+    **两者不必相同**，因为 `collect_entries` 是按属性名从实例上取处理函数的
+    （见下一条用例）。绝大多数据此一一对应，`config` 是个例外。
+    """
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
-    ids: set[str] = set()
-    for name in dir(QQAutoReplyPlugin):
-        meta = getattr(getattr(QQAutoReplyPlugin, name, None), EVENT_META_ATTR, None)
+    out: dict[str, str] = {}
+    for attr_name in dir(QQAutoReplyPlugin):
+        meta = getattr(getattr(QQAutoReplyPlugin, attr_name, None), EVENT_META_ATTR, None)
         if meta is not None and getattr(meta, "event_type", "") == "plugin_entry":
-            ids.add(str(meta.id))
-    return ids
+            out[str(meta.id)] = attr_name
+    return out
+
+
+def _plugin_entry_ids() -> set[str]:
+    return set(_entry_attr_map())
 
 
 def test_entry_surface_is_exactly_seven():
@@ -131,13 +140,39 @@ def test_entry_surface_is_exactly_seven():
     assert _plugin_entry_ids() == EXPECTED_ENTRIES
 
 
+def test_no_entry_name_shadows_a_base_class_instance_attribute():
+    """**入口方法名不能跟基类设的实例属性撞名。**
+
+    `collect_entries()`（plugin/sdk/shared/core/base.py:190）是按**属性名**
+    从实例上取处理函数的：`value = getattr(self, attr_name)`。而基类在
+    `__init__` 里设了 `self.config = PluginConfig(...)` —— 入口方法若叫 `config`，
+    handler 就会解析成那个 PluginConfig 对象，宿主报
+    `Entry 'config' must be 'async def'. Sync entries are not supported.`
+    而且**只在真机上暴露**：类层面的 `getattr` 一切正常，测试也全绿。
+    """
+    import inspect
+    import re
+
+    mro_src = "".join(
+        inspect.getsource(k) for k in QQAutoReplyPlugin.__mro__ if k is not object
+    )
+    assigned = set(re.findall(r"self\.([a-z_][a-z_0-9]*)\s*=", mro_src))
+
+    clashes = {eid: attr for eid, attr in _entry_attr_map().items() if attr in assigned}
+    assert not clashes, (
+        f"入口方法名与基类实例属性撞名（会把 handler 盖掉）：{clashes}。"
+        f"改方法名即可 —— 入口 id 与属性名不必相同。"
+    )
+
+
 def test_agent_hidden_entries_carry_the_flag():
     """asset / deploy 必须对 agent 隐藏 —— 前者是资源写入面，
     后者装着会杀掉正在运行的 QQ 的 one_click 和会轮换 AppSecret 的 bind_*。"""
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
+    attrs = _entry_attr_map()
     for name in AGENT_HIDDEN:
-        meta = getattr(getattr(QQAutoReplyPlugin, name), EVENT_META_ATTR)
+        meta = getattr(getattr(QQAutoReplyPlugin, attrs[name]), EVENT_META_ATTR)
         flags = meta.metadata or {}
         assert flags.get("agent_auto") is False, f"{name} 少了 agent_auto: False"
 
@@ -145,8 +180,9 @@ def test_agent_hidden_entries_carry_the_flag():
 def test_the_other_five_stay_agent_visible():
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
+    attrs = _entry_attr_map()
     for name in EXPECTED_ENTRIES - AGENT_HIDDEN:
-        meta = getattr(getattr(QQAutoReplyPlugin, name), EVENT_META_ATTR)
+        meta = getattr(getattr(QQAutoReplyPlugin, attrs[name]), EVENT_META_ATTR)
         flags = meta.metadata or {}
         assert flags.get("agent_auto") is not False, f"{name} 不该隐藏"
         assert flags.get("agent_hidden") is not True, f"{name} 不该隐藏"
@@ -156,7 +192,7 @@ def test_every_entry_dispatches_on_action():
     """7 个入口都是同一形状：`(self, action="", **kw)` + 一个 `_<entry>_dispatch`。"""
     import inspect
 
-    for name in EXPECTED_ENTRIES:
-        params = list(inspect.signature(getattr(QQAutoReplyPlugin, name)).parameters)
-        assert params == ["self", "action", "kw"], f"{name}: {params}"
+    for name, attr in _entry_attr_map().items():
+        params = list(inspect.signature(getattr(QQAutoReplyPlugin, attr)).parameters)
+        assert params == ["self", "action", "kw"], f"{name}（{attr}）: {params}"
         assert callable(getattr(QQAutoReplyPlugin, f"_{name}_dispatch", None)), name

@@ -142,6 +142,10 @@ class QQAutoReplyConfigStore:
             # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。
             "group_buffer_enabled": True,
             "private_buffer_enabled": True,
+            # 自启：开了之后每次插件启动都拉起 NapCat 并接上自动回复。
+            # 默认**关** —— NapCat 会为注入拉起 QQ（必要时杀掉正在运行的那个），
+            # 不该由插件替用户决定。
+            "auto_start_on_launch": False,
             # 疲劳系统参数（KiraAI-style 动态行为约束）
             "fatigue_enabled": True,
             "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）

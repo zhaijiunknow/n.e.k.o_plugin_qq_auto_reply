@@ -24,15 +24,17 @@ def test_samples_stay_inside_the_clamp():
         assert max(vals) <= S.MAX_WAIT_SECONDS
 
 
-def test_private_waits_longer_than_group():
-    """私聊基数（6s）此前**从未被接上** —— 一直是群聊基数 3s 的兜底。
+def test_group_waits_longer_than_private():
+    """**群聊等得更久，私聊等得短。**
 
-    这条同时钉住"基数接线"和"两者确实拉开了差距"。
+    一屋子人在聊，晚一点插话更自然；私聊是两个人面对面，对方正等着你回。
+    （此前把这两个基数接反了 —— 起因是把一条**死常量**的注释当成了意图，
+    而那个常量从没被任何代码路径用过，注释也就从没被验证过。）
     """
     group = statistics.fmean(S.sample_wait_seconds(private=False) for _ in range(SAMPLES))
     private = statistics.fmean(S.sample_wait_seconds(private=True) for _ in range(SAMPLES))
 
-    assert private > group + 1.0, (group, private)
+    assert group > private + 1.0, (group, private)
 
 
 def test_values_actually_vary():

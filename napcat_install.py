@@ -13,17 +13,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import shutil
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable
 
 import httpx
-
 
 #: 钉死的版本与校验和（sha256 与字节数取自 GitHub 官方 Releases API，
 #: 2026-09-11 抓取）。升级版本时两个值必须一起换。

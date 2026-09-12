@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
-from . import napcat_platform
+from . import napcat_onebot_config, napcat_platform
 
 
 def bundled_napcat_dir() -> Path:
@@ -110,7 +110,17 @@ class QQNapcatService:
         return bool(err) and err not in self._transient_timeout_errors()
 
     def get_configured_napcat_path(self) -> str:
-        return str((self._get_settings() or {}).get("napcat_directory") or "").strip()
+        """用户显式配置的 NapCat 目录；未配置返回空串。
+
+        ``"."`` 与空串同义 —— 它是 ``str(Path())`` 的样子，是"没有路径"的残留，
+        不是一个有意义的显式选择（本插件从不把 NapCat 装在当前工作目录）。早期
+        版本会把解析结果回填进设置，于是 "." 被当成用户填的目录存了下来，导致
+        一键部署认定"目录里没有启动器"而拒绝安装；这里兜一层，老配置也能自愈。
+        """
+        raw = str((self._get_settings() or {}).get("napcat_directory") or "").strip()
+        if raw in (".", "./", ".\\"):
+            return ""
+        return raw
 
     def get_napcat_directory(self) -> Path:
         configured = self.get_configured_napcat_path()
@@ -297,6 +307,27 @@ class QQNapcatService:
             return [f"NapCat WebUI: {url}"]
         return []
 
+    def _sync_auto_login_account(self) -> bool:
+        """按 ``config/`` 里已登录的账号补一次自动登录设置；改了返回 True。
+
+        给"扫过码、却从没点过『补写 OneBot 配置』"的用户兜底：账号配置
+        （``napcat_<uin>.json``）是 NapCat 登录成功后自己生成的，扫目录就知道登的
+        是哪个号，不必等用户再点一次。
+
+        幂等：已经是这个号就不写文件。
+        """
+        napcat_dir = self.get_napcat_directory()
+        if not napcat_dir or not napcat_dir.is_dir():
+            return False
+        found = napcat_onebot_config.list_onebot_configs(napcat_dir)
+        if not found:
+            return False
+        uin = napcat_onebot_config.uin_from_path(found[-1])
+        if not uin or not napcat_onebot_config.set_auto_login_account(napcat_dir, uin):
+            return False
+        self._emit_log("INFO", f"已设置 NapCat 自动登录账号: {uin}")
+        return True
+
     async def ensure_napcat_started(self) -> None:
         # After a hard failure (missing dir / launcher / process won't start) don't
         # retry: retrying is pointless and only repeats the error + relaunch attempt,
@@ -329,6 +360,10 @@ class QQNapcatService:
                 return
             self._set_startup_error(self._build_missing_launcher_error())
             return
+        # 启动前补一次自动登录账号：扫过码但没点过「补写 OneBot 配置」的用户，
+        # 账号配置其实已经躺在 config/ 里了 —— 这里按目录扫出来记上，下次启动
+        # 就能快速登录。幂等，所以每次启动跑一遍无妨。
+        self._sync_auto_login_account()
         try:
             show_window = bool((self._get_settings() or {}).get("show_napcat_window", True))
             # 平台差异全在 launch_spec 里：Windows 走 cmd.exe + creationflags，

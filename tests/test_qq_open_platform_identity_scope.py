@@ -385,7 +385,7 @@ def _full_stack_plugin(tmp_path):
         group_permission_mgr=None,
         plugin_id="qq_auto_reply",
         i18n=SimpleNamespace(t=lambda _key, default="": default),
-        napcat_service=SimpleNamespace(get_napcat_directory=lambda: tmp_path, get_startup_error=lambda: "", clear_startup_error=lambda: None, set_startup_error=lambda *a, **k: None),
+        napcat_service=SimpleNamespace(get_napcat_directory=lambda: tmp_path, get_configured_napcat_path=lambda: "", get_startup_error=lambda: "", clear_startup_error=lambda: None, set_startup_error=lambda *a, **k: None),
         runtime_service=SimpleNamespace(
             fetch_login_status_payload=_async_value({}),
             build_runtime_status=lambda: dict(runtime_status),
@@ -421,7 +421,7 @@ async def test_the_switch_survives_every_layer_of_the_save_path(tmp_path):
     from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
 
-    schema = getattr(QQAutoReplyPlugin.config, EVENT_META_ATTR).input_schema
+    schema = getattr(QQAutoReplyPlugin.config_entry, EVENT_META_ATTR).input_schema
     assert schema["additionalProperties"] is False  # unnamed keys are rejected
     # 只断言类型：description 是给宿主面板的表单标签用的，属于可增补的说明文字，
     # 钉死整个 dict 会让每次改文案都误报。
@@ -430,17 +430,17 @@ async def test_the_switch_survives_every_layer_of_the_save_path(tmp_path):
     plugin = _full_stack_plugin(tmp_path)
     assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
 
-    await QQAutoReplyPlugin.config(
+    await QQAutoReplyPlugin.config_entry(
         plugin, action="save", qq_open_identity_probe_enabled=True,
     )
     assert plugin._qq_settings["qq_open_identity_probe_enabled"] is True
-    await QQAutoReplyPlugin.config(
+    await QQAutoReplyPlugin.config_entry(
         plugin, action="save", qq_open_identity_probe_enabled=False,
     )
     assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
     # A save that doesn't mention the flag must not silently reset it.
     plugin._qq_settings["qq_open_identity_probe_enabled"] = True
-    await QQAutoReplyPlugin.config(plugin, action="save", sticker_cooldown_messages=5)
+    await QQAutoReplyPlugin.config_entry(plugin, action="save", sticker_cooldown_messages=5)
     assert plugin._qq_settings["qq_open_identity_probe_enabled"] is True
 
 
@@ -454,7 +454,7 @@ async def test_turning_the_switch_on_waits_for_the_write_to_land(tmp_path):
     plugin = _full_stack_plugin(tmp_path)
     plugin.settings_service.persist_business_config = AsyncMock(return_value=False)
 
-    result = await QQAutoReplyPlugin.config(
+    result = await QQAutoReplyPlugin.config_entry(
         plugin, action="save", qq_open_identity_probe_enabled=True,
     )
 
@@ -469,7 +469,7 @@ async def test_turning_the_switch_off_applies_at_once_when_the_write_lands(tmp_p
     plugin = _full_stack_plugin(tmp_path)
     plugin._qq_settings["qq_open_identity_probe_enabled"] = True
 
-    await QQAutoReplyPlugin.config(
+    await QQAutoReplyPlugin.config_entry(
         plugin, action="save", qq_open_identity_probe_enabled=False,
     )
 
@@ -505,7 +505,7 @@ async def test_a_failed_write_does_not_leave_the_switch_silently_off(tmp_path):
     plugin._qq_settings["qq_open_identity_probe_enabled"] = True
     plugin.settings_service.persist_business_config = AsyncMock(return_value=False)
 
-    result = await QQAutoReplyPlugin.config(
+    result = await QQAutoReplyPlugin.config_entry(
         plugin, action="save", qq_open_identity_probe_enabled=False,
     )
 

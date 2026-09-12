@@ -635,5 +635,14 @@
   "entries.deploy.name": "接入与部署",
   "entries.deploy.description": "启动 NapCat、一键部署、补写 OneBot 配置、开放平台扫码绑定与机器人切换。",
   "entries.asset.name": "表情包与注意力",
-  "entries.asset.description": "表情包目录的读写与注意力读数。"
+  "entries.asset.description": "表情包目录的读写与注意力读数。",
+  "ui.napcat.status.shortcuts": "快捷配置",
+  "ui.status.autostart": "开机自启",
+  "ui.status.autostart_on": "启动插件时自动拉起 NapCat 并开启自动回复",
+  "ui.qrcode.which_account": "用「猫娘要登录的那个 QQ 号」扫码",
+  "ui.qrcode.chat_with_other": "然后用「另一个 QQ 号」去找她聊天 —— 她自己那个号没法跟自己聊",
+  "ui.openplat.scan_hint": "用「需要和猫娘交流的那个 QQ 号」扫码",
+  "ui.openplat.bind_desc": "扫码后由平台下发凭据并自动写入配置；连接页会让你选是「创建新的机器人」还是「选择已有的机器人」。",
+  "ui.status.flow_napcat": "流程：部署 NapCat → 扫码登录 → 自动补写配置并启动自动回复。<b>记得在下方「信任名单」把自己的 QQ 号设为管理员</b> —— 管理员才是「主人」，其余人只是好友。",
+  "ui.status.flow_openplat": "流程：扫码绑定 → 自动写入凭据并启动自动回复，<b>扫码的人会自动成为管理员</b>。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。"
 }

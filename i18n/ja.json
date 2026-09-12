@@ -610,5 +610,14 @@
   "entries.deploy.name": "接続と配備",
   "entries.deploy.description": "NapCat の起動、ワンクリック配備、OneBot 設定の書き直し、開放プラットフォームの QR バインドとボット切り替え。",
   "entries.asset.name": "スタンプと注意力",
-  "entries.asset.description": "スタンプ一覧の読み書きと注意力の読み取り。"
+  "entries.asset.description": "スタンプ一覧の読み書きと注意力の読み取り。",
+  "ui.napcat.status.shortcuts": "クイック設定",
+  "ui.status.autostart": "起動時の自動開始",
+  "ui.status.autostart_on": "プラグイン起動時に NapCat を起動し、自動返信を開始する",
+  "ui.qrcode.which_account": "「猫娘にログインさせたい QQ 番号」でスキャンしてください",
+  "ui.qrcode.chat_with_other": "そのあと「別の QQ 番号」から話しかけてください —— 自分の番号には自分から送れません",
+  "ui.openplat.scan_hint": "「猫娘とやり取りしたい QQ 番号」でスキャンしてください",
+  "ui.openplat.bind_desc": "スキャン後、プラットフォームが資格情報を発行し、自動で設定に書き込まれます。接続ページで「新しいボットを作成」か「既存のボットを選択」を選べます。",
+  "ui.status.flow_napcat": "流れ：NapCat を配備 → スキャンしてログイン → 設定を自動で書き込み、自動返信を開始。<b>下の「信頼リスト」で自分の QQ 番号を管理者に設定してください</b> —— 管理者だけが「ご主人様」で、ほかは友達です。",
+  "ui.status.flow_openplat": "流れ：スキャンしてバインド → 資格情報が書き込まれ自動返信が開始。<b>スキャンした人が自動で管理者になります</b>。ほかの人のグループ openid は QQ 番号と一致しないため、同じ人として扱うには手動で「身元を統合」してください。"
 }

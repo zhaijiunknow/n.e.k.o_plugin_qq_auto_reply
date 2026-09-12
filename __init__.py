@@ -650,7 +650,40 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 定期清理已审核超过24h的旧消息
         if getattr(self, "_purge_task", None) is None or self._purge_task.done():
             self._purge_task = asyncio.create_task(self._purge_old_reviewed_loop())
+        # 自启：开了开关就拉起 NapCat 并接上自动回复。**放在后台任务里**——
+        # NapCat 首次启动要拉 QQ、再等 OneBot 就绪，await 在 startup 里会拖慢
+        # 插件握手，而握手超时是整个插件不可用，代价远大于"晚几秒连上"。
+        if (
+            getattr(self, "_autostart_task", None) is None
+            or self._autostart_task.done()
+        ):
+            self._autostart_task = asyncio.create_task(self._autostart_on_launch())
         return Ok({"status": "ready"})
+
+    async def _autostart_on_launch(self) -> None:
+        """开机自启：拉起 NapCat → 等 OneBot 就绪 → 启动自动回复。
+
+        开关是 opt-in（``auto_start_on_launch``，默认关）：NapCat 启动会为注入
+        拉起 QQ（必要时杀掉已在运行的那个），不该由插件擅自决定。
+        """
+        if not bool((self._qq_settings or {}).get("auto_start_on_launch", False)):
+            return
+        try:
+            self._emit_log("INFO", "[自启] 正在启动 NapCat…")
+            await self.napcat_service.ensure_napcat_started()
+            err = self.napcat_service.get_startup_error()
+            if err:
+                self._emit_log("WARN", f"[自启] NapCat 未启动: {err}")
+                return
+            await self.napcat_service.wait_for_onebot_ready()
+            result = await self.runtime_ops_service.start_auto_reply()
+            status = ""
+            if isinstance(result, Ok) and isinstance(result.value, dict):
+                status = str(result.value.get("status") or "")
+            self._emit_log("INFO", f"[自启] 自动回复已启动（{status or 'ok'}）")
+        except Exception as e:
+            # 自启失败只记日志：插件本身是好的，用户还能手动开。
+            self._emit_log("WARN", f"[自启] 失败: {type(e).__name__}: {e}")
 
     async def _purge_old_reviewed_loop(self):
         """每小时清理一次已审核超过 24 小时的旧消息。"""
@@ -1643,6 +1676,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         "qq_open_client_secret", "qq_open_identity_probe_enabled",
         "qq_open_sandbox_enabled", "local_stt_url",
         "group_buffer_enabled", "private_buffer_enabled",
+        "enable_group_attention",
+        "auto_start_on_launch",
     })
 
     @ui.action(id="config", label=tr("entries.config.name", default="保存配置"), refresh_context=True)
@@ -1706,9 +1741,20 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "local_stt_url": {"type": "string", "description": "save：本地 STT 地址"},
             "group_buffer_enabled": {"type": "boolean", "description": "save：群聊回复缓冲"},
             "private_buffer_enabled": {"type": "boolean", "description": "save：私聊回复缓冲"},
+            "enable_group_attention": {"type": "boolean", "description": "save：群组注意力（neko_dynamic 策略下会被强制开启）"},
+            "auto_start_on_launch": {"type": "boolean", "description": "save：自启 —— 每次插件启动都拉起 NapCat 并接上自动回复"},
         }, "required": ["action"], "additionalProperties": False},
     )
-    async def config(self, action: str = "", **kw):
+    # ⚠️ 方法名**不能**叫 `config`：基类在 `plugin/sdk/shared/core/base.py:65`
+    # 把 `self.config` 设成了 PluginConfig 实例属性，而 `collect_entries()`
+    # 是按**属性名**取处理函数的（`getattr(self, attr_name)`）—— 同名会让入口
+    # 的 handler 解析成那个 PluginConfig 对象，宿主报
+    # "Entry 'config' must be 'async def'. Sync entries are not supported."
+    #
+    # 入口 id 与属性名本来就不必相同（host 认的是 meta.id），所以只改方法名即可，
+    # 对外的 `call('config', ...)` 不受影响。`test_qq_entry_dispatch.py` 里有一条
+    # 用例专门守这个撞名。
+    async def config_entry(self, action: str = "", **kw):
         return await self._config_dispatch(str(action or "").strip(), kw)
 
     async def _config_dispatch(self, action: str, kw: dict[str, Any]):
@@ -1769,6 +1815,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             result = await self.deploy_service.deploy(
                 uin=str(uin or "").strip(),
                 force=bool(force),
+                # 自动回复由 deploy 自己**在启动 NapCat 之前**拉起（反向模式下先竖起
+                # 监听，NapCat 起来就能拨进来）。这里只把开关传下去，别再启一次 ——
+                # 那会白停一次刚建好的连接。
+                auto_start=bool(auto_start),
                 # 经 SSE 推给界面（status.html 订阅 deploy_progress 渲染进度）
                 emit=lambda p: self._spawn_push_ui_event(
                     "deploy_progress", p.get("message", ""), data=p,
@@ -1777,15 +1827,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception as e:
             self.logger.error(f"一键部署失败: {e}")
             return Err(SdkError(f"DEPLOY_FAILED: {e}"))
-        # 部署完就把运行时拉起来（反向模式下这里是"先监听、等 NapCat 登录后自动接上"），
-        # 用户扫完码即可用，不必再点一次「启动自动回复」。
-        return Ok({**result,
-                   **self._auto_start_fields(
-                       await self._restart_auto_reply_runtime(bool(auto_start)))})
+        return Ok({**result})   # 收尾字段由 deploy 一并带回
 
     async def _deploy_apply_onebot(self, kw: dict[str, Any]):
         uin = str(kw.get("uin") or "").strip()
-        restart = bool(kw.get("restart", True))
+        # 默认**不重启** —— NapCat 热读 OneBot 配置（重启会掐断刚建立的登录会话）
+        restart = bool(kw.get("restart", False))
         auto_start = bool(kw.get("auto_start", True))
         """扫码后的兜底：补写配置 → 重启 NapCat → 按新配置启动自动回复"""
         try:
@@ -1804,6 +1851,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({**result,
                    **self._auto_start_fields(
                        await self._restart_auto_reply_runtime(bool(auto_start)))})
+
+    async def _deploy_login_poll(self, kw: dict[str, Any]):
+        """轮询扫码登录是否完成；完成就把收尾做完。"""
+        return await self.deploy_service.poll_login(
+            auto_start=bool(kw.get("auto_start", True)),
+            emit=lambda p: self._spawn_push_ui_event(
+                "deploy_progress", p.get("message", ""), data=p))
 
     async def _deploy_bind_start(self, kw: dict[str, Any]):
         _ = kw
@@ -1862,6 +1916,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._qq_settings["qq_open_app_id"] = appid
         self._qq_settings["qq_open_client_secret"] = secret
         self._qq_bind_session = None
+
+        # 扫码者 = 主人。绑定回包里的 ``user_openid`` 是**平台**给出的、扫码那个人
+        # 的 openid —— 这是唯一一个"谁是主人"能被平台证明的时刻，比事后靠
+        # "第一个私聊的人"去猜可靠得多（那条 bootstrap 只在名单为空时生效一次）。
+        #
+        # 开放平台拿不到 QQ 号，只给 openid，所以信任名单里存的就是 openid；
+        # 同一个人在不同群的 openid 可能不同，那部分仍要人工合并身份
+        # （bind_identity_account 刻意不自动做）。
+        admin_openid = str(result.get("user_openid") or "").strip()
+        if admin_openid:
+            if self.permission_mgr and self.permission_mgr.add_user(admin_openid, "admin"):
+                self._refresh_admin_qq()
+                self.logger.info(f"[绑定] 已把扫码者设为管理员: {admin_openid}")
+            else:
+                self.logger.warning(f"[绑定] 扫码者 openid 无效，未能设为管理员: {admin_openid!r}")
+
         try:
             await self.settings_service.persist_business_config()
         except Exception as e:
@@ -1924,13 +1994,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["ensure", "one_click", "apply_onebot",
+                                "login_poll",
                                 "bind_start", "bind_poll", "use_bot", "qrcode_sync"],
-                       "description": "ensure=只启动 NapCat 进程；one_click=一键部署（下载/解包/写配置/启动/出码）；apply_onebot=扫码后补写 OneBot 配置并重启；bind_start/bind_poll=开放平台扫码绑定与轮询；use_bot=切换到账本里已有的机器人；qrcode_sync=刷新登录二维码"},
+                       "description": "ensure=只启动 NapCat 进程；one_click=一键部署（下载/解包/写配置/启动/出码）；apply_onebot=扫码后补写 OneBot 配置并重启；login_poll=轮询「扫码登录成功了没」，成功就顺手做完收尾（前端在一键部署后定时调它）；bind_start/bind_poll=开放平台扫码绑定与轮询；use_bot=切换到账本里已有的机器人；qrcode_sync=刷新登录二维码"},
             "uin": {"type": "string", "description": "one_click / apply_onebot：机器人 QQ 号（apply_onebot 留空则取最近登录的）"},
             "force": {"type": "boolean", "default": False, "description": "one_click：已有 NapCat 也强制重新下载"},
             "auto_start": {"type": "boolean", "default": True,
                            "description": "one_click / apply_onebot / bind_poll：完事顺手把自动回复跑起来（会按新设置停掉重建）"},
-            "restart": {"type": "boolean", "default": True, "description": "apply_onebot：写完是否重启 NapCat（它启动时才读网络配置）"},
+            "restart": {"type": "boolean", "default": False, "description": "apply_onebot：写完是否重启 NapCat（默认不重启 —— NapCat 热读 OneBot 配置；重启会掐断刚建立的登录会话）"},
             "appid": {"type": "string", "description": "use_bot：要启用的机器人 AppID"},
         }, "required": ["action"], "additionalProperties": False},
         metadata={"agent_auto": False},
@@ -1945,6 +2016,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._deploy_one_click(kw)
         if action == "apply_onebot":
             return await self._deploy_apply_onebot(kw)
+        if action == "login_poll":
+            return await self._deploy_login_poll(kw)
         if action == "bind_start":
             return await self._deploy_bind_start(kw)
         if action == "bind_poll":
@@ -1955,8 +2028,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._deploy_qrcode_sync(kw)
         return Err(SdkError(
             f"BAD_ACTION: deploy 不支持 {action!r}"
-            f"（可选 ensure/one_click/apply_onebot/bind_start/bind_poll/"
-            f"use_bot/qrcode_sync）"))
+            f"（可选 ensure/one_click/apply_onebot/login_poll/bind_start/"
+            f"bind_poll/use_bot/qrcode_sync）"))
 
     async def _asset_attention(self, kw: dict[str, Any]):
         _ = kw

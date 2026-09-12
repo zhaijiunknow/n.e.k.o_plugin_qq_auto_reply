@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-
 #: 我们那条连接在 NapCat 配置里的名字。合并按名字认领，所以重复部署是幂等的。
 #: 反向条目和正向条目各在自己数组里用这个名字，互不冲突。
 CALLBACK_NAME = "neko"
@@ -97,6 +96,44 @@ def uin_from_path(path: Path | str) -> str:
     """从 ``onebot11_<uin>.json`` 取出 uin；不匹配返回空串。"""
     m = _ONE_BOT_RE.match(Path(path).name)
     return (m.group(1) if m else "").strip()
+
+
+# ── 自动登录 ────────────────────────────────────────────────
+
+def webui_config_path(napcat_dir: Path | str) -> Path:
+    """``config/webui.json`` —— NapCat 的 WebUI 配置，**自动登录账号也记在这里**。"""
+    return config_dir_of(napcat_dir) / "webui.json"
+
+
+def get_auto_login_account(napcat_dir: Path | str) -> str:
+    """当前配置的自动登录账号；未设置返回空串。"""
+    data = load(webui_config_path(napcat_dir))
+    return str(data.get("autoLoginAccount") or "").strip()
+
+
+def set_auto_login_account(napcat_dir: Path | str, uin: str) -> bool:
+    """把 ``autoLoginAccount`` 写成这个号 —— 下次启动 NapCat 会自动快速登录。
+
+    依据（NapCat 本体，``napcat.mjs``）：启动时取
+    ``process.env.NAPCAT_QUICK_ACCOUNT || WebUIConfig.autoLoginAccount``，
+    有值就 ``quickLoginWithUin()``；登录态没缓存住时**自动回落二维码**，
+    所以设了也不会把用户卡死。
+
+    **扫码登录成功之后**才该调：账号配置（``napcat_<uin>.json``）是登录后才生成的，
+    提前设没有害处但没有意义。
+
+    返回是否真的改了（已经是这个号就不动文件，免得白写一次）。
+    """
+    uin = str(uin or "").strip()
+    if not uin:
+        return False
+    path = webui_config_path(napcat_dir)
+    data = load(path)
+    if str(data.get("autoLoginAccount") or "").strip() == uin:
+        return False
+    data["autoLoginAccount"] = uin
+    write(path, data)
+    return True
 
 
 # ── URL ─────────────────────────────────────────────────────

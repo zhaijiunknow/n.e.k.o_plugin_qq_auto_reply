@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+from asyncio import run as asyncio_run
 from types import SimpleNamespace
 
 import httpx
@@ -298,3 +299,34 @@ async def test_verify_credentials_rejects_empty_inputs(monkeypatch):
     assert (await bind.verify_credentials("", "s"))["ok"] is False
     assert (await bind.verify_credentials("1001", "  "))["ok"] is False
     assert client.calls == 0
+
+
+def test_completed_binding_reports_the_scanners_openid(monkeypatch):
+    """``user_openid`` 是扫码者本人的 openid —— 调用方拿它把扫码者设成管理员。
+
+    这是唯一一个"谁是主人"由**平台背书**的时刻；丢了它，开放平台上就只能靠
+    "第一个私聊的人"去猜（那条 bootstrap 只在名单为空时生效一次）。
+    """
+    session = _session()
+    _stub_poll(monkeypatch, {
+        "status": 2,
+        "bot_appid": "1903565393",
+        "bot_encrypt_secret": _encrypt("s", session.bind_key),
+        "user_openid": "OPENID_OF_SCANNER",
+    })
+
+    result = asyncio_run(bind.poll_bind_result(session))
+    assert result["user_openid"] == "OPENID_OF_SCANNER"
+
+
+def test_missing_openid_is_an_empty_string_not_a_crash(monkeypatch):
+    """平台没给（或改字段名）时给空串，别让上面那条路抛 —— 设不成管理员
+    不该把整次绑定拖垮。"""
+    session = _session()
+    _stub_poll(monkeypatch, {
+        "status": 2,
+        "bot_appid": "1903565393",
+        "bot_encrypt_secret": _encrypt("s", session.bind_key),
+    })
+
+    assert asyncio_run(bind.poll_bind_result(session))["user_openid"] == ""

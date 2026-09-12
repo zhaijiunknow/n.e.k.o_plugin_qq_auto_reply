@@ -17,7 +17,6 @@ from typing import Any, Callable
 from . import napcat_install, napcat_onebot_config, napcat_platform
 from .napcat_service import bundled_napcat_dir
 
-
 #: 步骤名 → 界面展示用的标签
 STEP_LABELS: dict[str, str] = {
     "locate": "定位 NapCat",
@@ -101,6 +100,7 @@ class QQDeployService:
     # ── 主流程 ──────────────────────────────────────────────
 
     async def deploy(self, *, uin: str = "", force: bool = False,
+                     auto_start: bool = True,
                      emit: Callable[[dict], None] | None = None) -> dict:
         """跑完整条部署。返回结果字典；失败抛 ``RuntimeError``。"""
         svc = self.plugin.napcat_service
@@ -127,23 +127,40 @@ class QQDeployService:
             step("locate", "未发现可用 NapCat，准备下载")
             napcat_dir = await self._fetch(step, emit)
 
-        # ③ 写配置（在启动之前 —— NapCat 启动时读配置）--------------
+        # ③ 写配置（放在启动之前，省一次热读往返；不是硬性要求）--------
         mode = str(self._settings().get("qq_connection_mode") or "napcat")
         uin = str(uin or "").strip()
+        # 先把目录/地址写回插件：一是配置页要显示得对，二是下面 _write_config
+        # 读的就是这里补出来的 onebot_url —— 顺序反了两边就对不上。
+        await self._persist_connection_settings(napcat_dir, mode, step, emit)
         if uin:
             await self._write_config(napcat_dir, uin, mode, step, emit)
+            # 预先知道是哪个号就顺手记上自动登录 —— 首次仍需扫码，但之后重启不必。
+            if napcat_onebot_config.set_auto_login_account(napcat_dir, uin):
+                step("config", f"已设置 NapCat 自动登录账号: {uin}")
         else:
             step("config", "未填机器人 QQ 号：扫码登录后请点「补写 OneBot 配置」",
                  needs_uin=True)
 
-        # ④ 启动 -------------------------------------------------
+        # ④ 先起自动回复，**再**启动 NapCat ------------------------
+        #
+        # 反向模式下插件是**监听**方：先把耳朵竖起来，NapCat 起来后拨进来即可。
+        # 顺序反过来的话，NapCat 会先往一个还没人听的端口拨，白失败几轮
+        # （正向模式更明显：直接报连接错误）。
+        auto: dict[str, Any] = {"ok": False, "status": "", "error": ""}
+        if auto_start:
+            auto = await self.plugin._restart_auto_reply_runtime(True)
+            step("start", "自动回复已启动，等待 NapCat 接入" if auto["ok"]
+                 else f"自动回复暂未启动：{auto['error']}")
+
+        # ⑤ 启动 NapCat -------------------------------------------
         await svc.ensure_napcat_started()
         err = svc.get_startup_error()
         if err:
             raise RuntimeError(err)
         step("start", "NapCat 已启动")
 
-        # ⑤ 二维码 -----------------------------------------------
+        # ⑥ 二维码 -----------------------------------------------
         ready = await self._wait_qrcode(svc)
         step("qrcode", "二维码已就绪，请扫码登录" if ready
              else "暂未出现二维码，NapCat 可能仍在启动（可点「刷新二维码」重试）",
@@ -156,6 +173,7 @@ class QQDeployService:
             "qrcode_ready": ready,
             "needs_uin": not uin,
             "steps": steps,
+            **self.plugin._auto_start_fields(auto),
         }
 
     async def _fetch(self, step, emit) -> Path:
@@ -187,6 +205,40 @@ class QQDeployService:
         zip_path.unlink(missing_ok=True)
         step("fetch", f"已解包到 {target}")
         return target
+
+    async def _persist_connection_settings(self, napcat_dir: Path, mode: str,
+                                           step, emit) -> None:
+        """把这次部署**实际用到**的连接设置写回插件。
+
+        不写回的话，NapCat 那边的配置其实是对的（``dial_url`` / ``host_port_of``
+        对空地址都有兜底），但插件这边两个设置会一直是空的：
+
+        - 配置页显示空白目录、空白地址，与实际状态对不上；
+        - 插件反向监听的默认值与 NapCat 被写入的目标只是"各自的默认碰巧一致"，
+          不是显式约定的同一个值 —— 哪天默认值改一处，两边就会静默错开。
+
+        只填空值，不覆盖用户已经填过的。
+        """
+        settings = self._settings()
+        changed: list[str] = []
+
+        if not str(settings.get("napcat_directory") or "").strip():
+            settings["napcat_directory"] = str(napcat_dir)
+            changed.append(f"NapCat 目录 → {napcat_dir}")
+
+        if not str(settings.get("onebot_url") or "").strip():
+            default_url = self.plugin.settings_service._default_onebot_url(mode)
+            settings["onebot_url"] = default_url
+            changed.append(f"通信地址 → {default_url}")
+
+        if not changed:
+            return
+        try:
+            await self.plugin.settings_service.persist_business_config()
+        except Exception as e:
+            self._emit(emit, "config", f"连接设置已更新，但落盘失败: {e}")
+            return
+        step("config", "已写回连接设置：" + "；".join(changed))
 
     async def _write_config(self, napcat_dir: Path, uin: str, mode: str,
                             step, emit) -> Path:
@@ -229,9 +281,48 @@ class QQDeployService:
             await asyncio.sleep(1.0)
         return False
 
+    async def poll_login(self, *, auto_start: bool = True,
+                         emit: Callable[[dict], None] | None = None) -> dict:
+        """扫一次"扫码登录成功了没"—— 一键部署之后的收尾轮询。
+
+        登录成功的信号 = ``config/onebot11_<uin>.json`` 出现（NapCat 登录成功后自己
+        建出来的），与 ``apply_onebot_config`` 用的是同一条判据。
+
+        没出现就报 ``pending``，由前端继续轮询；出现了就地做完收尾（补写配置 →
+        设自动登录 → 按新配置启动自动回复），与用户手点「补写 OneBot 配置」同一条路。
+
+        **防重入**：收尾会重启 NapCat，而前端是定时轮询 —— 不记状态的话每轮都会
+        重启一次。做完记下 uin，之后同一个号一律返回 ``already``。
+        """
+        svc = self.plugin.napcat_service
+        napcat_dir = svc.get_napcat_directory()
+        if not napcat_dir:
+            raise RuntimeError("还没定位到 NapCat 目录，请先执行一键部署")
+
+        found = napcat_onebot_config.list_onebot_configs(napcat_dir)
+        if not found:
+            return {"status": "pending"}
+        uin = napcat_onebot_config.uin_from_path(found[-1])
+        if not uin:
+            return {"status": "pending"}
+        if getattr(self, "_login_applied_uin", "") == uin:
+            return {"status": "already", "uin": uin}
+
+        result = await self.apply_onebot_config(uin=uin, restart=False, emit=emit)
+        self._login_applied_uin = uin
+
+        # ⚠️ 必须自己把自动回复拉起来。服务层的 ``apply_onebot_config`` 只做
+        # "写配置 + 重启 NapCat"——"按新配置启动自动回复"那一步在**入口包装层**
+        # （``_deploy_apply_onebot``）里。这里直接调服务，绕过了那层，不补这一步
+        # 就是收尾收一半：配置对了、NapCat 也重启了，但自动回复没起来，
+        # 用户还得手动点一次「启动」。
+        auto = await self._restart_auto_reply_runtime(bool(auto_start))
+        return {"status": "completed", **result,
+                **self.plugin._auto_start_fields(auto)}
+
     # ── 扫码登录后的补写 ────────────────────────────────────
 
-    async def apply_onebot_config(self, *, uin: str = "", restart: bool = True,
+    async def apply_onebot_config(self, *, uin: str = "", restart: bool = False,
                                   emit: Callable[[dict], None] | None = None) -> dict:
         """登录后补写 OneBot 配置（预置路径没走通时的兜底）。
 
@@ -253,14 +344,26 @@ class QQDeployService:
             uin = napcat_onebot_config.uin_from_path(found[-1])
             self._emit(emit, "config", f"从配置目录发现已登录账号: {uin}")
 
+        # 登录成功之后把自动登录记上：下次启动 NapCat 直接快速登录，不用再扫码。
+        # 依据在 NapCat 本体（napcat.mjs）：启动时读 WebUIConfig.autoLoginAccount，
+        # 有值就 quickLoginWithUin；登录态没缓存住时它自己回落二维码，不会卡死。
+        if uin and napcat_onebot_config.set_auto_login_account(napcat_dir, uin):
+            self._emit(emit, "config", f"已设置 NapCat 自动登录账号: {uin}")
+
         mode = str(self._settings().get("qq_connection_mode") or "napcat")
+        # 与一键部署同一条口径：先把空白设置补上再写 NapCat 的配置。
+        await self._persist_connection_settings(
+            napcat_dir, mode, lambda k, m, **e: self._emit(emit, k, m, **e), emit)
         path = await self._write_config(napcat_dir, uin, mode,
                                         lambda k, m, **e: self._emit(emit, k, m, **e), emit)
 
         if restart:
-            # NapCat 在启动时读网络配置，改完必须重启才生效。
+            # **默认不重启**：NapCat 会热读 OneBot 配置，改完直接生效。
+            # 早先默认重启，依据是"NapCat 启动时才读网络配置"——那个前提不成立；
+            # 代价还很实在：刚扫码登录成功就把 NapCat 重启掉，会话被掐断，
+            # 只能靠快速登录捞回来。这个参数留着是给"确实需要重来一遍"的场合。
             await svc.stop_managed_napcat()
             await svc.ensure_napcat_started()
-            self._emit(emit, "start", "已重启 NapCat 使配置生效")
+            self._emit(emit, "start", "已重启 NapCat")
 
         return {"ok": True, "uin": uin, "config_path": str(path), "restarted": bool(restart)}

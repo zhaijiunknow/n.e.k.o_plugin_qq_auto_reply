@@ -948,7 +948,16 @@ class QQSettingsService:
             # 反向模式下把 NapCat 的端口当成自己的监听口，启动时只报一句没头没脑的
             # "每个套接字地址只允许使用一次"。本次没显式传 url 就重置成该模式默认值；
             # 传了就说明用户明确要改，不动。
-            if onebot_url is None and new_mode != prev_mode:
+            # 「本次没传 url」和「传的只是**上一模式的默认值**」都算"用户没有要改"。
+            #
+            # 后一种必须一起判：napcat.html 的保存表单每次都把地址框的值原样带上，
+            # 而那个框在切方向时不会跟着换 —— 于是旧默认值被当成"用户显式指定"提交，
+            # 重置被这道守卫挡掉，正向模式就去拨反向的 0.0.0.0，Windows 报
+            # WinError 1214「指定的网络名格式无效」。用户自己填过的地址仍然优先。
+            if new_mode != prev_mode and (
+                onebot_url is None
+                or str(onebot_url).strip() == self._default_onebot_url(prev_mode)
+            ):
                 default_url = self._default_onebot_url(new_mode)
                 self.plugin._qq_settings["onebot_url"] = default_url
                 self.plugin._emit_log(
@@ -1095,6 +1104,9 @@ class QQSettingsService:
         # 注意：它们**必须在这里显式写出**。入口层用 `**_` 收参数，服务层又是逐个
         # `kwargs.get(...)` 具名写回 —— 不写这段的话，前端发来的值会被一路静默丢掉，
         # 开关看起来能点、实际从没存进去过。
+        auto_start_on_launch = kwargs.get("auto_start_on_launch")
+        if auto_start_on_launch is not None:
+            self.plugin._qq_settings["auto_start_on_launch"] = bool(auto_start_on_launch)
         group_buffer_enabled = kwargs.get("group_buffer_enabled")
         if group_buffer_enabled is not None:
             self.plugin._qq_settings["group_buffer_enabled"] = bool(group_buffer_enabled)
