@@ -365,7 +365,16 @@ class QQNapcatService:
         # 就能快速登录。幂等，所以每次启动跑一遍无妨。
         self._sync_auto_login_account()
         try:
-            show_window = bool((self._get_settings() or {}).get("show_napcat_window", True))
+            show_window = bool((self._get_settings() or {}).get("show_napcat_window", False))
+            if not show_window:
+                # 藏了窗口就没有控制台了。NapCat 默认只写控制台（fileLog=false），
+                # 而我们把它的 stdout/stderr 都丢进了 DEVNULL —— 不补这一刀，
+                # 它的日志就哪儿都不会留，出了事连它的输出都看不到。
+                try:
+                    if napcat_onebot_config.ensure_file_log(self.get_napcat_directory()):
+                        self._emit_log("INFO", "已打开 NapCat 文件日志（后台启动，控制台不可见）")
+                except Exception as e:
+                    self._emit_log("WARN", f"打开 NapCat 文件日志失败: {e}")
             # 平台差异全在 launch_spec 里：Windows 走 cmd.exe + creationflags，
             # POSIX 走 node + start_new_session。这里不再无条件传 creationflags
             # —— 那个 kwarg 在 POSIX 上非法，会让启动直接抛错。

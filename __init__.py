@@ -632,55 +632,128 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "open_in": "new_tab",
             }
         ])
-        # 后台推送存量 trust 池，**不阻塞 startup**：memory_server 可能还没
-        # 起来，而在 startup 里 await 一个带退避的重试循环既拖慢插件启动、
-        # 又是在赌另一个进程的就绪顺序。
-        if (
-            self._trust_migration_task is None
-            or self._trust_migration_task.done()
-        ):
+        # 后台任务一律**不在这里建**，只记一个"待办"，由 ``_on_command_loop_start``
+        # （宿主在常驻 loop 上主动调，不需要界面打开）在那边补建；
+        # 各 entry 分流里也挂了一份兜底。见 ``_kick_deferred_startup_tasks``。
+        #
+        # ⚠️ 宿主跑各个阶段用的 loop 不同（plugin/core/host.py）：
+        #
+        #   asyncio.run(_run_startup_with_downlink(startup_fn))   # L1 一次性
+        #   asyncio.run(_async_command_loop())                    # L2 常驻 ← 入口在这
+        #   asyncio.run(result)  # shutdown                       # L3 一次性
+        #
+        # 定时任务和自定义事件也各自 ``asyncio.run(fn())``，同样是一次性的。
+        #
+        # 所以在 L1 上 ``create_task`` 出来的东西**活不过 startup 返回** —— 钩子一结束
+        # 它就把这条 loop 上还挂着的任务全部取消并关闭。实测自启任务 1 秒内被取消；
+        # 这里的几个死得更安静，一行日志都没有，于是"清理旧消息""推送 trust 池"
+        # 这些功能一直是**静默没跑**的状态。
+        #
+        # 也**不能内联 await**：``ensure_napcat_started()`` 会在 L1 上
+        # ``create_subprocess_exec``，NapCat 子进程句柄从此绑在一条已关闭的 loop 上,
+        # ``_stop_managed_napcat`` 再也杀不掉它。（这正是日志里那个
+        # ``got Future attached to a different loop``。）
+        #
+        # ``_session_housekeeping_task`` **不在此列**：它的生命周期归
+        # ``runtime_ops_service.start_auto_reply`` —— 那里明确要求**连接成功之后**
+        # 才建（否则连接失败时它会在"已停止"状态下一直跑 idle flush / attention decay）。
+        # 标识符语义的登记同理，也发生在连接真正建立之后（见 §2.15.4）。
+        self._deferred_startup_tasks = True
+        return Ok({"status": "ready"})
+
+    async def _on_command_loop_start(self) -> None:
+        """宿主在**常驻 loop**（L2）上、命令循环开始读之前调这里。
+
+        这是插件里唯一一个"由宿主主动调、且跑在常驻 loop 上"的地方 —— ``startup()``
+        跑在 ``asyncio.run`` 开的一次性 loop 上（理由见那里的说明），在那里建的后台
+        任务活不过钩子返回。所以自启、trust 池推送、旧消息清理都在这里起。
+
+        **不需要界面打开**：宿主在插件起来之后就会调它，与有没有人看插件页无关。
+        """
+        self._kick_deferred_startup_tasks()
+
+    def _kick_deferred_startup_tasks(self) -> None:
+        """在**常驻 loop** 上补建 startup 阶段建不了的后台任务。
+
+        由 ``_on_command_loop_start``（主路径）和各 entry 分流的最前面（兜底）调用。
+        入口那份是给"宿主没调这个钩子"的老版本留的退路；**入口是插件里另一个跑在
+        常驻 loop 上的地方**，所以退路本身也是对的，只是要等界面轮询 ``query``。
+
+        幂等：``_deferred_startup_tasks`` 标记清掉之后就是空转。
+        """
+        if not getattr(self, "_deferred_startup_tasks", False):
+            return
+        self._deferred_startup_tasks = False
+
+        # 自启：起监听 / 拉起 NapCat（要在这里 spawn 子进程，所以非 L2 不可）
+        task = getattr(self, "_autostart_task", None)
+        if task is None or task.done():
+            self._autostart_task = asyncio.create_task(self._autostart_on_launch())
+
+        # 存量 trust 池推送。**不阻塞 startup**：memory_server 可能还没起来，
+        # 而这个循环自带退避重试。
+        task = getattr(self, "_trust_migration_task", None)
+        if task is None or task.done():
             self._trust_migration_task = asyncio.create_task(
                 self.settings_service.push_legacy_speaker_trust_forever()
             )
-        # 标识符语义的登记**不在这里**：它描述的是「现在跑着的 wire
-        # format」，而 startup 时还没有连接。登记发生在连接真正建立之后
-        # （runtime_ops_service 的 start_auto_reply，见 §2.15.4）。
-        if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
-            self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
-        # 定期清理已审核超过24h的旧消息
-        if getattr(self, "_purge_task", None) is None or self._purge_task.done():
+
+        # 定期清理已审核超过 24h 的旧消息
+        task = getattr(self, "_purge_task", None)
+        if task is None or task.done():
             self._purge_task = asyncio.create_task(self._purge_old_reviewed_loop())
-        # 自启：开了开关就拉起 NapCat 并接上自动回复。**放在后台任务里**——
-        # NapCat 首次启动要拉 QQ、再等 OneBot 就绪，await 在 startup 里会拖慢
-        # 插件握手，而握手超时是整个插件不可用，代价远大于"晚几秒连上"。
-        if (
-            getattr(self, "_autostart_task", None) is None
-            or self._autostart_task.done()
-        ):
-            self._autostart_task = asyncio.create_task(self._autostart_on_launch())
-        return Ok({"status": "ready"})
 
     async def _autostart_on_launch(self) -> None:
-        """开机自启：拉起 NapCat → 等 OneBot 就绪 → 启动自动回复。
+        """开机自启：起监听 / 拉起 NapCat。
 
-        开关是 opt-in（``auto_start_on_launch``，默认关）：NapCat 启动会为注入
-        拉起 QQ（必要时杀掉已在运行的那个），不该由插件擅自决定。
+        **必须由 ``startup()`` 内联 await，不能 create_task。** 原因见 ``startup()``
+        里的说明：startup 钩子跑在一次性 event loop 上，在那里建的任务活不过 startup
+        返回 —— 这条路上"任务"和"不工作"是同一件事。
+
+        **反向模式（``napcat``）先起自动回复。** 那条路上插件是**监听**方：监听没
+        竖起来，NapCat 拨进来也没人接。一键部署那边早就是这个顺序（见
+        ``deploy_service`` 步骤④/⑤的说明），自启这条路当时没跟上。正向模式
+        （``napcat_forward``）反过来：插件是拨号方，NapCat 得先在。
+
+        **不等 OneBot 就绪。** 那一步只是报个状态，而两个模式的连接都是**自愈**的：
+        反向等 NapCat 拨进来、正向有退避重连循环。等它只会白白把最多 20 秒压在
+        插件握手上（握手超时 = 整个插件不可用），得不偿失。
         """
         if not bool((self._qq_settings or {}).get("auto_start_on_launch", False)):
             return
         try:
-            self._emit_log("INFO", "[自启] 正在启动 NapCat…")
+            mode = str((self._qq_settings or {}).get("qq_connection_mode") or "napcat")
+            reverse = mode != "napcat_forward"
+            # 每一步都留痕：这条路上出过"三个出口全都不打日志、卡住了无从下手"的事。
+            self._emit_log("INFO", f"[自启] 开始（模式 {mode}）")
+
+            result = None
+            if reverse:
+                self._emit_log("INFO", "[自启] 1/3 启动自动回复（反向模式：插件是监听方）")
+                result = await self.runtime_ops_service.start_auto_reply()
+
+            self._emit_log("INFO", "[自启] 2/3 启动 NapCat…")
             await self.napcat_service.ensure_napcat_started()
             err = self.napcat_service.get_startup_error()
             if err:
                 self._emit_log("WARN", f"[自启] NapCat 未启动: {err}")
                 return
-            await self.napcat_service.wait_for_onebot_ready()
-            result = await self.runtime_ops_service.start_auto_reply()
+
+            if not reverse:
+                result = await self.runtime_ops_service.start_auto_reply()
+
             status = ""
             if isinstance(result, Ok) and isinstance(result.value, dict):
                 status = str(result.value.get("status") or "")
-            self._emit_log("INFO", f"[自启] 自动回复已启动（{status or 'ok'}）")
+            self._emit_log(
+                "INFO",
+                f"[自启] 完成（{status or 'ok'}）—— NapCat 就绪后会自动接上，不必手动点启动",
+            )
+        except asyncio.CancelledError:
+            # 取消是 ``BaseException``，被下面的 ``except Exception`` 漏掉的话
+            # 会**静默消失**、一行日志都不留 —— 之前正是这个状态，完全没法排查。
+            self._emit_log("WARN", "[自启] 被取消")
+            raise
         except Exception as e:
             # 自启失败只记日志：插件本身是好的，用户还能手动开。
             self._emit_log("WARN", f"[自启] 失败: {type(e).__name__}: {e}")
@@ -1023,6 +1096,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return await self._query_dispatch(str(action or "").strip(), kw)
 
     async def _query_dispatch(self, action: str, kw: dict[str, Any]):
+        self._kick_deferred_startup_tasks()
         if action == "dashboard":
             return await self._query_dashboard(kw)
         if action == "buffer":
@@ -1758,6 +1832,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return await self._config_dispatch(str(action or "").strip(), kw)
 
     async def _config_dispatch(self, action: str, kw: dict[str, Any]):
+        self._kick_deferred_startup_tasks()
         if action == "save":
             return await self._config_save(kw)
         if action == "init":
@@ -2004,12 +2079,23 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "restart": {"type": "boolean", "default": False, "description": "apply_onebot：写完是否重启 NapCat（默认不重启 —— NapCat 热读 OneBot 配置；重启会掐断刚建立的登录会话）"},
             "appid": {"type": "string", "description": "use_bot：要启用的机器人 AppID"},
         }, "required": ["action"], "additionalProperties": False},
+        # 必须显式声明：宿主默认的 ``PLUGIN_EXECUTION_TIMEOUT`` 只有 30 秒，而
+        # ``one_click`` 要下载 28MB 再解包 690 个文件 —— 连 ``napcat_install``
+        # 自己给下载的 ``DOWNLOAD_TIMEOUT_SECONDS`` 都是 300 秒。不声明的话，
+        # 一次稍慢的下载就会撞上 `Entry 'deploy' timed out after 30.0s`，
+        # 而且报出来只是个语焉不详的 failed（后端 error 没往界面上带）。
+        #
+        # 300 是对齐出来的值：UI 发起的 run 另有 ``RUN_EXECUTION_TIMEOUT``（默认 300）
+        # 兜底，声明得比它更大没有意义；前端对应 ``static/status.html`` 的
+        # DEPLOY_TIMEOUT_MS。
+        timeout=300,
         metadata={"agent_auto": False},
     )
     async def deploy(self, action: str = "", **kw):
         return await self._deploy_dispatch(str(action or "").strip(), kw)
 
     async def _deploy_dispatch(self, action: str, kw: dict[str, Any]):
+        self._kick_deferred_startup_tasks()
         if action == "ensure":
             return await self._deploy_ensure(kw)
         if action == "one_click":
@@ -2312,6 +2398,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return await self._runtime_dispatch(str(action or "").strip(), kw)
 
     async def _runtime_dispatch(self, action: str, kw: dict[str, Any]):
+        self._kick_deferred_startup_tasks()
         if action == "start":
             return await self._runtime_start(kw)
         if action == "stop":

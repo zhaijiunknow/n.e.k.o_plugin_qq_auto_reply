@@ -196,3 +196,26 @@ def test_every_entry_dispatches_on_action():
         params = list(inspect.signature(getattr(QQAutoReplyPlugin, attr)).parameters)
         assert params == ["self", "action", "kw"], f"{name}（{attr}）: {params}"
         assert callable(getattr(QQAutoReplyPlugin, f"_{name}_dispatch", None)), name
+
+
+# ── 长流程入口必须自己声明超时 ───────────────────────────────
+#
+# 宿主默认的 ``PLUGIN_EXECUTION_TIMEOUT`` 只有 30 秒，而一键部署要下载 28MB 再解包
+# 690 个文件 —— 连 ``napcat_install`` 给下载留的都是 300 秒。不声明的后果是实测撞到过的：
+# `Entry 'deploy' timed out after 30.0s`，而且界面上只显示一个语焉不详的 failed。
+
+def test_deploy_declares_a_timeout_long_enough_for_its_own_download():
+    from plugin.plugins.qq_auto_reply import napcat_install
+    from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
+    from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
+    from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
+
+    meta = getattr(QQAutoReplyPlugin.deploy, EVENT_META_ATTR)
+    # 用宿主自己的解析函数，钉的就是真实契约而不是"某个字段等于某个数"
+    resolved = resolve_entry_timeout(meta, PLUGIN_EXECUTION_TIMEOUT)
+
+    assert resolved is not None
+    assert resolved > PLUGIN_EXECUTION_TIMEOUT, (
+        f"退回宿主默认的 {PLUGIN_EXECUTION_TIMEOUT} 秒了 —— 一次稍慢的下载就会把一键部署掐死")
+    assert resolved >= napcat_install.DOWNLOAD_TIMEOUT_SECONDS, (
+        "入口超时不该比它内部允许的下载超时还短")

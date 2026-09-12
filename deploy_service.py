@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import secrets
 import time
 from pathlib import Path
@@ -103,6 +104,10 @@ class QQDeployService:
                      auto_start: bool = True,
                      emit: Callable[[dict], None] | None = None) -> dict:
         """跑完整条部署。返回结果字典；失败抛 ``RuntimeError``。"""
+        # 节流表是实例状态、跨次部署不清零：第二次跑到某个百分比时，若它恰好等于
+        # 上次留下的最后值，那一行会被当成"重复"整行吞掉（表现为进度凭空少一格）。
+        self._progress_last.clear()
+
         svc = self.plugin.napcat_service
         steps: list[dict] = []
 
@@ -135,10 +140,11 @@ class QQDeployService:
         await self._persist_connection_settings(napcat_dir, mode, step, emit)
         if uin:
             await self._write_config(napcat_dir, uin, mode, step, emit)
-            # 预先知道是哪个号就顺手记上自动登录 —— 首次仍需扫码，但之后重启不必。
-            if napcat_onebot_config.set_auto_login_account(napcat_dir, uin):
-                step("config", f"已设置 NapCat 自动登录账号: {uin}")
+            # 记下"这份配置是插件预写的"：登录轮询靠它区分判据 —— 预写过就不能再拿
+            # ``onebot11_<uin>.json`` 出现当登录信号，那文件此刻就已经在了。
+            self.plugin._deploy_prewrote_onebot_uin = str(uin)
         else:
+            self.plugin._deploy_prewrote_onebot_uin = ""
             step("config", "未填机器人 QQ 号：扫码登录后请点「补写 OneBot 配置」",
                  needs_uin=True)
 
@@ -197,9 +203,28 @@ class QQDeployService:
         )
         step("fetch", f"下载完成并通过校验: {zip_path.stat().st_size / 1048576:.1f} MB")
 
-        napcat_install.extract_zip(
-            zip_path, target,
-            progress=lambda d, t: self._progress(emit, "fetch", d, t, phase="extract"),
+        # 解包挪到工作线程。690 个文件的同步复制跑在协程里会把事件循环整段堵死：
+        # 期间消息管线、SSE 心跳全停，而且积压的进度事件会在解锁瞬间成堆乱序吐出
+        # （界面看着像"获取 NapCat 又跑了两遍"，其实只有一遍）。
+        #
+        # ⚠️ 回调也跟着进了工作线程，不能再直接 emit —— emit 最终走到
+        # ``_spawn_push_ui_event`` 里的 ``asyncio.get_running_loop()``，在非事件循环
+        # 线程里必然抛 RuntimeError 并**被静默吞掉**，解包进度会整段消失。
+        # 所以先在线程外拿住循环，再用 ``call_soon_threadsafe`` 把汇报投回来 ——
+        # ``_progress``（连同它节流用的 ``_progress_last``）仍然只跑在循环线程上。
+        loop = asyncio.get_running_loop()
+
+        def _on_extract_progress(done: int, total: int) -> None:
+            try:
+                loop.call_soon_threadsafe(
+                    functools.partial(self._progress, emit, "fetch", done, total,
+                                      phase="extract"))
+            except RuntimeError:
+                pass  # 循环已关（部署被打断/进程在退）：进度是尽力而为，别掀翻解包
+
+        await asyncio.to_thread(
+            napcat_install.extract_zip, zip_path, target,
+            progress=_on_extract_progress,
         )
         # 校验通过、解包完成，zip 已无用；留着白占 28MB。
         zip_path.unlink(missing_ok=True)
@@ -285,28 +310,46 @@ class QQDeployService:
                          emit: Callable[[dict], None] | None = None) -> dict:
         """扫一次"扫码登录成功了没"—— 一键部署之后的收尾轮询。
 
-        登录成功的信号 = ``config/onebot11_<uin>.json`` 出现（NapCat 登录成功后自己
-        建出来的），与 ``apply_onebot_config`` 用的是同一条判据。
+        判据两条，"真的登进去了"优先：
 
-        没出现就报 ``pending``，由前端继续轮询；出现了就地做完收尾（补写配置 →
-        设自动登录 → 按新配置启动自动回复），与用户手点「补写 OneBot 配置」同一条路。
+        ① **运行时已连上并报出 self_id**。填了 QQ 号时，插件在部署阶段就把 OneBot
+           配置写好并指向自己了，NapCat 登录后直接拨进来 —— 这条最准，它就是登录
+           成功本身。
+        ② **``config/onebot11_<uin>.json`` 出现**。没填 QQ 号时插件没写过这个文件，
+           它是 NapCat 登录后自己建的；这条在 OneBot 连上**之前**就可见，是那个阶段
+           唯一能用的信号。
 
-        **防重入**：收尾会重启 NapCat，而前端是定时轮询 —— 不记状态的话每轮都会
-        重启一次。做完记下 uin，之后同一个号一律返回 ``already``。
+        ②只在插件**没预写过**配置时才算数：预写过的话该文件从部署那一刻就在，
+        拿它当登录信号会在用户还没扫码时就误判成功。
+
+        没出现就报 ``pending``，由前端继续轮询；确认了就就地收尾。自动登录账号在
+        **登录确认之后**才记 —— 提前记的是用户手填的号，未必是他扫码登进去的那个。
+
+        **防重入**：收尾会起运行时，而前端是定时轮询 —— 不记状态的话每轮都会重做。
+        做完记下 uin，之后同一个号一律返回 ``already``。
         """
         svc = self.plugin.napcat_service
         napcat_dir = svc.get_napcat_directory()
         if not napcat_dir:
             raise RuntimeError("还没定位到 NapCat 目录，请先执行一键部署")
 
-        found = napcat_onebot_config.list_onebot_configs(napcat_dir)
-        if not found:
-            return {"status": "pending"}
-        uin = napcat_onebot_config.uin_from_path(found[-1])
+        prewrote = str(getattr(self.plugin, "_deploy_prewrote_onebot_uin", "") or "")
+        uin = await self._detect_login(napcat_dir, prewrote=prewrote)
         if not uin:
             return {"status": "pending"}
         if getattr(self, "_login_applied_uin", "") == uin:
             return {"status": "already", "uin": uin}
+
+        if napcat_onebot_config.set_auto_login_account(napcat_dir, uin):
+            self._emit(emit, "config", f"已记录自动登录账号: {uin}")
+
+        if prewrote:
+            # 配置在部署阶段就写好了，登录后 NapCat 直接拨了进来 —— 此刻那条连接是
+            # **活的**，重启运行时会把它掐断。所以这条分支只记录账号，不碰运行时。
+            self._login_applied_uin = uin
+            return {"status": "completed", "uin": uin,
+                    **self.plugin._auto_start_fields(
+                        {"ok": True, "status": "already_running", "error": ""})}
 
         result = await self.apply_onebot_config(uin=uin, restart=False, emit=emit)
         self._login_applied_uin = uin
@@ -319,6 +362,26 @@ class QQDeployService:
         auto = await self._restart_auto_reply_runtime(bool(auto_start))
         return {"status": "completed", **result,
                 **self.plugin._auto_start_fields(auto)}
+
+    async def _detect_login(self, napcat_dir: Path, *, prewrote: str) -> str:
+        """已登录的 QQ 号；还没登录返回空串。判据见 ``poll_login`` 的说明。"""
+        runtime = getattr(self.plugin, "runtime_service", None)
+        if runtime is not None:
+            try:
+                payload = await runtime.fetch_login_status_payload()
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict) and payload.get("status") == "online":
+                self_id = str(payload.get("self_id") or "").strip()
+                if self_id:
+                    return self_id
+        if prewrote:
+            # 插件预写过配置 → 文件判据此刻恒真，不能用
+            return ""
+        found = napcat_onebot_config.list_onebot_configs(napcat_dir)
+        if not found:
+            return ""
+        return napcat_onebot_config.uin_from_path(found[-1])
 
     # ── 扫码登录后的补写 ────────────────────────────────────
 

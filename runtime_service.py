@@ -20,7 +20,7 @@ class QQRuntimeService:
             "napcat_running": bool(self.plugin.napcat_service.napcat_process and self.plugin.napcat_service.napcat_process.returncode is None),
             "napcat_pid": int(self.plugin.napcat_service.napcat_process.pid) if self.plugin.napcat_service.napcat_process and self.plugin.napcat_service.napcat_process.returncode is None and self.plugin.napcat_service.napcat_process.pid else None,
             "qrcode_url": f"/plugin/{self.plugin.plugin_id}/ui/cache/qrcode.png" if qrcode_path.is_file() else "",
-            "show_napcat_window": bool((self.plugin._qq_settings or {}).get("show_napcat_window", True)),
+            "show_napcat_window": bool((self.plugin._qq_settings or {}).get("show_napcat_window", False)),
             "startup_error": self.plugin.napcat_service.get_startup_error() or None,
             "attention": attention_snapshot,
             "fatigue": self._build_fatigue_snapshot(),

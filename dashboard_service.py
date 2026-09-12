@@ -67,7 +67,7 @@ class QQDashboardService:
                 # 是否存在仍按**解析后**的位置判断（那才是 NapCat 实际在哪）。
                 "napcat_directory_exists": napcat_dir.exists(),
                 "napcat_directory_resolved": str(napcat_dir),
-                "show_napcat_window": bool(settings.get("show_napcat_window", True)),
+                "show_napcat_window": bool(settings.get("show_napcat_window", False)),
                 "reply_mode": self.plugin.config_store.normalize_reply_mode(settings.get("reply_mode")),
                 "show_onboarding": bool(settings.get("show_onboarding", True)),
                 "guide_step_napcat_done": bool(settings.get("guide_step_napcat_done", False)),

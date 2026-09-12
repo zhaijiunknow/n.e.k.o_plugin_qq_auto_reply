@@ -179,8 +179,11 @@ ul.list .empty { color:#94a3b8; font-size:12px; padding:4px 0; }
 const P = 'qq_auto_reply', RUNS = '/runs';
 function t(k, fb) { return (window.I18n && typeof I18n.t === 'function') ? I18n.t(k, fb) : (fb || k); }
 
-/* 与 napcat.html 相同的调用约定：POST /runs 拿 run_id → SSE 等完成 → 取 export 解包 Ok */
-async function call(entry, args) {
+/* 与 napcat.html 相同的调用约定：POST /runs 拿 run_id → SSE 等完成 → 取 export 解包 Ok。
+   opts.timeout 透传给 UISSE.awaitRun；不传就是它的 20 秒默认。
+   一键部署要下载 + 解包 + 启动 NapCat + 等二维码，20 秒必然不够 —— 那个默认值
+   会把一次成功的部署报成「失败：timeout」（后端其实还在跑）。 */
+async function call(entry, args, opts) {
   const r = await fetch(RUNS, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ plugin_id: P, entry_id: entry, args: args || {} }),
@@ -188,7 +191,7 @@ async function call(entry, args) {
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const d = await r.json(), id = d.run_id || d.id;
   if (!id) throw new Error('no run_id');
-  const status = await UISSE.awaitRun(id, {
+  const status = await UISSE.awaitRun(id, Object.assign({
     fetchStatus: async (runId) => {
       try {
         const p = await fetch(RUNS + '/' + runId);
@@ -197,7 +200,7 @@ async function call(entry, args) {
         return ['succeeded', 'failed', 'canceled', 'timeout'].includes(rec.status) ? rec.status : null;
       } catch (e) { return null; }
     },
-  });
+  }, opts || {}));
   if (status !== 'succeeded') throw new Error(status);
   const exp = await fetch(RUNS + '/' + id + '/export');
   if (!exp.ok) return {};
@@ -481,7 +484,7 @@ function startLoginPoll(){
     try { r = await call('deploy', {action:'login_poll'}); } catch (e) { return; }
     if (r.status === 'completed') {
       stopLoginPoll();
-      deployLog('检测到登录成功（' + (r.uin || '?') + '）：已补写配置、设置自动登录并启动自动回复');
+      deployLog('检测到登录成功（' + (r.uin || '?') + '）：已记下自动登录账号并完成收尾');
       await load();
     } else if (r.status === 'already') {
       stopLoginPoll();          /* 已经收尾过了，别再打接口 */
@@ -491,20 +494,30 @@ function startLoginPoll(){
   }, 5000);
 }
 
+/* 一键部署的后端上限是 300 秒（plugin/settings.py 的 RUN_EXECUTION_TIMEOUT 默认值），
+   前端等到这个数就够 —— 别再用 UISSE 那 20 秒的默认值，那会把正在正常跑的部署
+   报成「失败：timeout」。 */
+const DEPLOY_TIMEOUT_MS = 300000;
+
 document.getElementById('btn-deploy').addEventListener('click', async () => {
   stopLoginPoll();
   busy('btn-deploy', true);
   document.getElementById('deploy-log').innerHTML = '';
   deployLog('开始一键部署（首次需要下载 NapCat，可能需要几分钟）…');
   try {
-    const r = await call('deploy', {action:'one_click',  uin: document.getElementById('uin').value.trim() });
+    const r = await call('deploy', {action:'one_click',  uin: document.getElementById('uin').value.trim() },
+                         { timeout: DEPLOY_TIMEOUT_MS });
     deployLog(r.qrcode_ready ? '完成：二维码已就绪，请扫码登录' : '完成：暂未出现二维码，可稍后点「刷新二维码」');
-    /* 登录成功后要补写配置、设自动登录并起自动回复 —— 以前这步要用户自己点
-       「补写 OneBot 配置」。现在开一个轮询替用户盯着，扫完就自动收尾。 */
-    if (r.needs_uin) {
-      deployLog('未填 QQ 号 —— 扫码登录后会自动收尾，不必手动点「补写 OneBot 配置」');
-      startLoginPoll();
-    }
+    /* 登录成功后要记自动登录、补写配置、起自动回复 —— 以前这步要用户自己点
+       「补写 OneBot 配置」。现在开一个轮询替用户盯着，扫完就自动收尾。
+
+       **填没填 QQ 号都要盯**。填了的话配置在部署阶段就写好了、NapCat 登录后会直接
+       拨进来，看似不用管；但"记下自动登录账号"这步仍然在等登录确认（后端按 self_id
+       判，那时才拿得到真正登进去的号 —— 用户手填的未必就是它）。 */
+    deployLog(r.needs_uin
+      ? '未填 QQ 号 —— 扫码登录后会自动收尾，不必手动点「补写 OneBot 配置」'
+      : '登录成功后会自动记下自动登录账号');
+    startLoginPoll();
     /* 自动回复的收尾结果单独报：反向模式下它是"先监听、等 NapCat 登录后自动接上"，
        所以此刻报"未启动"多半只是正向模式还没登录，不是部署失败。 */
     if (r.auto_started === true) deployLog('自动回复已启动（' + (r.auto_start_status || 'ok') + '）');

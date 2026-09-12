@@ -402,6 +402,10 @@ def _full_stack_plugin(tmp_path):
             continue
         _attr = getattr(QQAutoReplyPlugin, _name)
         setattr(plugin, _name, MethodType(_attr, plugin) if callable(_attr) else _attr)
+    # 入口分流开头会踢一次"待办自启"。这个假身没走 startup，`_autostart_pending`
+    # 本来就不存在 —— 绑真实方法即可，它见不到标记就直接早退。
+    plugin._kick_deferred_startup_tasks = MethodType(
+        QQAutoReplyPlugin._kick_deferred_startup_tasks, plugin)
     return plugin
 
 

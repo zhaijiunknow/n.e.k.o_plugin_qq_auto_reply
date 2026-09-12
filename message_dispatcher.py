@@ -615,7 +615,7 @@ class QQMessageDispatcher:
             if enriched_content != raw_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs):
                 self.plugin._emit_log("INFO", f"黑名单过滤(转录后): text={enriched_content[:40]}")
                 return
-        await self.plugin._record_backlog_message(message)
+        await self.plugin.backlog_service.record_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
                 # neko_dynamic 下由 attention_gate_service.evaluate() 统一更新注意力，此处跳过避免双倍计数

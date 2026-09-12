@@ -105,7 +105,11 @@ class QQAutoReplyConfigStore:
             "ai_turn_timeout_seconds": 60.0,
             "handler_shutdown_timeout_seconds": 10.0,
             "napcat_directory": "",
-            "show_napcat_window": True,
+            # 默认**后台**启动：自动化（一键部署 / 开机自启）不该弹一个控制台出来
+            # 打断用户。藏了窗口就没有控制台了，所以启动隐藏窗口时会顺手打开
+            # napcat.json 的 fileLog —— 否则 NapCat 的日志哪儿都不会留，
+            # 见 napcat_onebot_config.ensure_file_log。
+            "show_napcat_window": False,
             "reply_mode": "text",
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,

@@ -128,25 +128,51 @@ async def download_asset(
 
     先写 ``.part`` 再改名：中途失败/被杀不会留下一个看起来完整、实际半截的包
     （那种文件最坏 —— 校验会拦住它，但用户看到的是"下载成功了却用不了"）。
+
+    **``.part`` 跨次保留、带 Range 续传。** 镜像实测会掉速并中途断流
+    （``gh-proxy.com`` 同一天里从 16 MB/s 掉到 0.23 MB/s，且下到 20MB 处断掉），
+    在这个速率下"从零重来"等于永远下不完。断流之后换下一个镜像也**接着已下到的
+    字节往下走**。只有**校验不过**才丢弃 —— 那说明攒起来的字节本身就是错的。
+
+    已经存在且校验通过的正式包**直接复用，不打网络**。既省一次下载，也是"手动把包
+    放进来"的入口 —— 镜像不可用时那是唯一的路。
     """
     out_dir = Path(dest_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     final = out_dir / asset
     part = out_dir / (asset + ".part")
 
+    if final.exists():
+        ok, _ = verify(final, asset)
+        if ok:
+            return final
+        final.unlink(missing_ok=True)   # 坏包清掉，免得每次部署都白校验一遍
+
     # 有些镜像（实测 gh-proxy 就如此）走 chunked 传输、**不带 content-length**。
     # 那种情况下进度分母只能靠钉死的字节数，否则界面上就是一片 "0.0 / 0.0 MB"。
     fallback_total = PINNED_ASSETS.get(asset, (0, ""))[0]
 
+    # 上一轮可能已经下满、只是没走到提升那一步：先验一次，别白打一遍网络。
+    if part.exists() and fallback_total:
+        size = part.stat().st_size
+        if size == fallback_total:
+            ok, _ = verify(part, asset)
+            if ok:
+                os.replace(part, final)
+                return final
+            part.unlink(missing_ok=True)    # 攒够了却验不过 → 这份数据是坏的
+        elif size > fallback_total:
+            part.unlink(missing_ok=True)    # 比钉死的还长（换过版本？）→ 只能重来
+
     errors: list[str] = []
     for url in candidate_urls(asset, mirrors):
+        resume_from = part.stat().st_size if part.exists() else 0
         try:
             await _fetch(url, part, progress=progress, timeout=timeout,
-                         fallback_total=fallback_total)
+                         fallback_total=fallback_total, resume_from=resume_from)
         except Exception as e:
             errors.append(f"{url.split('/')[2] if '://' in url else url}: {e}")
-            part.unlink(missing_ok=True)
-            continue
+            continue        # **留着 .part** —— 下一个镜像/下一次接着下
         ok, why = verify(part, asset)
         if not ok:
             # 校验不过一律丢弃 —— 这是"镜像只搬运不证明"的落点。
@@ -160,21 +186,34 @@ async def download_asset(
 
 
 async def _fetch(url: str, dest: Path, *, progress: Callable[[int, int], None] | None,
-                 timeout: float, fallback_total: int = 0) -> None:
-    total_expected = 0
+                 timeout: float, fallback_total: int = 0, resume_from: int = 0) -> None:
+    """把 ``url`` 下进 ``dest``；``resume_from > 0`` 时带 Range 接着写。
+
+    服务端**不支持 Range 时会回 200 而不是 206** —— 那时必须从头写。把整包追加到
+    半截文件后面会攒出一份"长度碰巧对得上、内容全错"的包，最后卡在校验上，而且
+    每次重试都重演。
+    """
+    headers = {"Range": f"bytes={resume_from}-"} if resume_from > 0 else None
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout), follow_redirects=True, max_redirects=5,
     ) as client:
-        async with client.stream("GET", url) as resp:
+        async with client.stream("GET", url, headers=headers) as resp:
             resp.raise_for_status()
             try:
-                total_expected = int(resp.headers.get("content-length") or 0)
+                length = int(resp.headers.get("content-length") or 0)
             except ValueError:
-                total_expected = 0
-            if total_expected <= 0:
-                total_expected = fallback_total
-            done = 0
-            with open(dest, "wb") as f:
+                length = 0
+            offset = 0
+            if resume_from > 0 and resp.status_code == 206:
+                offset = resume_from
+                # 206 的 content-length 只是**剩余**部分，总量要把它加回来
+                total_expected = offset + length if length > 0 else fallback_total
+            else:
+                total_expected = length if length > 0 else fallback_total
+            done = offset
+            if progress:
+                progress(done, total_expected)
+            with open(dest, "ab" if offset else "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=_CHUNK):
                     f.write(chunk)
                     done += len(chunk)

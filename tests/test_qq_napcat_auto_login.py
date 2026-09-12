@@ -48,22 +48,51 @@ def test_preserves_the_rest_of_the_file(tmp_path):
 
 
 def test_creates_the_file_when_absent(tmp_path):
-    """首次部署时 webui.json 还没被 NapCat 生成过 —— 缺失不该报错，
-    只写这一个键，其余让 NapCat 用它自己的 schema 默认值补。"""
+    """首次部署时 webui.json 还没被 NapCat 生成过 —— 缺失不该报错。
+
+    **必须连 host/port/token 一起写**，不能只写 autoLoginAccount 就指望 NapCat
+    用它自己的 schema 默认值补。它的 ``ensureConfigFileExists`` 只在文件**不存在**
+    时才落盘一份完整默认配置；文件一旦被我们抢先建出来，它只在内存里补默认值 ——
+    token 于是只活在它的控制台输出里，而插件启动 NapCat 时把 stdout 丢进了
+    DEVNULL、``napcat.json`` 又默认 ``fileLog: false``，**这个 token 谁也拿不到**。
+
+    代价不只是进不去 WebUI：需要验证码 / 新设备验证时，NapCat 只通过 WebUI 回调
+    暴露它们（``needCaptcha``+``proofWaterUrl``、``needNewDevice``+``jumpUrl``），
+    没有 token 就等于把用户唯一的出路堵死。
+    """
     assert not cfg.webui_config_path(tmp_path).exists()
 
     assert cfg.set_auto_login_account(tmp_path, "999") is True
 
     data = json.loads(cfg.webui_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert data == {"autoLoginAccount": "999"}
+    assert data["autoLoginAccount"] == "999"
+    assert data["host"] == "::" and data["port"] == 6099
+    assert data["token"], "token 不落盘 = WebUI 进不去"
 
 
 # ── 幂等与空值 ──────────────────────────────────────────────
 
 def test_same_account_is_a_noop(tmp_path):
-    _webui(tmp_path, {"autoLoginAccount": "12345"})
+    """账号没变、字段也齐 —— 不该白写一次。"""
+    _webui(tmp_path, {"host": "::", "port": 6099, "token": "abc123",
+                      "autoLoginAccount": "12345"})
 
     assert cfg.set_auto_login_account(tmp_path, "12345") is False, "不该白写一次"
+
+
+def test_a_field_incomplete_file_still_gets_completed(tmp_path):
+    """账号没变但文件缺 token/host/port —— 必须补上。
+
+    早先只看"账号一不一样"就早退，于是"只有 autoLoginAccount 的 webui.json"
+    会被永远当成完好的，token 再也补不进来（真实部署踩到过）。
+    """
+    _webui(tmp_path, {"autoLoginAccount": "12345"})
+
+    assert cfg.set_auto_login_account(tmp_path, "12345") is True
+
+    data = json.loads(cfg.webui_config_path(tmp_path).read_text(encoding="utf-8"))
+    assert data["token"], "缺 token 就得补"
+    assert data["port"] == 6099
 
 
 def test_switching_accounts_rewrites(tmp_path):

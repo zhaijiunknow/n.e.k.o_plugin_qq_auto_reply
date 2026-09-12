@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
@@ -111,6 +112,59 @@ def get_auto_login_account(napcat_dir: Path | str) -> str:
     return str(data.get("autoLoginAccount") or "").strip()
 
 
+#: NapCat ``config/webui.json`` schema 里我们关心的默认值（``napcat.mjs`` 的 ``HN``）。
+_WEBUI_DEFAULTS: dict[str, Any] = {"host": "::", "port": 6099}
+
+
+def _ensure_webui_defaults(data: dict[str, Any]) -> None:
+    """就地补全 ``webui.json`` 的必需字段；缺 token 就生成一个（随写落盘）。
+
+    为什么必须由**我们**补：NapCat 的 ``ensureConfigFileExists`` 只在文件**不存在**
+    时才写一份带随机 token 的完整默认配置。插件一旦抢先建了这个文件（哪怕只写
+    ``autoLoginAccount``），NapCat 就只在内存里补默认值、从不落盘 —— token 于是
+    只存在于它的控制台输出里，而插件启动 NapCat 时把 stdout 丢进了 DEVNULL，
+    ``napcat.json`` 又默认 ``fileLog: false``，**这个 token 就谁也拿不到了**。
+
+    后果不只是"进不去 WebUI"：需要验证码 / 新设备验证时，NapCat 只通过 WebUI 回调
+    （``needCaptcha`` + ``proofWaterUrl``、``needNewDevice`` + ``jumpUrl``）把它们
+    暴露出来 —— 没有 token 就没有这条路，用户卡在验证上无处可去。
+
+    另外 token 的 schema 默认值是**进程启动时随机生成一次**的，重启就换一个；
+    不落盘连"抄一次管一辈子"都做不到。
+    """
+    for key, value in _WEBUI_DEFAULTS.items():
+        data.setdefault(key, value)
+    if not str(data.get("token") or "").strip():
+        # 12 位 hex —— 与 NapCat 自己的默认长度（VR(12)）一致
+        data["token"] = secrets.token_hex(6)
+
+
+def napcat_config_path(napcat_dir: Path | str) -> Path:
+    """``config/napcat.json`` —— NapCat 的通用配置（日志开关、hook 开关等）。"""
+    return config_dir_of(napcat_dir) / "napcat.json"
+
+
+def ensure_file_log(napcat_dir: Path | str) -> bool:
+    """打开 NapCat 的文件日志，返回是否真的改了。
+
+    **后台启动时必须开。** NapCat 的 logger 默认是 ``fileLogEnabled = false`` /
+    ``consoleLogEnabled = true``（见 ``napcat.mjs``），也就是**只写控制台**；而插件
+    启动它时把 stdout/stderr 都丢进了 DEVNULL。于是窗口一藏（``CREATE_NO_WINDOW``），
+    它的日志就**哪儿都不会留**，``NapCat.Shell/logs/`` 会是空的。
+
+    这个亏已经吃过一次：WebUI 的 token 当初只出现在控制台里，谁都拿不到。
+
+    读-合并-写，只动 ``fileLog`` 一个键，NapCat 自己的其它设置原样保留。
+    """
+    path = napcat_config_path(napcat_dir)
+    data = load(path)
+    if data.get("fileLog") is True:
+        return False
+    data["fileLog"] = True
+    write(path, data)
+    return True
+
+
 def set_auto_login_account(napcat_dir: Path | str, uin: str) -> bool:
     """把 ``autoLoginAccount`` 写成这个号 —— 下次启动 NapCat 会自动快速登录。
 
@@ -120,18 +174,24 @@ def set_auto_login_account(napcat_dir: Path | str, uin: str) -> bool:
     所以设了也不会把用户卡死。
 
     **扫码登录成功之后**才该调：账号配置（``napcat_<uin>.json``）是登录后才生成的，
-    提前设没有害处但没有意义。
+    提前设没有害处但没有意义 —— 而且提前设的是用户**手填**的号，未必就是他扫码
+    登进去的那个。
 
-    返回是否真的改了（已经是这个号就不动文件，免得白写一次）。
+    顺带补全 WebUI 的其余字段（见 ``_ensure_webui_defaults``）。
+
+    返回是否真的改了（已经是这个号、且字段都齐了就不动文件，免得白写一次）。
     """
     uin = str(uin or "").strip()
     if not uin:
         return False
     path = webui_config_path(napcat_dir)
     data = load(path)
-    if str(data.get("autoLoginAccount") or "").strip() == uin:
+    before = json.dumps(data, sort_keys=True)
+    if str(data.get("autoLoginAccount") or "").strip() != uin:
+        data["autoLoginAccount"] = uin
+    _ensure_webui_defaults(data)
+    if json.dumps(data, sort_keys=True) == before:
         return False
-    data["autoLoginAccount"] = uin
     write(path, data)
     return True
 

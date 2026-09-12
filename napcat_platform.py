@@ -81,7 +81,7 @@ class LaunchSpec:
     kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-def launch_spec(launcher: Path | str, *, show_window: bool = True,
+def launch_spec(launcher: Path | str, *, show_window: bool = False,
                 windows: bool | None = None) -> LaunchSpec:
     """给出启动 NapCat 的 argv / cwd / 平台 kwargs。
 
