@@ -109,7 +109,15 @@ def test_ensure_started_finds_bundled_napcat_without_config(monkeypatch, tmp_pat
     是正常状态。这里曾经按「设置项填没填」判断，导致那种情况永远不启动、且毫无报错
     —— 表现就是"打开界面 NapCat 没起来"，没有任何线索可查。
     """
+    from plugin.plugins.qq_auto_reply import napcat_platform
     from plugin.plugins.qq_auto_reply import napcat_service as ns
+
+    # 启动器候选名是**平台相关**的（Windows 是 .bat 系列，POSIX 只有 napcat.mjs），
+    # 而这里写的是 .bat —— 所以必须显式声明"测的是 Windows 那套语义"。继承宿主
+    # 平台的话，这条在 Linux CI 上会被 find_launcher 判为"没有启动器"、静默不启动，
+    # 断言必挂（它从落地起就一直红在 Linux 上，本地 Windows 跑不出来）。
+    monkeypatch.setattr(napcat_platform, "is_windows", lambda: True)
+
     (tmp_path / "launcher-user.bat").write_text("@echo off", encoding="utf-8")
     monkeypatch.setattr(ns, "bundled_napcat_dir", lambda: tmp_path)
 
