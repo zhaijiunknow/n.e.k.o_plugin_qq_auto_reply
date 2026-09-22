@@ -9,7 +9,6 @@ from config.prompts.prompts_sys import (
     get_context_summary_ready,
     normalize_sys_prompt_locale,
 )
-from main_logic.core import apply_role_placeholders
 from utils.language_utils import get_global_language_full
 
 from .pipeline_models import QQInstructionBundle
@@ -37,6 +36,21 @@ from .scene_prompt_templates import (
     SCENE_PRIVATE_CHAT,
     SCENE_SHARED_GROUP,
 )
+
+
+def _apply_role_placeholders(*args: Any, **kwargs: Any) -> str:
+    """``main_logic.core.apply_role_placeholders`` 的**惰性**入口。
+
+    模块级 import 它会让每次插件进程启动都付 ~476ms：那条链是
+    ``main_logic.core`` → ``.manager`` → ``.greeting`` → ``startup_greeting_policy``
+    → ``memory`` 包，而记忆子系统的导入图里有 ``fastapi`` + ``starlette``（约 260ms）。
+    插件自己不开任何 HTTP 服务，纯属替宿主的包结构买单 —— 而模块级 import 让这笔钱在
+    「这个函数压根没被调用过」的启动路径上照付。这里只要一个字符串占位符替换，
+    挪到调用点即可。
+    """
+    from main_logic.core import apply_role_placeholders
+
+    return apply_role_placeholders(*args, **kwargs)
 
 
 def resolve_prompt_override(
@@ -349,7 +363,7 @@ class QQSessionInstructionService:
         )
 
         master_title = master_name if master_name else self.plugin.i18n.t("prompts.default_master", default="主人")
-        base_prompt = apply_role_placeholders(
+        base_prompt = _apply_role_placeholders(
             character_prompt,
             lanlan_name=her_name,
             master_name=master_title,
@@ -1025,7 +1039,7 @@ class QQSessionInstructionService:
         sections.append(
             ROLE_CARD_SECTION.format(
                 card_fields="\n".join(
-                    f"{field_name}: {apply_role_placeholders(str(field_value), lanlan_name=her_name, master_name=master_title)}"
+                    f"{field_name}: {_apply_role_placeholders(str(field_value), lanlan_name=her_name, master_name=master_title)}"
                     for field_name, field_value in character_card_fields.items()
                 ),
             )
