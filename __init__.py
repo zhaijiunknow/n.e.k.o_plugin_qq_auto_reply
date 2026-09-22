@@ -232,9 +232,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         #
         # 解析走 connector_seam：宿主第一方包 utils.connection.onebot 优先，拿不到时
         # 回退 _vendor 里的副本（出处见 _vendor/connection_onebot/PROVENANCE.md）。
-        from .connector_seam import CONNECTOR_SOURCE, create_onebot_connection
+        from .connector_seam import (
+            CONNECTOR_MODULE,
+            CONNECTOR_SOURCE,
+            create_onebot_connection,
+        )
 
-        self._emit_log("INFO", f"[QQ] 连接器来源: {CONNECTOR_SOURCE}")
+        # 两路都发：`_emit_log` 只写内存缓冲 + 推 SSE（插件 UI 的运行日志页），
+        # 不进控制台/日志文件；`logger` 才是能在宿主控制台和插件日志文件里看到的。
+        # 排查"装上去到底连的哪个连接器"时要的是后者。
+        source_msg = f"[QQ] 连接器来源: {CONNECTOR_SOURCE} ({CONNECTOR_MODULE})"
+        self._emit_log("INFO", source_msg)
+        self.logger.info(source_msg)
         return create_onebot_connection(
             self._qq_settings,
             logger=self.logger,

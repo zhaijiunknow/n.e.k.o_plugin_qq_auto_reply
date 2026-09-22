@@ -65,6 +65,10 @@ def _load(host_package: str = HOST_PACKAGE) -> tuple[ModuleType, str]:
 
 _provider, CONNECTOR_SOURCE = _load()
 
+#: 解析到的连接的模块全名。``CONNECTOR_SOURCE`` 只说"宿主还是副本"，这个说"具体是谁" ——
+#: PR #2996 合并后用它确认拿到的是 ``utils.connection.onebot`` 而不是残留的副本。
+CONNECTOR_MODULE = _provider.__name__
+
 # 子模块对象一并透出：调用方与测试会摸到 onebot_client / qq_open_plat 这类更深的名字。
 factory = _provider.factory
 onebot_client = _provider.onebot_client
@@ -78,6 +82,7 @@ QQOpenPlatformConnection = _provider.QQOpenPlatformConnection
 create_onebot_connection = _provider.create_onebot_connection
 
 __all__ = [
+    "CONNECTOR_MODULE",
     "CONNECTOR_SOURCE",
     "HOST_PACKAGE",
     "VENDORED_PACKAGE",
