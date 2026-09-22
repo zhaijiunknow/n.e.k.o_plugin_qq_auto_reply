@@ -213,7 +213,18 @@ class QQAttentionService:
         self._cache[state.group_id] = state.to_dict()
 
     def _enabled(self) -> bool:
-        return bool((self.plugin._qq_settings or {}).get("enable_group_attention", False))
+        """注意力账本是否运行。**没有独立开关**。
+
+        以前这里读配置键 ``enable_group_attention``，但它是个**假旋钮**：唯一让它为真
+        的模式（``neko_dynamic``，也是出厂默认）下 ``_enforce_attention_for_dynamic_mode``
+        会把它强制设回 True；而在 ``neko_scene`` 下门控根本不跑
+        （``message_dispatcher`` 只在 neko_dynamic 下调 ``attention_gate_service``）。
+        也就是说那个开关"能关的模式里不需要关、需要关的模式里关不着"。
+
+        已删除该配置。账本恒开 —— **是否门控**由调用方按策略模式决定，不在这里。
+        （老配置里残留的 ``enable_group_attention`` 键无害：它只是被原样加载与回写。）
+        """
+        return True
 
     # ── 周期模型参数（可配）──
 

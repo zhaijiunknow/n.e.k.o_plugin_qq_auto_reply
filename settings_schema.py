@@ -366,12 +366,6 @@ MISC = (
     SettingSpec("strategy_mode", "str", "neko_dynamic", saveable=True,
                 enum=("neko_dynamic", "neko_scene"), description="save：策略模式",
                 handler="strategy_mode"),
-    # neko_dynamic 下被 _enforce_attention_for_dynamic_mode 强制为 True。
-    SettingSpec("enable_group_attention", "bool", True, saveable=True,
-                description="save：启用多群注意力（neko_dynamic 模式下强制开）",
-                handler="enable_group_attention",
-                ui=UIInput("cfg-enable-attention", kind="checkbox",
-                           label="ui.attention.enable")),
     SettingSpec("neko_dynamic_idle_timeout_seconds", "float", 10.0, floor=0.0,
                 description="已废弃（注意力系统下不再使用）"),
     SettingSpec("neko_dynamic_waking_users", "list", [],

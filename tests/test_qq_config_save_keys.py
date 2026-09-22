@@ -5,7 +5,9 @@
 **任何一层没点名，那个键就被静默丢掉** —— 界面照常弹「设置已保存」，
 但值刷新后弹回原值，看起来就是"保存没生效"。
 
-`enable_group_attention` 就这么丢过：界面一直在发，三层都没接。
+`enable_group_attention` 就这么丢过：界面一直在发，三层都没接。（那个键后来被整个
+删掉了 —— 它是假旋钮，见 settings_schema 的删除说明；但当年这条经验促成了下面这些
+守卫，它们与具体某个键无关，仍然有效。）
 
 ===== 归并到 settings_schema 之后的形状 =====
 
@@ -56,23 +58,6 @@ def test_allowlist_is_generated_from_the_schema_table():
         for name in (spec.key, *spec.aliases)
     }
     assert _allowlist() == expected
-
-
-def test_the_attention_switch_is_wired_end_to_end():
-    """这条是通用守卫的**具体案例** —— 它曾经真的断过。"""
-    assert "enable_group_attention" in _allowlist()
-    assert "enable_group_attention" in _ui_save_keys("napcat.html")
-
-    import inspect
-
-    from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    assert "enable_group_attention" in inspect.signature(
-        QQDashboardService.save_settings).parameters
-    # 最后一层：真的写进设置
-    assert '"enable_group_attention"' in inspect.getsource(
-        QQSettingsService._save_settings_locked)
 
 
 def test_every_declared_handler_is_actually_implemented():

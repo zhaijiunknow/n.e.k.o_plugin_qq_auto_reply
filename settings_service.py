@@ -597,7 +597,6 @@ class QQSettingsService:
     async def load_business_config(self) -> dict[str, Any]:
         self.plugin._qq_settings = await self.plugin.config_store.load()
         self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
-        self._enforce_attention_for_dynamic_mode()
         return dict(self.plugin._qq_settings)
 
     async def ensure_business_config_initialized(self) -> dict[str, Any]:
@@ -690,7 +689,6 @@ class QQSettingsService:
         self.plugin._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
         # 猫娘动态注意力策略配置
         self.plugin._strategy_mode = self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode"))
-        self._enforce_attention_for_dynamic_mode()
         # 前端日志：显示当前连接配置（token 脱敏），方便用户排查浏览器自动回填等问题
         url = str(settings.get("onebot_url") or "").strip()
         masked = self.plugin._mask_token(str(settings.get("token") or ""))
@@ -707,14 +705,6 @@ class QQSettingsService:
         if str(mode or "").strip() == "napcat_forward":
             return "ws://127.0.0.1:3001"
         return "ws://0.0.0.0:6199"
-
-    def _enforce_attention_for_dynamic_mode(self) -> None:
-        """neko_dynamic 模式下强制启用多群注意力，确保磁盘配置与运行时一致。"""
-        strategy_mode = self.plugin.config_store._normalize_strategy_mode(
-            self.plugin._qq_settings.get("strategy_mode")
-        )
-        if strategy_mode == "neko_dynamic":
-            self.plugin._qq_settings["enable_group_attention"] = True
 
     def rebuild_permission_managers(self, config: dict[str, Any]) -> None:
         self.plugin.permission_mgr = PermissionManager(
@@ -1108,9 +1098,6 @@ class QQSettingsService:
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
-        enable_group_attention = kwargs.get("enable_group_attention")
-        if enable_group_attention is not None:
-            self.plugin._qq_settings["enable_group_attention"] = bool(enable_group_attention)
         locale = kwargs.get("locale")
         if locale is not None:
             self.plugin._qq_settings["locale"] = str(locale or "").strip()
@@ -1250,7 +1237,6 @@ class QQSettingsService:
             self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)
             self.plugin._strategy_mode = self.plugin._qq_settings["strategy_mode"]
             self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._strategy_mode}")
-        self._enforce_attention_for_dynamic_mode()
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
         # 通用路径：表里**没有** handler 的键按 kind 归一（含钳制）写回。

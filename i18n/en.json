@@ -62,8 +62,6 @@
   "ui.attention.decay_interval.hint": "How often the attention decay loop ticks, in seconds.",
   "ui.attention.emotion_multipliers": "Emotion Multipliers (JSON)",
   "ui.attention.emotion_multipliers.hint": "Emotion to rise/fall rate multiplier, as a JSON object keyed by emotion name. Invalid input falls back to the defaults entirely.",
-  "ui.attention.enable": "Enable Multi-Group Attention",
-  "ui.attention.enable.hint": "Master switch for multi-group attention gating.",
   "ui.attention.fall_attenuation": "Fall-Phase Message Attenuation",
   "ui.attention.fall_attenuation.hint": "Message-boost attenuation in the fall phase (0.3 = worth 30%). A reply always flips the group into fall; lower makes recovery harder.",
   "ui.attention.focus_cooldown": "Min Fall Duration (sec)",

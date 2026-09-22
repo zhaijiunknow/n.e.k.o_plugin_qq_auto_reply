@@ -58,7 +58,11 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "backlog_notify_cooldown_seconds": 900,
     "backlog_issue_notify_threshold": 1,
     "strategy_mode": "neko_dynamic",
-    "enable_group_attention": True,
+    # 有意删除（不在此快照里）："enable_group_attention"（原默认 True）。
+    # 它是个**假旋钮** —— 唯一让它为真的模式（neko_dynamic，出厂默认）下
+    # `_enforce_attention_for_dynamic_mode` 会把它强制设回 True；而 neko_scene 下
+    # 门控根本不跑（message_dispatcher 只在 neko_dynamic 下调 attention_gate_service）。
+    # 现在注意力账本恒开（attention_service._enabled），是否门控由策略模式决定。
     "neko_dynamic_idle_timeout_seconds": 10.0,
     "neko_dynamic_waking_users": [],
     "neko_dynamic_waking_keywords": [],

@@ -62,8 +62,6 @@
   "ui.attention.decay_interval.hint": "注意力衰减循环多久跑一次（秒）。",
   "ui.attention.emotion_multipliers": "情绪倍率表(JSON)",
   "ui.attention.emotion_multipliers.hint": "情绪 → 升降速率倍率。JSON 对象，键是情绪名。非法输入整份回退默认。",
-  "ui.attention.enable": "启用多群注意力",
-  "ui.attention.enable.hint": "总开关：启用/禁用多群注意力门控。",
   "ui.attention.fall_attenuation": "回落期消息衰减",
   "ui.attention.fall_attenuation.hint": "fall 相位里消息加成的衰减系数（0.3 = 只值三成）。回复后群必然进入 fall，这个值越小越难回血。",
   "ui.attention.focus_cooldown": "回落最短持续 (秒)",
