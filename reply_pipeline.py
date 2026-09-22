@@ -343,7 +343,7 @@ class QQReplyPipelineRunner:
                     raw = raw[len(structural_pre_tool):]
             clean = str(raw or "").strip()
             # 发送延迟由脚本按正态分布取样 —— 与提示词无关，模型不参与
-            wait_sec = QQReplyBufferService.sample_wait_seconds(
+            wait_sec = QQReplyBufferService.send_pause_seconds(
                 private=not bool(request.is_group),
                 settings=getattr(self.plugin, "_qq_settings", None))
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""

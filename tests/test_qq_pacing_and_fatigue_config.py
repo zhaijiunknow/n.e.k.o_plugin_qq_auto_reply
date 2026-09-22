@@ -105,32 +105,29 @@ def test_burst_never_locks_out_completely():
 
 # ── 回复节奏取样 ──────────────────────────────────────────────────────────
 
-def test_buffer_sampler_uses_configured_band():
-    """配了区间就落在区间里（这是"手感可调"的直接证据）。"""
-    settings = {
-        "buffer_delay_mean_seconds": 20.0,
-        "buffer_delay_sigma_seconds": 0.1,
-        "buffer_delay_min_seconds": 19.0,
-        "buffer_delay_max_seconds": 21.0,
-    }
-    samples = [QQReplyBufferService.sample_wait_seconds(settings=settings) for _ in range(50)]
-    assert all(19.0 <= s <= 21.0 for s in samples), samples
+def test_send_pause_returns_the_configured_value():
+    """发送停顿就是配置里那个值（不再取样、不再夹区间）。"""
+    settings = {"buffer_delay_mean_seconds": 20.0}
+
+    assert QQReplyBufferService.send_pause_seconds(settings=settings) == 20.0
 
 
-def test_buffer_sampler_zero_delay_is_respected():
-    """延迟设成 0 有意义（立即发），不能被 ``or`` 当未设置吞掉。"""
-    settings = {"buffer_delay_mean_seconds": 0.0, "buffer_delay_sigma_seconds": 0.0,
-                "buffer_delay_min_seconds": 0.0, "buffer_delay_max_seconds": 0.0}
-    assert QQReplyBufferService.sample_wait_seconds(settings=settings) == 0.0
+def test_send_pause_zero_is_respected():
+    """停顿设成 0 有意义（不额外等），不能被 ``or`` 当未设置吞掉。"""
+    assert QQReplyBufferService.send_pause_seconds(
+        settings={"buffer_delay_mean_seconds": 0.0}) == 0.0
 
 
-def test_buffer_sampler_without_settings_is_unchanged():
-    """不传 settings 的旧调用方（既有测试）行为不变。"""
-    samples = [QQReplyBufferService.sample_wait_seconds(private=False) for _ in range(50)]
-    assert all(
-        QQReplyBufferService.MIN_WAIT_SECONDS <= s <= QQReplyBufferService.MAX_WAIT_SECONDS
-        for s in samples
-    )
+def test_send_pause_without_settings_falls_back_to_constants():
+    """不传 settings 的旧调用方（既有测试）行为不变：回退类常量。"""
+    assert QQReplyBufferService.send_pause_seconds(private=False) == QQReplyBufferService.DEFAULT_WAIT_SECONDS
+    assert QQReplyBufferService.send_pause_seconds(private=True) == QQReplyBufferService.DEFAULT_WAIT_PRIVATE
+
+
+def test_send_pause_never_negative():
+    """负值钳到 0 —— 负数等待会让 wait_until 落到过去，语义混乱。"""
+    assert QQReplyBufferService.send_pause_seconds(
+        settings={"buffer_delay_mean_seconds": -3.0}) == 0.0
 
 
 def test_buffer_max_count_is_configurable():

@@ -217,32 +217,24 @@ PACING = (
                 floor=1, description="save：窗口内最多回复几条（第 N+1 条强制静默）",
                 ui=UIInput("cfg-burst-max", min=1, max=100, step=1,
                            label="ui.pacing.burst_max", hint="ui.pacing.burst_max.hint")),
+    # 发送停顿：**生成完成之后**、真正发出去之前的一小块停顿，只为了让回复别
+    # 看起来是秒回的。总时长不靠它 —— 那由下面的收集窗口把控（见
+    # reply_buffer_service._send_at 的下限语义），所以它常常"不参与决定"。
+    #
+    # 原本这里有四个旋钮（均值 / 标准差 / 下限 / 上限，按正态分布取样并夹尾巴）。
+    # 改成下限语义后总时长归收集窗口管，正态尾巴与区间夹取都没有意义，四个并成一个。
+    #
+    # **键名里的 mean 是历史遗留**（原先它是正态分布的中心），现在就是那个停顿本身。
+    # 刻意不改名：老配置里已经存了用户调好的值，改名等于把它们静默重置成出厂值。
     SettingSpec("buffer_delay_mean_seconds", "float", 1.0, saveable=True,
-                floor=0.0, description="save：群聊首次延迟均值（秒，正态分布中心）",
+                floor=0.0, description="save：群聊发送停顿（秒）—— 生成完成后、发出前的小停顿",
                 ui=UIInput("cfg-buffer-mean", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_mean", hint="ui.pacing.buffer_mean.hint")),
     SettingSpec("buffer_delay_private_seconds", "float", 0.6, saveable=True,
-                floor=0.0, description="save：私聊首次延迟均值（秒）",
+                floor=0.0, description="save：私聊发送停顿（秒）",
                 ui=UIInput("cfg-buffer-mean-private", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_mean_private",
                            hint="ui.pacing.buffer_mean_private.hint")),
-    SettingSpec("buffer_delay_sigma_seconds", "float", 0.5, saveable=True,
-                floor=0.0, description="save：群聊延迟标准差（秒）",
-                ui=UIInput("cfg-buffer-sigma", min=0, max=60, step=0.5,
-                           label="ui.pacing.buffer_sigma", hint="ui.pacing.buffer_sigma.hint")),
-    SettingSpec("buffer_delay_sigma_private_seconds", "float", 0.3, saveable=True,
-                floor=0.0, description="save：私聊延迟标准差（秒）",
-                ui=UIInput("cfg-buffer-sigma-private", min=0, max=60, step=0.5,
-                           label="ui.pacing.buffer_sigma_private",
-                           hint="ui.pacing.buffer_sigma_private.hint")),
-    SettingSpec("buffer_delay_min_seconds", "float", 0.2, saveable=True,
-                floor=0.0, description="save：延迟下限（秒，夹住正态分布的尾巴）",
-                ui=UIInput("cfg-buffer-min", min=0, max=60, step=0.5,
-                           label="ui.pacing.buffer_min", hint="ui.pacing.buffer_min.hint")),
-    SettingSpec("buffer_delay_max_seconds", "float", 2.5, saveable=True,
-                floor=0.0, description="save：延迟上限（秒）",
-                ui=UIInput("cfg-buffer-max", min=0, max=120, step=0.5,
-                           label="ui.pacing.buffer_max", hint="ui.pacing.buffer_max.hint")),
     # 收集窗口：从**消息到达**算起至少等这么久才发，是"后续消息并进同一批"的机会窗口。
     # 与上面那组 buffer_delay_* 的区别：那组是**生成完成之后**的发送停顿，这组锚在
     # 到达时刻、是下限（见 reply_buffer_service._send_at）。调小它 = 更难合并。

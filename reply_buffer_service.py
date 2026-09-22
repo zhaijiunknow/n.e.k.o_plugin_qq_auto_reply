@@ -4,10 +4,12 @@
 消息到达 → LLM 生成回复 → 按正态分布取一个发送延迟 → 等待 → 发送
 等待期间新消息到达 → LLM 决定合并/替换/丢弃 → 重置计时
 
-**发送延迟由脚本取样，不再由 LLM 决定**（见 :meth:`QQReplyBufferService.sample_wait_seconds`）：
-让模型在正文里额外产出一个数字，既占生成预算、又要求它每次自己变随机，实测不稳定；
-在基数附近按正态分布取样只要一行，节奏反而更像人。``<wait>`` 标签连同提示词里那条指令
-一并移除 —— 插件里不再有任何解析或剥离它的代码。
+**发送延迟由脚本决定，不再由 LLM 决定**（见 :meth:`QQReplyBufferService.send_pause_seconds`）：
+让模型在正文里额外产出一个数字，既占生成预算、又要求它每次自己变随机，实测不稳定。
+``<wait>`` 标签连同提示词里那条指令一并移除 —— 插件里不再有任何解析或剥离它的代码。
+
+这个停顿只是「生成完之后别秒回」的一小块，**总时长由收集窗口把控**
+（见 :meth:`send_pause_seconds` 与 :meth:`_send_at` 的说明）。
 """
 
 from __future__ import annotations
@@ -92,7 +94,7 @@ class QQReplyBufferService:
     """异步回复缓冲。
 
     合并/替换/丢弃的决策仍由 LLM 做；**发送延迟不是** —— 它由
-    :meth:`sample_wait_seconds` 按正态分布取样（见模块 docstring）。
+    :meth:`send_pause_seconds` 给出（见模块 docstring）。
     """
 
     # 群聊等得**更久**：一屋子人在聊，晚一点插话更自然，也留出"话题会不会自己
@@ -100,12 +102,6 @@ class QQReplyBufferService:
     DEFAULT_WAIT_SECONDS = 6.0      # 群聊延迟基数（正态分布中心）
     DEFAULT_WAIT_PRIVATE = 3.0      # 私聊基数
 
-    #: 延迟取样的标准差，取基数的一半左右 —— 约 2/3 的取值落在基数 ±σ 内。
-    WAIT_SIGMA_SECONDS = 3.0
-    WAIT_SIGMA_PRIVATE = 1.5
-    #: 夹住正态分布的尾巴：不夹的话偶尔会甩出一个十几秒的静默。
-    MIN_WAIT_SECONDS = 1.5
-    MAX_WAIT_SECONDS = 10.0
 
     def _max_buffer_count(self) -> int:
         """缓冲多少条就强制总结（可配 ``buffer_max_count``，默认 17）。
@@ -322,39 +318,22 @@ class QQReplyBufferService:
         )
 
     @classmethod
-    def sample_wait_seconds(cls, *, private: bool = False, settings: Any = None) -> float:
-        """按正态分布取一个发送延迟（秒）。
+    def send_pause_seconds(cls, *, private: bool = False, settings: Any = None) -> float:
+        """生成完成之后的**发送停顿**（秒）—— 让回复别看起来是秒回的。
 
-        原先由 LLM 在正文里用 ``<wait>N</wait>`` 指定 —— 那既占生成预算，又要求模型
-        每次自己"随机变化"，实测并不稳定。改成一行正态取样后节奏更像人，提示词里
-        那段要求也一并去掉了。
+        只读一个配置值，**不再取样**。原先这里按正态分布取样，另有 sigma / 下限 / 上限
+        三个旋钮夹住尾巴；那套是在「发送时刻 = 生成完成 + 停顿」的**加法**语义下设计的。
+        改成下限语义（见 :meth:`_send_at`）之后总时长由**收集窗口**把控，停顿只剩
+        「别秒回」这一个作用 —— 正态尾巴与区间夹取都没有意义了，四个旋钮并成一个。
 
-        中心取该会话类型的基数（群聊 :attr:`DEFAULT_WAIT_SECONDS` / 私聊
-        :attr:`DEFAULT_WAIT_PRIVATE`），最后夹到 ``[MIN_WAIT_SECONDS, MAX_WAIT_SECONDS]``
-        —— 正态分布的尾巴理论无界，不夹会偶尔甩出十几秒的静默。
-
-        参数都可配（``buffer_delay_*``）；``settings`` 为 None 时退回类常量，
-        所以不传参的调用方（测试、旧调用点）行为不变。**用 ``is None`` 判缺值而不是
-        ``or``**：延迟设成 0 是有意义的（立即发），``or`` 会把它当未设置吞掉 ——
-        这个坑本仓库在注意力参数上已经踩过一次（见 attention_service._setting）。
+        ``settings`` 为 None 时回退类常量（不传参的调用方：测试、旧调用点）。
+        **用 ``is None`` 判缺值而不是 ``or``**：停顿设成 0 是有意义的（不额外等），
+        ``or`` 会把它当未设置吞掉 —— 这个坑本仓库在注意力参数上已经踩过一次。
         """
-        cfg = settings or {}
-
-        def _num(key: str, fallback: float) -> float:
-            value = cfg.get(key)
-            return float(fallback) if value is None else float(value)
-
-        if private:
-            base = _num("buffer_delay_private_seconds", cls.DEFAULT_WAIT_PRIVATE)
-            sigma = _num("buffer_delay_sigma_private_seconds", cls.WAIT_SIGMA_PRIVATE)
-        else:
-            base = _num("buffer_delay_mean_seconds", cls.DEFAULT_WAIT_SECONDS)
-            sigma = _num("buffer_delay_sigma_seconds", cls.WAIT_SIGMA_SECONDS)
-        lo = _num("buffer_delay_min_seconds", cls.MIN_WAIT_SECONDS)
-        hi = _num("buffer_delay_max_seconds", cls.MAX_WAIT_SECONDS)
-        if hi < lo:
-            hi = lo
-        return max(lo, min(hi, random.gauss(base, sigma)))
+        key = "buffer_delay_private_seconds" if private else "buffer_delay_mean_seconds"
+        fallback = cls.DEFAULT_WAIT_PRIVATE if private else cls.DEFAULT_WAIT_SECONDS
+        value = (settings or {}).get(key)
+        return max(0.0, float(fallback) if value is None else float(value))
 
     # ── 话题摘要 ──
 
