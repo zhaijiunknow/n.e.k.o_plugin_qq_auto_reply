@@ -243,6 +243,20 @@ PACING = (
                 floor=0.0, description="save：延迟上限（秒）",
                 ui=UIInput("cfg-buffer-max", min=0, max=120, step=0.5,
                            label="ui.pacing.buffer_max", hint="ui.pacing.buffer_max.hint")),
+    # 收集窗口：从**消息到达**算起至少等这么久才发，是"后续消息并进同一批"的机会窗口。
+    # 与上面那组 buffer_delay_* 的区别：那组是**生成完成之后**的发送停顿，这组锚在
+    # 到达时刻、是下限（见 reply_buffer_service._send_at）。调小它 = 更难合并。
+    SettingSpec("buffer_collect_window_seconds", "float", 3.0, saveable=True,
+                floor=0.0,
+                description="save：收集窗口（秒）—— 从消息到达算起至少等这么久，给后续消息合并的机会",
+                ui=UIInput("cfg-buffer-collect", min=0, max=60, step=0.5,
+                           label="ui.pacing.buffer_collect",
+                           hint="ui.pacing.buffer_collect.hint")),
+    SettingSpec("buffer_collect_window_private_seconds", "float", 1.0, saveable=True,
+                floor=0.0, description="save：私聊收集窗口（秒）",
+                ui=UIInput("cfg-buffer-collect-private", min=0, max=60, step=0.5,
+                           label="ui.pacing.buffer_collect_private",
+                           hint="ui.pacing.buffer_collect_private.hint")),
     SettingSpec("buffer_max_count", "int", 17, saveable=True,
                 floor=1, description="save：缓冲多少条就强制总结（同时是「我在听」的上界）",
                 ui=UIInput("cfg-buffer-max-count", min=1, max=200, step=1,

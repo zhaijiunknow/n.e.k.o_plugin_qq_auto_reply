@@ -26,7 +26,8 @@ class PendingReply:
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
                  "draft_rows", "mention_context", "has_nonconsent_input",
                  "consent_snapshot", "used_fallback_reply", "generation",
-                 "private_permission_level_at_receipt", "delivering")
+                 "private_permission_level_at_receipt", "delivering",
+                 "created_at")
 
     def __init__(
         self, first_text: str, wait_seconds: float, sender_id: str,
@@ -42,7 +43,10 @@ class PendingReply:
         # only honest initial value. schedule_reply advances this after the
         # generation path confirms that the first human row exists.
         self.materialized_user_count: int = 0
-        self.wait_until = time.time() + wait_seconds
+        #: 本条缓冲**首次消息**的到达时刻。"收集窗口"（见 _send_at）以它为锚点 ——
+        #: 与 wait_until 一样只在构造时定，追加消息不改它。
+        self.created_at = time.time()
+        self.wait_until = self.created_at + wait_seconds
         self.task: Optional[asyncio.Task] = None
         # 代际：每次新消息作废当前等待任务时 +1。归属**不能**只看
         # pending.task——追加消息的路径先 cancel、再 await（10-16 条的
@@ -283,6 +287,39 @@ class QQReplyBufferService:
         return bool((settings or {}).get(key, True))
 
     # ── 发送延迟：脚本取样，不问 LLM ──
+
+    def _collect_window(self, *, private: bool) -> float:
+        """收集窗口（秒）：从**消息到达**算起，至少等这么久才发。
+
+        这是"后续消息能不能并进同一批"的机会窗口 —— 想并进来，就必须还在等。可配：
+        ``buffer_collect_window_seconds`` / ``buffer_collect_window_private_seconds``。
+        群聊给得比私聊长：一屋子人在聊，晚一点插话更自然，也让"话题会不会自己走开"
+        有个观察窗口；私聊是两个人面对面，对方正等着你回。
+        """
+        key = (
+            "buffer_collect_window_private_seconds" if private
+            else "buffer_collect_window_seconds"
+        )
+        fallback = 1.0 if private else 3.0
+        value = (getattr(self.plugin, "_qq_settings", None) or {}).get(key)
+        return max(0.0, fallback if value is None else float(value))
+
+    def _send_at(self, pending: "PendingReply", send_delay: float, *, is_group: bool) -> float:
+        """发送时刻 = ``max(生成完成 + 发送停顿, 消息到达 + 收集窗口)``。
+
+        为什么是**下限**而不是把停顿叠加在生成之上 —— 生成耗时是不稳定的（同一轮
+        对话实测 1.0s 与 4.0s 两种），叠加会让总延迟既慢又随机：生成快时收集窗口小到
+        后续消息几乎并不进来，生成慢时又白等一笔。取下限则两头都对：
+
+            生成 1s、窗口 3s → 3.0s（补足窗口，后续消息并得进来）
+            生成 4s、窗口 3s → 4.0s + 停顿（生成早已超过窗口，不白等）
+
+        即结果不依赖生成时间的随机性，行为可预期。
+        """
+        return max(
+            time.time() + max(0.0, float(send_delay)),
+            pending.created_at + self._collect_window(private=not is_group),
+        )
 
     @classmethod
     def sample_wait_seconds(cls, *, private: bool = False, settings: Any = None) -> float:
@@ -673,6 +710,9 @@ class QQReplyBufferService:
             self._merge_consent_snapshot(existing, consent_snapshot)
         if not consented:
             existing.has_nonconsent_input = True
+        # 发送时刻统一在这里定：下限语义（见 _send_at）。放在"启动等待任务"之前，
+        # 而不是在各分支里各写一遍 —— 占位填充与完全新建两条路都要盖到。
+        existing.wait_until = self._send_at(existing, wait_seconds, is_group=is_group)
         existing.task = asyncio.create_task(
             self._deliver_after_wait(session_key, existing, existing.generation)
         )

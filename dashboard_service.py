@@ -213,6 +213,8 @@ class QQDashboardService:
         buffer_max_count: Optional[int] = None,
         fatigue_enabled: Optional[bool] = None,
         open_reply_probability: Optional[float] = None,
+        buffer_collect_window_seconds: Optional[float] = None,
+        buffer_collect_window_private_seconds: Optional[float] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -275,6 +277,8 @@ class QQDashboardService:
                 buffer_max_count=buffer_max_count,
                 fatigue_enabled=fatigue_enabled,
                 open_reply_probability=open_reply_probability,
+                buffer_collect_window_seconds=buffer_collect_window_seconds,
+                buffer_collect_window_private_seconds=buffer_collect_window_private_seconds,
             )
         except ValueError as exc:
             message = str(exc)
