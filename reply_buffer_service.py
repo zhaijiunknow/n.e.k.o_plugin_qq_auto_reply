@@ -26,7 +26,7 @@ class PendingReply:
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
                  "draft_rows", "mention_context", "has_nonconsent_input",
                  "consent_snapshot", "used_fallback_reply", "generation",
-                 "private_permission_level_at_receipt")
+                 "private_permission_level_at_receipt", "delivering")
 
     def __init__(
         self, first_text: str, wait_seconds: float, sender_id: str,
@@ -57,6 +57,9 @@ class PendingReply:
         self.is_group = is_group
         self.group_id = group_id
         self._acked = False
+        #: 本 pending 的回复**已经开始投递**（见 _deliver_after_wait）。置起后
+        #: 一律不再收新消息 —— 否则会多跑一轮总结，把刚发出去的话再答一遍。
+        self.delivering = False
         self.first_blocks: list = []
         # 本缓冲期截停的草稿历史行（消息对象引用）：单条路径投递后只撤
         # 这些行的未投递记录，绝不动此前合并场景留下的旧标。
@@ -379,7 +382,12 @@ class QQReplyBufferService:
         now = time.time()
         existing = self._pending.get(session_key)
 
-        if existing and (existing.task is None or not existing.task.done()):
+        if (
+            existing
+            and (existing.task is None or not existing.task.done())
+            # 投递已开始的 pending 不能再收 —— 见下方 delivering 的说明。
+            and not existing.delivering
+        ):
             # 已有缓冲 → 追加
             self._supersede(existing)
             existing.buffered_texts.append(message_text)
@@ -489,7 +497,7 @@ class QQReplyBufferService:
             if consent_snapshot is not None:
                 self._merge_consent_snapshot(existing, consent_snapshot)
 
-        if existing and existing.task and not existing.task.done():
+        if existing and existing.task and not existing.task.done() and not existing.delivering:
             # 已有缓冲 → 追加消息，转发子条数计入。作废必须早于下面
             # 10-16 条确认轮的 await：替补任务要等那个 await 结束才建。
             self._supersede(existing)
@@ -769,6 +777,15 @@ class QQReplyBufferService:
                     pending,
                 )
             return
+
+        # 到这里这一轮**必定会投递**（等待结束、两道归属检查过关、授权未撤销）。
+        # 先立旗：此后到达的消息不再往本 pending 里塞，而是各自新建缓冲走自己的
+        # pipeline。
+        #
+        # 不立旗的后果（实测）：本轮的回复已经在**发出去**了，新消息却还被追加进来、
+        # 并新建一轮投递；那一轮看到 message_count>=2 就走总结分支 —— 于是同一条消息
+        # 先被单独回答一次，又被总结再答一次。用户看到的是"同一句话被回了两次"。
+        pending.delivering = True
 
         # 汇总缓冲内容
         texts = pending.buffered_texts
