@@ -134,3 +134,27 @@ def test_allowlist_matches_the_service_signature():
         f"界面会报 TypeError（unexpected keyword argument）。"
         f"给 save_settings 补具名参数 + 转发，见 settings_schema 加键流程。"
     )
+
+
+def test_settings_form_is_not_backfilled_while_dirty():
+    """有未保存编辑时，状态推送不得回填设置表单。
+
+    `_settingsDirty` 曾经是**只写不读**的：置位与清除都很齐全（文档级 input 监听置位、
+    切连接方向置位、进配置页清、保存成功清），但**没有任何地方检查它** —— 那个守卫
+    当初只写了一半。后果是每 2 秒一次的状态推送都会走 applyDashboard → applySettings，
+    把正在输入的框覆盖回存档值：用户看到"改到一半自己变回去了"。
+
+    这条守卫钉三件事，任何一件丢了都会让 bug 复活：
+      1. applySettings 开头有闸；
+      2. 标记真的**被读**（不是又变回只写）；
+      3. 标记能被置起 —— 否则闸永远不开，等于没有。
+    """
+    html = (BASE / "static" / "napcat.html").read_text(encoding="utf-8")
+
+    head = html[html.index("function applySettings(s)"):][:400]
+    assert "if(_settingsDirty)return" in head, (
+        "applySettings 缺少脏标记守卫 —— 未保存的编辑会被状态推送回填覆盖"
+    )
+    assert html.count("if(_settingsDirty)") >= 1, "脏标记没有被任何地方读取"
+    assert "_settingsDirty=!0" in html, "没有任何地方置脏标记，守卫形同虚设"
+    assert "_settingsDirty=!1" in html, "没有任何地方清脏标记，守卫会永久生效"
