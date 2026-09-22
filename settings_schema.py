@@ -199,6 +199,15 @@ ATTENTION_NEW = (
 )
 
 #: 回复节奏与频率闸。缓冲只暴露标量 —— "按条数分桶"的那张等待表保持硬编码。
+#:
+#: 发送延迟的出厂值刻意压得很低（群聊中心 1.0s）：**生成本身已经花掉 2–3 秒，那就是
+#: 拟人的停顿了**，再叠 6–10 秒等于重复计费，用户感觉是「猫娘反应很慢」。原先那套
+#: 6±3 秒是按「生成很快、需要补一个停顿」设计的，前提不成立。
+#:
+#: 注意 ``reply_buffer_service`` 里还有一份同名类常量（DEFAULT_WAIT_SECONDS=6.0 等），
+#: 那是**传了 settings 为空的调用方**（主要是测试）的最后兜底，生产路径永远走本表；
+#: 两处不一致是有意的 —— 改类常量会碰掉 test_group_waits_longer_than_private 钉的
+#: 「群聊明显等得比私聊久」那条设计不变量。
 PACING = (
     SettingSpec("reply_burst_window_seconds", "int", 60, saveable=True,
                 floor=1, description="save：回复频率窗口（秒）",
@@ -208,29 +217,29 @@ PACING = (
                 floor=1, description="save：窗口内最多回复几条（第 N+1 条强制静默）",
                 ui=UIInput("cfg-burst-max", min=1, max=100, step=1,
                            label="ui.pacing.burst_max", hint="ui.pacing.burst_max.hint")),
-    SettingSpec("buffer_delay_mean_seconds", "float", 6.0, saveable=True,
+    SettingSpec("buffer_delay_mean_seconds", "float", 1.0, saveable=True,
                 floor=0.0, description="save：群聊首次延迟均值（秒，正态分布中心）",
                 ui=UIInput("cfg-buffer-mean", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_mean", hint="ui.pacing.buffer_mean.hint")),
-    SettingSpec("buffer_delay_private_seconds", "float", 3.0, saveable=True,
+    SettingSpec("buffer_delay_private_seconds", "float", 0.6, saveable=True,
                 floor=0.0, description="save：私聊首次延迟均值（秒）",
                 ui=UIInput("cfg-buffer-mean-private", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_mean_private",
                            hint="ui.pacing.buffer_mean_private.hint")),
-    SettingSpec("buffer_delay_sigma_seconds", "float", 3.0, saveable=True,
+    SettingSpec("buffer_delay_sigma_seconds", "float", 0.5, saveable=True,
                 floor=0.0, description="save：群聊延迟标准差（秒）",
                 ui=UIInput("cfg-buffer-sigma", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_sigma", hint="ui.pacing.buffer_sigma.hint")),
-    SettingSpec("buffer_delay_sigma_private_seconds", "float", 1.5, saveable=True,
+    SettingSpec("buffer_delay_sigma_private_seconds", "float", 0.3, saveable=True,
                 floor=0.0, description="save：私聊延迟标准差（秒）",
                 ui=UIInput("cfg-buffer-sigma-private", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_sigma_private",
                            hint="ui.pacing.buffer_sigma_private.hint")),
-    SettingSpec("buffer_delay_min_seconds", "float", 1.5, saveable=True,
+    SettingSpec("buffer_delay_min_seconds", "float", 0.2, saveable=True,
                 floor=0.0, description="save：延迟下限（秒，夹住正态分布的尾巴）",
                 ui=UIInput("cfg-buffer-min", min=0, max=60, step=0.5,
                            label="ui.pacing.buffer_min", hint="ui.pacing.buffer_min.hint")),
-    SettingSpec("buffer_delay_max_seconds", "float", 10.0, saveable=True,
+    SettingSpec("buffer_delay_max_seconds", "float", 2.5, saveable=True,
                 floor=0.0, description="save：延迟上限（秒）",
                 ui=UIInput("cfg-buffer-max", min=0, max=120, step=0.5,
                            label="ui.pacing.buffer_max", hint="ui.pacing.buffer_max.hint")),
