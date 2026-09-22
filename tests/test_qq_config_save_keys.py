@@ -107,3 +107,30 @@ def test_plain_keys_are_covered_by_the_generic_path():
     unsupported = sorted(s.key for s in plain if s.kind not in supported)
     assert not unsupported, f"通用路径不认识这些 kind：{unsupported}"
     assert plain, "通用路径没有任何键可管 —— 表结构变了？"
+
+
+def test_allowlist_matches_the_service_signature():
+    """白名单里每个键都必须是 ``QQDashboardService.save_settings`` 的**具名参数**。
+
+    **这条守卫被我拆掉过一次，然后立刻踩了它防的那个坑。** 归并到 settings_schema 时
+    我把它换成了"白名单 == 表里 saveable 的键"（自证式，永远为真），于是新增的 15 个键
+    进了白名单、却没进 signature —— 界面一点保存就：
+
+        TypeError: QQDashboardService.save_settings() got an unexpected keyword
+        argument 'reply_burst_window_seconds'
+
+    教训：这条断言不是冗余的。`_config_save` 用白名单过滤后 `**payload` 转发，
+    白名单比签名宽 **一定** 炸；而生成式的白名单让它更容易比签名宽（我加了键、
+    没人提醒我加参数）。留着它。
+    """
+    import inspect
+
+    from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
+
+    params = set(inspect.signature(QQDashboardService.save_settings).parameters) - {"self"}
+    unknown = sorted(_allowlist() - params)
+    assert not unknown, (
+        f"白名单里有 dashboard_service.save_settings 不认的键：{unknown}。"
+        f"界面会报 TypeError（unexpected keyword argument）。"
+        f"给 save_settings 补具名参数 + 转发，见 settings_schema 加键流程。"
+    )

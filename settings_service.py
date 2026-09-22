@@ -926,7 +926,13 @@ class QQSettingsService:
         guide_step_config_done = kwargs.get("guide_step_config_done")
         guide_step_runtime_done = kwargs.get("guide_step_runtime_done")
         normal_relay_probability = kwargs.get("normal_relay_probability")
+        # 两个名字都收：UI 走历史别名 truth_reply_probability，而表里 canonical 是
+        # open_reply_probability（saveable 两个都算，所以 dashboard 那层两个都会有
+        # 参数）。只认别名的话，直接传 canonical 名会被**静默忽略** —— 这个键带
+        # handler，通用路径会跳过它。
         truth_reply_probability = kwargs.get("truth_reply_probability")
+        if truth_reply_probability is None:
+            truth_reply_probability = kwargs.get("open_reply_probability")
         backlog_labels = kwargs.get("backlog_labels")
 
         if onebot_url is not None:
