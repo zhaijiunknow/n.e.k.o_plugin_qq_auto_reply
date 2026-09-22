@@ -8,18 +8,15 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from plugin.plugins.qq_auto_reply.backlog_store import QQBacklogStore
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
 
-# OneBotConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），运行时
-# 无需导入；在缺 utils.connection 的隔离测试环境里也能加载包（连接由 create_onebot_connection
-# 在方法内惰性构建，见下方）。
-try:
-    from utils.connection.onebot import OneBotConnector
-except (ImportError, ModuleNotFoundError):
-    OneBotConnector = None
+# OneBotConnector 仅作类型注解使用（from __future__ import annotations 下为惰性求值），
+# 运行时无需导入 —— 连接由 connector_seam 在方法内惰性解析并构建，见 _make_qq_connection。
+if TYPE_CHECKING:
+    from .connector_seam import OneBotConnector
 
 try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
@@ -225,10 +222,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     def _make_qq_connection(self):
         # 延迟导入：连接构造器依赖的模块较重（顶层 import 会拖慢插件进程启动握手），
-        # 而连接对象只在真正启动自动回复时才需要。连接本身由连接层
-        # ``utils.connection.onebot`` 的工厂构建；VLM/STT 描述器不注入连接器——
-        # 增强是插件业务，由 QQMessageEnricher 在 _ensure_qq_client_initialized 里绑定。
-        from utils.connection.onebot import create_onebot_connection
+        # 而连接对象只在真正启动自动回复时才需要。连接本身由连接器工厂构建；
+        # VLM/STT 描述器不注入连接器——增强是插件业务，由 QQMessageEnricher 在
+        # _ensure_qq_client_initialized 里绑定。
+        #
+        # 解析走 connector_seam：宿主第一方包 utils.connection.onebot 优先，拿不到时
+        # 回退 _vendor 里的副本（出处见 _vendor/connection_onebot/PROVENANCE.md）。
+        from .connector_seam import CONNECTOR_SOURCE, create_onebot_connection
+
+        self._emit_log("INFO", f"[QQ] 连接器来源: {CONNECTOR_SOURCE}")
 
         return create_onebot_connection(
             self._qq_settings,

@@ -17,9 +17,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
-OneBotClient = pytest.importorskip("utils.connection.onebot.onebot_client").OneBotClient
+from plugin.plugins.qq_auto_reply.connector_seam import OneBotClient
 
 
 class _FakeWS:
