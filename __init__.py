@@ -40,6 +40,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     read_legacy_voice_id = None
 
+from . import settings_schema
 from .attention_gate_service import QQAttentionGateService
 from .attention_service import QQAttentionService
 from .backlog_models import QQBacklogMessage as QQBacklogMessage
@@ -104,7 +105,10 @@ def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict
 
 #: 合法的连接方式。三条接入流程各自对应其中一段：napcat/napcat_forward 走 OneBot，
 #: open_platform 走官方 Bot API。schema 与校验都引用它，别再各写一份内联元组。
-CONNECTION_MODES: tuple[str, ...] = ("napcat", "napcat_forward", "open_platform")
+#: 真相在 settings_schema 的 `qq_connection_mode` 那条 enum。
+CONNECTION_MODES: tuple[str, ...] = tuple(
+    settings_schema.BY_KEY["qq_connection_mode"].enum or ()
+)
 
 
 @neko_plugin
@@ -231,7 +235,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         from .connector_seam import CONNECTOR_SOURCE, create_onebot_connection
 
         self._emit_log("INFO", f"[QQ] 连接器来源: {CONNECTOR_SOURCE}")
-
         return create_onebot_connection(
             self._qq_settings,
             logger=self.logger,
@@ -1735,26 +1738,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     #: （``napcat.html`` 就在发 ``locale``）。老入口靠自己的 `**_` 把它们悄悄吞掉；
     #: 合并后如果直接 `**kw` 转发，多余的键会撞到服务层；而漏在名单外的键会**静默
     #: 丢失** —— 回复缓冲那两个开关正是这么踩的：界面能点，值从没存进去过。
-    _CONFIG_SAVE_KEYS = frozenset({
-        "onebot_url", "token", "napcat_directory", "show_napcat_window", "reply_mode",
-        "show_onboarding", "guide_step_napcat_done", "guide_step_config_done",
-        "guide_step_runtime_done", "normal_relay_probability", "truth_reply_probability",
-        "backlog_labels", "group_attention_max_score", "group_attention_focus_threshold",
-        "group_attention_focus_send_threshold", "group_attention_min_threshold",
-        "group_attention_message_gain", "attention_base_rise_rate",
-        "attention_message_boost", "attention_keyword_boost_ratio",
-        "attention_honeymoon_seconds", "attention_fall_seconds", "attention_fall_rate",
-        "attention_consume_ratio", "icebreaker_cold_threshold",
-        "retroactive_review_max_messages", "retroactive_review_max_reply",
-        "group_memory_enabled", "group_member_memory_enabled",
-        "private_participant_memory_enabled", "allow_cross_group_context",
-        "strategy_mode", "qq_connection_mode", "qq_open_app_id",
-        "qq_open_client_secret", "qq_open_identity_probe_enabled",
-        "qq_open_sandbox_enabled", "local_stt_url",
-        "group_buffer_enabled", "private_buffer_enabled",
-        "enable_group_attention",
-        "auto_start_on_launch",
-    })
+    #:
+    #: 名单由 ``settings_schema`` 生成（只收 ``saveable=True`` 的键，含历史别名）。
+    #: 加键请改那张表，别在这里手写。
+    _CONFIG_SAVE_KEYS = settings_schema.SAVEABLE_KEYS
 
     @ui.action(id="config", label=tr("entries.config.name", default="保存配置"), refresh_context=True)
     @plugin_entry(
@@ -1774,51 +1761,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "group_id": {"type": "string", "description": "group_prompt_save / group_prompt_delete / attention_adjust / memory_forget：群号"},
             "delta": {"type": "number", "description": "attention_adjust：正数加分、负数扣分"},
             "topics": {"type": "array", "items": {"type": "string"}, "description": "save_topics：话题列表"},
-            "guide_step_config_done": {"type": "boolean", "description": "init / save：配置步骤是否已完成"},
-            # ── action="save" 的键。必须与 _CONFIG_SAVE_KEYS 及
-            #    dashboard_service.save_settings 的签名三者一致 ——
-            #    漏一个，那个设置就会静默存不进去。
-            "onebot_url": {"type": "string", "description": "save：OneBot 地址"},
-            "token": {"type": "string", "description": "save：OneBot token"},
-            "napcat_directory": {"type": "string", "description": "save：NapCat 安装目录"},
-            "show_napcat_window": {"type": "boolean", "description": "save：是否显示 NapCat 窗口"},
-            "reply_mode": {"type": "string", "enum": ["text", "voice", "both"], "description": "save：回复形式"},
-            "show_onboarding": {"type": "boolean", "description": "save：是否显示引导"},
-            "guide_step_napcat_done": {"type": "boolean", "description": "save：NapCat 步骤是否已完成"},
-            "guide_step_runtime_done": {"type": "boolean", "description": "save：运行时步骤是否已完成"},
-            "normal_relay_probability": {"type": "number", "description": "save：普通转发概率 0~1"},
-            "truth_reply_probability": {"type": "number", "description": "save：开放群回复概率 0~1"},
-            "backlog_labels": {"type": "array", "items": {"type": "object"}, "description": "save：待审阅标签"},
-            "group_attention_max_score": {"type": "number", "description": "save：群注意力上限"},
-            "group_attention_focus_threshold": {"type": "number", "description": "save：进入专注的阈值"},
-            "group_attention_focus_send_threshold": {"type": "number", "description": "save：专注时主动发言阈值"},
-            "group_attention_min_threshold": {"type": "number", "description": "save：群注意力下限"},
-            "group_attention_message_gain": {"type": "number", "description": "save：每条消息的注意力增益"},
-            "attention_base_rise_rate": {"type": "number", "description": "save：注意力基础上升速率"},
-            "attention_message_boost": {"type": "number", "description": "save：消息带来的额外增益"},
-            "attention_keyword_boost_ratio": {"type": "number", "description": "save：命中关键词的增益倍率"},
-            "attention_honeymoon_seconds": {"type": "integer", "description": "save：专注后的蜜月时长（秒）"},
-            "attention_fall_seconds": {"type": "integer", "description": "save：注意力衰减周期（秒）"},
-            "attention_fall_rate": {"type": "number", "description": "save：每周期衰减量"},
-            "attention_consume_ratio": {"type": "number", "description": "save：回复消耗的注意力比例"},
-            "icebreaker_cold_threshold": {"type": "integer", "description": "save：冷场多少条后主动破冰"},
-            "retroactive_review_max_messages": {"type": "integer", "description": "save：回溯审核最多取多少条"},
-            "retroactive_review_max_reply": {"type": "integer", "description": "save：回溯最多补回多少条"},
-            "group_memory_enabled": {"type": "boolean", "description": "save：群长期记忆"},
-            "group_member_memory_enabled": {"type": "boolean", "description": "save：群成员记忆（需群记忆开启）"},
-            "private_participant_memory_enabled": {"type": "boolean", "description": "save：私聊 participant 记忆"},
-            "allow_cross_group_context": {"type": "boolean", "description": "save：允许跨群上下文"},
-            "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"], "description": "save：策略模式"},
-            "qq_connection_mode": {"type": "string", "enum": list(CONNECTION_MODES), "description": "save：连接方式"},
-            "qq_open_app_id": {"type": "string", "description": "save：开放平台 AppID"},
-            "qq_open_client_secret": {"type": "string", "description": "save：开放平台密钥"},
-            "qq_open_identity_probe_enabled": {"type": "boolean", "description": "save：开放平台身份取证"},
-            "qq_open_sandbox_enabled": {"type": "boolean", "description": "save：开放平台沙箱环境"},
-            "local_stt_url": {"type": "string", "description": "save：本地 STT 地址"},
-            "group_buffer_enabled": {"type": "boolean", "description": "save：群聊回复缓冲"},
-            "private_buffer_enabled": {"type": "boolean", "description": "save：私聊回复缓冲"},
-            "enable_group_attention": {"type": "boolean", "description": "save：群组注意力（neko_dynamic 策略下会被强制开启）"},
-            "auto_start_on_launch": {"type": "boolean", "description": "save：自启 —— 每次插件启动都拉起 NapCat 并接上自动回复"},
+            # ── action="save" 的键由 settings_schema.input_schema_properties() 生成。
+            #    加键只改那张表 —— 过去这里要和白名单、save_settings 签名三处手工对齐，
+            #    漏一处就静默失效。
+            **settings_schema.input_schema_properties(),
         }, "required": ["action"], "additionalProperties": False},
     )
     # ⚠️ 方法名**不能**叫 `config`：基类在 `plugin/sdk/shared/core/base.py:65`

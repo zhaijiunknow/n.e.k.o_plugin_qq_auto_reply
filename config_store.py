@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import math
 from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json_async, read_json_async
+
+from . import settings_schema
 
 
 class QQAutoReplyConfigStore:
@@ -22,14 +26,44 @@ class QQAutoReplyConfigStore:
 
     @staticmethod
     def default_backlog_labels() -> list[dict[str, Any]]:
-        return [
-            {
-                "id": "mention",
-                "label": "点名",
-                "keywords": [r"@全体成员"],
-                "priority": 60,
-            },
-        ]
+        """默认关键词标签表。真相在 ``settings_schema.DEFAULT_BACKLOG_LABELS``。"""
+        return copy.deepcopy(settings_schema.DEFAULT_BACKLOG_LABELS)
+
+    @staticmethod
+    def default_emotion_multipliers() -> dict[str, float]:
+        """默认情绪倍率表。真相在 ``settings_schema.DEFAULT_EMOTION_MULTIPLIERS``。"""
+        return copy.deepcopy(settings_schema.DEFAULT_EMOTION_MULTIPLIERS)
+
+    @staticmethod
+    def normalize_emotion_multipliers(value: Any) -> dict[str, float]:
+        """归一「情绪 → 倍率」表。
+
+        接受 JSON 对象（或已解析的 dict）。**非法即整份回退默认**而不是部分保留：
+        这张表参与注意力涨跌计算，半份坏数据比没有数据更难查。键先去掉空白，
+        值必须是有限数值；空表按非法处理（空表等于关掉所有情绪影响，多半是误清）。
+        """
+        if isinstance(value, str):
+            import json as _json
+
+            try:
+                value = _json.loads(value or "{}")
+            except (TypeError, ValueError):
+                return QQAutoReplyConfigStore.default_emotion_multipliers()
+        if not isinstance(value, dict) or not value:
+            return QQAutoReplyConfigStore.default_emotion_multipliers()
+        normalized: dict[str, float] = {}
+        for raw_key, raw_val in value.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                return QQAutoReplyConfigStore.default_emotion_multipliers()
+            try:
+                number = float(raw_val)
+            except (TypeError, ValueError):
+                return QQAutoReplyConfigStore.default_emotion_multipliers()
+            if not math.isfinite(number):
+                return QQAutoReplyConfigStore.default_emotion_multipliers()
+            normalized[key] = number
+        return normalized
 
     @staticmethod
     def normalize_backlog_labels(labels: Any) -> list[dict[str, Any]]:
@@ -75,102 +109,13 @@ class QQAutoReplyConfigStore:
         return mode if mode in cls.VALID_STRATEGY_MODES else "neko_dynamic"
 
     def default_config(self) -> dict[str, Any]:
-        return {
-            "qq_connection_mode": "napcat",     # "napcat" | "napcat_forward" | "open_platform"
-            "onebot_url": "ws://0.0.0.0:6199",
-            "token": "",
-            # QQ 开放平台
-            "qq_open_app_id": "",
-            "qq_open_client_secret": "",
-            # 沙箱环境开关。未上线的机器人只存在于沙箱域名下：连正式环境会握手成功、
-            # 拿到 READY，但**平台侧一直显示离线、也收不到任何事件**。默认关（已上线的
-            # 机器人走正式环境）。
-            "qq_open_sandbox_enabled": False,
-            # R11 身份作用域取证开关（qq_open_plat.py 顶部有完整说明）。默认
-            # 关：打开后每条群/私聊事件都会往持久日志里写一行标识符字段，只有
-            # 维护者做那次取证时才需要。
-            "qq_open_identity_probe_enabled": False,
-            "trusted_users": [],
-            "trusted_groups": [],
-            # 全局 per-QQ 信赖度演化账本；群与私聊 participant 共池。
-            "speaker_trust_profiles": {},
-            "normal_relay_probability": 0.1,
-            "open_reply_probability": 0.1,
-            "show_onboarding": True,
-            "guide_step_napcat_done": False,
-            "guide_step_config_done": False,
-            "guide_step_runtime_done": False,
-            "max_concurrent_messages": 3,
-            "ai_connect_timeout_seconds": 10.0,
-            "ai_turn_timeout_seconds": 60.0,
-            "handler_shutdown_timeout_seconds": 10.0,
-            "napcat_directory": "",
-            # 默认**后台**启动：自动化（一键部署 / 开机自启）不该弹一个控制台出来
-            # 打断用户。藏了窗口就没有控制台了，所以启动隐藏窗口时会顺手打开
-            # napcat.json 的 fileLog —— 否则 NapCat 的日志哪儿都不会留，
-            # 见 napcat_onebot_config.ensure_file_log。
-            "show_napcat_window": False,
-            "reply_mode": "text",
-            "group_attention_max_score": 10.0,
-            "group_attention_focus_threshold": 4.0,
-            # 焦点群的发送门控线：低于焦点线、高于最低线。焦点线是「赢得焦点」的
-            # 资格线；发送门控若也用焦点线，焦点群回一条就跌破线被门控（见
-            # attention_gate_service 门控第 5 步）。
-            "group_attention_focus_send_threshold": 2.0,
-            "group_attention_min_threshold": 1.0,
-            "group_attention_message_gain": 0.25,
-            # 周期模型：rise 基础增速 / 消息加成 / 夺冠蜜月 / 回落窗口 / 回落速率 / 发言消耗
-            "attention_base_rise_rate": 0.02,
-            "attention_message_boost": 0.15,
-            "attention_keyword_boost_ratio": 1.8,
-            "attention_honeymoon_seconds": 60,
-            "attention_fall_seconds": 30,
-            "attention_fall_rate": 0.015,
-            "attention_consume_ratio": 0.10,
-            "icebreaker_cold_threshold": 3,
-            "backlog_retention_limit": 200,
-            "backlog_summary_threshold": 10,
-            "backlog_notify_cooldown_seconds": 900,
-            "backlog_issue_notify_threshold": 1,
-            "backlog_labels": self.default_backlog_labels(),
-            # === 猫娘动态注意力策略 ===
-            "strategy_mode": "neko_dynamic",     # "neko_dynamic" | "neko_scene" — 主策略 / 退级策略
-            "enable_group_attention": True,      # neko_dynamic 模式下强制启用多群注意力
-            "neko_dynamic_idle_timeout_seconds": 10.0,  # 已废弃（注意力系统下不再使用）
-            "neko_dynamic_waking_users": [],            # 已废弃（改用 attention + backlog_labels）
-            "neko_dynamic_waking_keywords": [],         # 已废弃（改用 backlog_labels keywords）
-            # 回溯补回参数
-            "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
-            "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
-            # 回复缓冲：群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
-            # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。
-            "group_buffer_enabled": True,
-            "private_buffer_enabled": True,
-            # 自启：开了之后每次插件启动都拉起 NapCat 并接上自动回复。
-            # 默认**关** —— NapCat 会为注入拉起 QQ（必要时杀掉正在运行的那个），
-            # 不该由插件替用户决定。
-            "auto_start_on_launch": False,
-            # 疲劳系统参数（KiraAI-style 动态行为约束）
-            "fatigue_enabled": True,
-            "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
-            "fatigue_circadian_low_hour": 3,         # 昼夜节律低谷时间
-            "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
-            "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
-            # 群聊长期记忆显式 opt-in。成员记忆会增加按成员分桶的提取调用，
-            # 因此独立开关且默认关闭。
-            "group_memory_enabled": False,
-            "group_member_memory_enabled": False,
-            # 非管理员私聊的 participant 记忆：以对方为主体单独建档
-            # （participant scope），绝不进管理员的 legacy 私聊语料。
-            # 同为显式 opt-in，默认关闭。
-            "private_participant_memory_enabled": False,
-            # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
-            "allow_cross_group_context": False,
-            # 提示词编辑器覆盖值（locale → layer_id → text）
-            "prompt_overrides": {},
-            # 按群自定义提示词（group_id → 提示词文本）
-            "group_prompts": {},
-        }
+        """全部默认值。**唯一真相在 ``settings_schema.SETTINGS``**。
+
+        这里不再逐键手写：默认值、保存白名单、入口 JSON schema、dashboard 快照四层
+        都由那张表生成。历史上一个键要在这四处各写一遍，漏一处就是静默失效
+        （回复缓冲的两个开关、``retroactive_review_max_reply`` 都踩过）。
+        """
+        return settings_schema.defaults()
 
     async def exists(self) -> bool:
         return self._path.is_file()
@@ -191,6 +136,9 @@ class QQAutoReplyConfigStore:
         # 而池文件一旦丢失就再也恢复不到迁移时刻的状态。
         # `merged.update(payload)` 已经原样带过来了，这里刻意不做任何处理。
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
+        merged["attention_emotion_multipliers"] = self.normalize_emotion_multipliers(
+            payload.get("attention_emotion_multipliers")
+        )
         reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
         if reply_mode != "text" or "reply_mode" in payload:
             merged["reply_mode"] = reply_mode
@@ -217,6 +165,9 @@ class QQAutoReplyConfigStore:
             # 见 load()：存量 trust 池只读透传，save 不重建、不归一。
             # `normalized.update(dict(config))` 已原样保留原值。
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
+            normalized["attention_emotion_multipliers"] = self.normalize_emotion_multipliers(
+                normalized.get("attention_emotion_multipliers")
+            )
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
             normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))
             normalized["group_prompts"] = {

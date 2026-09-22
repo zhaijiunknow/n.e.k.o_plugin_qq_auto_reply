@@ -18,8 +18,6 @@ import re
 import time
 from typing import Any, Optional
 
-_MAX_BUFFER_COUNT = 17
-
 
 class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
@@ -101,6 +99,19 @@ class QQReplyBufferService:
     #: 夹住正态分布的尾巴：不夹的话偶尔会甩出一个十几秒的静默。
     MIN_WAIT_SECONDS = 1.5
     MAX_WAIT_SECONDS = 10.0
+
+    def _max_buffer_count(self) -> int:
+        """缓冲多少条就强制总结（可配 ``buffer_max_count``，默认 17）。
+
+        "我在听"那条闸的门槛由它推导（见 ``_ack_floor``），否则把上限调到 10 以下
+        会让那条分支永远不可达 —— 不会出错，但功能会静默消失。
+        """
+        value = (self.plugin._qq_settings or {}).get("buffer_max_count")
+        return 17 if value is None else max(1, int(value))
+
+    def _ack_floor(self) -> int:
+        """触发"我在听"的最少条数。默认上限 17 时等于 10（与历史行为一致）。"""
+        return max(1, min(10, self._max_buffer_count() - 1))
 
     @staticmethod
     def _participant_memory_at_receipt(pending: PendingReply) -> bool | None:
@@ -271,7 +282,7 @@ class QQReplyBufferService:
     # ── 发送延迟：脚本取样，不问 LLM ──
 
     @classmethod
-    def sample_wait_seconds(cls, *, private: bool = False) -> float:
+    def sample_wait_seconds(cls, *, private: bool = False, settings: Any = None) -> float:
         """按正态分布取一个发送延迟（秒）。
 
         原先由 LLM 在正文里用 ``<wait>N</wait>`` 指定 —— 那既占生成预算，又要求模型
@@ -281,10 +292,29 @@ class QQReplyBufferService:
         中心取该会话类型的基数（群聊 :attr:`DEFAULT_WAIT_SECONDS` / 私聊
         :attr:`DEFAULT_WAIT_PRIVATE`），最后夹到 ``[MIN_WAIT_SECONDS, MAX_WAIT_SECONDS]``
         —— 正态分布的尾巴理论无界，不夹会偶尔甩出十几秒的静默。
+
+        参数都可配（``buffer_delay_*``）；``settings`` 为 None 时退回类常量，
+        所以不传参的调用方（测试、旧调用点）行为不变。**用 ``is None`` 判缺值而不是
+        ``or``**：延迟设成 0 是有意义的（立即发），``or`` 会把它当未设置吞掉 ——
+        这个坑本仓库在注意力参数上已经踩过一次（见 attention_service._setting）。
         """
-        base = cls.DEFAULT_WAIT_PRIVATE if private else cls.DEFAULT_WAIT_SECONDS
-        sigma = cls.WAIT_SIGMA_PRIVATE if private else cls.WAIT_SIGMA_SECONDS
-        return max(cls.MIN_WAIT_SECONDS, min(cls.MAX_WAIT_SECONDS, random.gauss(base, sigma)))
+        cfg = settings or {}
+
+        def _num(key: str, fallback: float) -> float:
+            value = cfg.get(key)
+            return float(fallback) if value is None else float(value)
+
+        if private:
+            base = _num("buffer_delay_private_seconds", cls.DEFAULT_WAIT_PRIVATE)
+            sigma = _num("buffer_delay_sigma_private_seconds", cls.WAIT_SIGMA_PRIVATE)
+        else:
+            base = _num("buffer_delay_mean_seconds", cls.DEFAULT_WAIT_SECONDS)
+            sigma = _num("buffer_delay_sigma_seconds", cls.WAIT_SIGMA_SECONDS)
+        lo = _num("buffer_delay_min_seconds", cls.MIN_WAIT_SECONDS)
+        hi = _num("buffer_delay_max_seconds", cls.MAX_WAIT_SECONDS)
+        if hi < lo:
+            hi = lo
+        return max(lo, min(hi, random.gauss(base, sigma)))
 
     # ── 话题摘要 ──
 
@@ -481,9 +511,9 @@ class QQReplyBufferService:
             existing.wait_until = time.time() + extra
             self.plugin._emit_log("DEBUG", f"缓冲追加（共{n}条），等待 {extra:.1f}s")
 
-            # 10-16 条 → 走 pipeline 发简短确认
+            # 中段条数 → 走 pipeline 发简短确认（门槛随上限推导，见 _ack_floor）
             if (
-                10 <= n < 17
+                self._ack_floor() <= n < self._max_buffer_count()
                 and not getattr(existing, "_acked", False)
                 and not self._consent_revoked_since(existing)
             ):
@@ -519,8 +549,8 @@ class QQReplyBufferService:
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
 
-            # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
-            if n >= _MAX_BUFFER_COUNT and self._consent_revoked_since(existing):
+            # 到上限 → 走 pipeline 强制总结 + 清空缓冲
+            if n >= self._max_buffer_count() and self._consent_revoked_since(existing):
                 # 与 ack 同理：总结的 prompt 会原样引用这些记忆派生的旧
                 # 草稿。授权撤销后不总结、不投递，草稿保持未投递（排除
                 # 记录留存）并解除游标屏障——与 _deliver_after_wait 的
@@ -538,7 +568,7 @@ class QQReplyBufferService:
                     existing,
                 )
                 return
-            if n >= _MAX_BUFFER_COUNT:
+            if n >= self._max_buffer_count():
                 # 本分支提前 return，函数尾部的补关联不会执行——先把本轮
                 # 草稿行绑上，否则 settle 按 draft_rows 清 provisional 时
                 # 漏掉它，游标屏障永久卡死、此后所有消息进不了 scoped 记忆。

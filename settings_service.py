@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import Any
 
+from . import settings_schema
 from .group_permission import GroupPermissionManager
 from .permission import PermissionManager
 
@@ -1085,6 +1086,13 @@ class QQSettingsService:
         attention_consume_ratio = kwargs.get("attention_consume_ratio")
         if attention_consume_ratio is not None:
             self.plugin._qq_settings["attention_consume_ratio"] = self._clamp_attention_float(attention_consume_ratio, "attention_consume_ratio", floor=0.0, ceiling=1.0)
+        attention_emotion_multipliers = kwargs.get("attention_emotion_multipliers")
+        if attention_emotion_multipliers is not None:
+            # 走 normalizer：非法整份回退默认。这张表参与注意力涨跌计算，
+            # 半份坏数据比没有数据更难查（见 config_store.normalize_emotion_multipliers）。
+            self.plugin._qq_settings["attention_emotion_multipliers"] = (
+                self.plugin.config_store.normalize_emotion_multipliers(attention_emotion_multipliers)
+            )
         icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
         if icebreaker_cold_threshold is not None:
             self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))
@@ -1239,6 +1247,16 @@ class QQSettingsService:
         self._enforce_attention_for_dynamic_mode()
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
+        # 通用路径：表里**没有** handler 的键按 kind 归一（含钳制）写回。
+        #
+        # **必须在落盘之前**：`_persist_with_consent_rollback` 会把当时的
+        # `_qq_settings` 序列化写盘，之后再改内存 dict 就只改了内存 —— 键看起来
+        # 存住了（仪表盘回显内存值），重启却回退。这正是本模块历史上反复出现的
+        # "界面说已保存、实际没存下来"，只是这次藏在通用路径的调用位置上。
+        #
+        # 带 handler 的键走各自的具名块（联动/抛错/延迟发布），这里跳过；两边钳制
+        # 参数逐条一致，所以对既有键是幂等的。
+        self._apply_plain_settings(kwargs)
         # 落盘成功之前，opt-in 对处理链不可见（上面已把它们扣下）。
         success = await self._persist_with_consent_rollback(
             deferred_opt_ins=deferred_opt_ins,
@@ -1289,3 +1307,34 @@ class QQSettingsService:
             "persisted": success,
             "reconnect_required": bool(self.plugin._running),
         }
+
+    def _apply_plain_settings(self, kwargs: dict[str, Any]) -> None:
+        """写回 ``settings_schema`` 里没标 handler 的键：按 kind 归一 + 钳制。
+
+        这些键没有跨键联动，所以一条公式能覆盖全部。钳制口径与原先各处的具名块相同
+        （int 用 ``max(floor, ...)``，float 走 :meth:`_clamp_attention_float`，
+        str 去空白），因此对既有键是幂等的。``saveable=False`` 的键不接受 UI 写入。
+        """
+        for spec in settings_schema.SETTINGS:
+            if spec.handler or not spec.saveable:
+                continue
+            raw = kwargs.get(spec.key)
+            if raw is None:
+                continue
+            if spec.kind == "bool":
+                value: Any = bool(raw)
+            elif spec.kind == "int":
+                value = int(raw)
+                if spec.floor is not None:
+                    value = max(int(spec.floor), value)
+                if spec.ceiling is not None:
+                    value = min(int(spec.ceiling), value)
+            elif spec.kind == "float":
+                value = self._clamp_attention_float(
+                    raw, spec.key, floor=spec.floor, ceiling=spec.ceiling,
+                )
+            elif spec.kind == "str":
+                value = str(raw or "").strip()
+            else:
+                value = raw
+            self.plugin._qq_settings[spec.key] = value

@@ -156,8 +156,9 @@ class QQAttentionGateService:
     def _check_reply_burst(self, group_id: str, now: int) -> bool:
         """检查最近是否回复过于频繁：60秒内超过3条 → 强制静默。"""
         timestamps = self._reply_timestamps.get(group_id, [])
-        window = 60  # 60 秒窗口
-        max_replies = 3  # 最多 3 条
+        settings = self.plugin._qq_settings or {}
+        window = max(1, int(settings.get("reply_burst_window_seconds", 60) or 60))
+        max_replies = max(1, int(settings.get("reply_burst_max_replies", 3) or 3))
         # 清理过期记录
         timestamps[:] = [t for t in timestamps if now - t < window]
         return len(timestamps) >= max_replies
@@ -358,6 +359,8 @@ class QQAttentionGateService:
             self._logger.warning("[RetroReview] backlog_store 不可用，跳过回溯")
             return []
         max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
+        # 这个键此前是**死键**：默认值/保存/校验/界面全都有，提示词里却写死了"1-2 条"。
+        max_reply = max(1, int((self.plugin._qq_settings or {}).get("retroactive_review_max_reply", 5) or 5))
         unreviewed = await self.plugin.backlog_store.get_unreviewed_messages_since(group_id, since_timestamp=since, limit=max_messages)
         if not unreviewed:
             self._logger.info(f"[RetroReview] 群 {group_id} 无未审核消息，跳过回溯")
@@ -378,15 +381,15 @@ class QQAttentionGateService:
         self._cold_focus_count.pop(group_id, None)
         self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
 
-        # 2. 复用缓冲链路：构造总结 prompt，针对 1-2 条消息用 <reply> 回应
+        # 2. 复用缓冲链路：构造总结 prompt，让猫娘挑最多 max_reply 条用 <reply> 回应
         summary = self._build_ignored_summary(unreviewed)
         try:
             from .pipeline_models import QQReplyRequest
             request = QQReplyRequest(
                 message_text=(
                     f"[系统] 你刚才没有太关注这个群，以下是这段时间群友们聊天的消息摘要。\n"
-                    f"每条消息末尾都标了它的消息ID（形如 id=xxx）。请针对其中 1-2 条你最感兴趣的，"
-                    f"用 `<reply>消息ID</reply>` 引用后自然回应。不要逐条点评，不要超过两条。\n\n"
+                    f"每条消息末尾都标了它的消息ID（形如 id=xxx）。请针对其中最多 {max_reply} 条你最感兴趣的，"
+                    f"用 `<reply>消息ID</reply>` 引用后自然回应。不要逐条点评。\n\n"
                     f"摘要：\n{summary}"
                 ),
                 sender_id=self.plugin._admin_qq or "0",

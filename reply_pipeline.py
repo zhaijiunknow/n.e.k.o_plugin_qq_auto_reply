@@ -344,7 +344,8 @@ class QQReplyPipelineRunner:
             clean = str(raw or "").strip()
             # 发送延迟由脚本按正态分布取样 —— 与提示词无关，模型不参与
             wait_sec = QQReplyBufferService.sample_wait_seconds(
-                private=not bool(request.is_group))
+                private=not bool(request.is_group),
+                settings=getattr(self.plugin, "_qq_settings", None))
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
             visible_text = delivered_blocks_text(delivery_plan.blocks)
             # 检查是否有实际内容（text/record/sticker/poke/emoji 任一非空即有效）

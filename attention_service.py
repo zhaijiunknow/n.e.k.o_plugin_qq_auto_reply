@@ -279,6 +279,47 @@ class QQAttentionService:
     def _minimum_threshold(self) -> float:
         return float(self._setting("group_attention_min_threshold", 1.0))
 
+    def _fall_boost_attenuation(self) -> float:
+        """fall 相位里消息加成的衰减系数（0~1）：正在让位的群不会因刷屏而赖着不走。"""
+        return min(1.0, max(0.0, float(self._setting("attention_fall_boost_attenuation", 0.3))))
+
+    def _at_bot_boost(self) -> float:
+        """被 @ 时消息加成的倍率（最强的一路加成）。"""
+        return max(0.0, float(self._setting("attention_at_bot_boost", 3.0)))
+
+    def _question_boost(self) -> float:
+        """消息是提问时的加成倍率。"""
+        return max(0.0, float(self._setting("attention_question_boost", 1.5)))
+
+    def _wake_boost_ratio(self) -> float:
+        """唤醒时把分数垫到「焦点线 × 此比例」（0~1）。"""
+        return min(1.0, max(0.0, float(self._setting("attention_wake_boost_ratio", 0.75))))
+
+    def _decay_interval(self) -> float:
+        """注意力衰减循环的 tick 间隔（秒）。"""
+        return max(0.1, float(self._setting("attention_decay_interval_seconds", 5.0)))
+
+    def _emotion_multipliers(self) -> dict[str, float]:
+        """情绪 → 升降速率倍率表。
+
+        写入侧由 ``config_store.normalize_emotion_multipliers`` 保证合法；这里再做一次
+        防御性校验，非法就整份回退内置默认 —— 这张表参与涨跌计算，半份坏数据比没有更难查。
+        """
+        raw = self._setting("attention_emotion_multipliers", None)
+        if not isinstance(raw, dict) or not raw:
+            return dict(_EMOTION_MULTIPLIER)
+        out: dict[str, float] = {}
+        for key, value in raw.items():
+            try:
+                out[str(key)] = float(value)
+            except (TypeError, ValueError):
+                return dict(_EMOTION_MULTIPLIER)
+        return out
+
+    def _emotion_multiplier(self, emotion: Any) -> float:
+        """单个情绪的倍率；未知情绪按 0.0（与内置表同口径）。"""
+        return float(self._emotion_multipliers().get(str(emotion or "calm"), 0.0))
+
     # ── 相位推进 ──
 
     def _fatigue_rate_scale(self, fatigue: float) -> tuple[float, float]:
@@ -295,7 +336,7 @@ class QQAttentionService:
         if dt <= 0:
             return
         state.last_decay_at = now
-        emo = _EMOTION_MULTIPLIER.get(state.emotion or "calm", 0.0)
+        emo = self._emotion_multiplier(state.emotion)
         rise_scale, fall_scale = self._fatigue_rate_scale(fatigue)
 
         if state.phase == "fall":
@@ -458,9 +499,9 @@ class QQAttentionService:
         # 消息加速增长：@ 最强，问题次之，普通消息基础加成
         boost = self._message_boost()
         if is_at_bot:
-            boost *= 3.0
+            boost *= self._at_bot_boost()
         elif self._detect_question(text):
-            boost *= 1.5
+            boost *= self._question_boost()
         # 分类命中（mention/关键词）额外加成
         category = str(message.get("category") or "").strip()
         if not category and text:
@@ -475,7 +516,7 @@ class QQAttentionService:
             state.last_focus_reason = category
         # fall 相位消息加成减弱：正在让位的群不会因继续刷屏而赖着不走
         if state.phase == "fall":
-            boost *= 0.3
+            boost *= self._fall_boost_attenuation()
         # 疲劳减慢回升：高疲劳时消息增益被压缩
         fatigue_svc = getattr(self.plugin, "fatigue_service", None)
         if fatigue_svc:
@@ -666,7 +707,7 @@ class QQAttentionService:
         if group_score <= self._minimum_threshold():
             return 0.8
         emo = state.emotion or "calm"
-        return max(0.05, 1.0 + _EMOTION_MULTIPLIER.get(emo, 0.0))
+        return max(0.05, 1.0 + self._emotion_multiplier(emo))
 
     def should_focus_group(self, group_id: str) -> bool:
         normalized_group_id = str(group_id or "").strip()
@@ -703,7 +744,9 @@ class QQAttentionService:
             return
         state = self._load_state(normalized_group_id)
         if state.attention_score < self._focus_threshold():
-            state.attention_score = max(state.attention_score, self._focus_threshold() * 0.75)
+            state.attention_score = max(
+                state.attention_score, self._focus_threshold() * self._wake_boost_ratio(),
+            )
             state.phase = "rise"
             state.phase_started_at = self._current_time()
             self._write_state(state)
@@ -752,7 +795,7 @@ class QQAttentionService:
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
             return
-        if emotion not in _EMOTION_MULTIPLIER:
+        if emotion not in self._emotion_multipliers():
             return
         state = self._load_state(normalized_group_id)
         now = self._current_time()
@@ -839,7 +882,10 @@ class QQAttentionService:
 
     # ── 后台衰减循环 ──
 
-    async def start_decay_loop(self, interval_seconds: float = 5.0) -> None:
+    async def start_decay_loop(self, interval_seconds: float | None = None) -> None:
+        """启动衰减循环。``interval_seconds=None`` 时读配置（attention_decay_interval_seconds）。"""
+        if interval_seconds is None:
+            interval_seconds = self._decay_interval()
         self._decay_task = asyncio.create_task(self._decay_loop(interval_seconds))
 
     async def stop_decay_loop(self) -> None:

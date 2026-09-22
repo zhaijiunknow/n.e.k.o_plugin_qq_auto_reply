@@ -25,6 +25,10 @@ class QQFatigueService:
     def _cfg(self, key: str, default):
         return (self.plugin._qq_settings or {}).get(key, default)
 
+    def _enabled(self) -> bool:
+        """疲劳系统总开关。**缺键按开** —— 老配置里没有这个键，行为要与历史一致。"""
+        return bool(self._cfg("fatigue_enabled", True))
+
     # ── 昼夜节律参数 ──
     @property
     def CIRCADIAN_PEAK_HOUR(self): return self._cfg("fatigue_circadian_peak_hour", 15)
@@ -95,13 +99,27 @@ class QQFatigueService:
                    len(self._global_msg_timestamps) * self.GLOBAL_FATIGUE_PER_MSG)
 
     def record_incoming_message(self) -> None:
-        """记录一条收到的消息（用于全局负载计算）。"""
+        """记录一条收到的消息（用于全局负载计算）。
+
+        关掉疲劳时**必须一起短路**：``_global_msg_timestamps`` 的唯一清理点在
+        :meth:`_global_load_fatigue` 里，而那条路径在关闭时不可达 —— 继续 append
+        会让这个列表无界增长（每条入站消息一行，永不回收）。
+        """
+        if not self._enabled():
+            return
         self._global_msg_timestamps.append(time.time())
 
     # ── 综合疲劳计算 ──
 
     def calculate_fatigue(self, session_key: str) -> float:
-        """综合三维疲劳值（0-100）。"""
+        """综合三维疲劳值（0-100）。关掉疲劳时恒为 0.0。
+
+        0.0 让所有下游语义**自动**变成中性，不需要各自再判一次开关：
+        ``attention_service._fatigue_rate_scale(0.0)`` 返回 ``(1.0, 1.0)``（既不减速
+        上升也不加速回落），破冰的疲劳闸 ``0 > 60`` 为假。改这里之前先看这两处。
+        """
+        if not self._enabled():
+            return 0.0
         circadian = self._circadian_fatigue()
         session = self._session_fatigue(session_key)
         global_load = self._global_load_fatigue()
@@ -110,7 +128,10 @@ class QQFatigueService:
     # ── 活跃标记（回复后调用，累积会话疲劳）──
 
     def mark_active(self, session_key: str) -> None:
-        """标记会话活跃（消息已处理），累积会话疲劳。"""
+        """标记会话活跃（消息已处理），累积会话疲劳。关闭时不累积，免得开了之后
+        把关闭期间攒下的会话疲劳一次性算出来。"""
+        if not self._enabled():
+            return
         self._last_active[session_key] = time.time()
         self._add_session_fatigue(session_key)
 

@@ -5,6 +5,8 @@ from typing import Any, Optional
 
 from plugin.sdk.plugin import Err, Ok, SdkError
 
+from . import settings_schema
+
 
 class QQDashboardService:
     def __init__(self, plugin: Any):
@@ -46,14 +48,20 @@ class QQDashboardService:
                 "manual_reply": len([item for item in runtime.get("recent_pipeline_traces", []) if item.get("summary", {}).get("delivery_mode") == "manual_reply"]),
             },
             "settings": {
-                "qq_connection_mode": str(settings.get("qq_connection_mode", "napcat") or "napcat").strip(),
-                "onebot_url": settings.get("onebot_url", ""),
-                "token": str(settings.get("token") or ""),
-                "qq_open_app_id": str(settings.get("qq_open_app_id") or ""),
-                "qq_open_client_secret": str(settings.get("qq_open_client_secret") or ""),
-                "qq_open_identity_probe_enabled": bool(
-                    settings.get("qq_open_identity_probe_enabled", False)
-                ),
+                # 配置键由 settings_schema 生成（按 kind 选 cast、缺值退回默认）。
+                # 过去这里逐键手写 ~55 行，漏一个键的表现是：设置存得下，但界面
+                # 重新加载后显示不出已保存的值 —— local_stt_url 正是这么漏的。
+                **{
+                    spec.key: settings_schema.snapshot_value(spec, settings)
+                    for spec in settings_schema.SETTINGS
+                    if spec.saveable
+                },
+                # 派生值 / 只读值：不是配置键，或需要归一，因此覆盖在上面。
+                "reply_mode": self.plugin.config_store.normalize_reply_mode(settings.get("reply_mode")),
+                "strategy_mode": self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode")),
+                "backlog_labels": list(settings.get("backlog_labels") or []),
+                "normal_relay_probability": float(self.plugin._normal_relay_probability),
+                "truth_reply_probability": float(self.plugin._truth_reply_probability),
                 "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
                 # 暴露**用户配置的**值，不是解析后的路径。
@@ -67,40 +75,6 @@ class QQDashboardService:
                 # 是否存在仍按**解析后**的位置判断（那才是 NapCat 实际在哪）。
                 "napcat_directory_exists": napcat_dir.exists(),
                 "napcat_directory_resolved": str(napcat_dir),
-                "show_napcat_window": bool(settings.get("show_napcat_window", False)),
-                "reply_mode": self.plugin.config_store.normalize_reply_mode(settings.get("reply_mode")),
-                "show_onboarding": bool(settings.get("show_onboarding", True)),
-                "guide_step_napcat_done": bool(settings.get("guide_step_napcat_done", False)),
-                "guide_step_config_done": bool(settings.get("guide_step_config_done", False)),
-                "guide_step_runtime_done": bool(settings.get("guide_step_runtime_done", False)),
-                "normal_relay_probability": float(self.plugin._normal_relay_probability),
-                "truth_reply_probability": float(self.plugin._truth_reply_probability),
-                "backlog_labels": list(settings.get("backlog_labels") or []),
-                "strategy_mode": self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode")),
-                "enable_group_attention": bool(settings.get("enable_group_attention", True)),
-                "retroactive_review_max_messages": int(settings.get("retroactive_review_max_messages", 30) or 30),
-                "retroactive_review_max_reply": int(settings.get("retroactive_review_max_reply", 5) or 5),
-                "group_memory_enabled": bool(settings.get("group_memory_enabled", False)),
-                "group_member_memory_enabled": bool(settings.get("group_member_memory_enabled", False)),
-                "private_participant_memory_enabled": bool(settings.get("private_participant_memory_enabled", False)),
-                "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
-                # 缺键按"开" —— 与 QQReplyBufferService.is_enabled 同一口径
-                "auto_start_on_launch": bool(settings.get("auto_start_on_launch", False)),
-                "group_buffer_enabled": bool(settings.get("group_buffer_enabled", True)),
-                "private_buffer_enabled": bool(settings.get("private_buffer_enabled", True)),
-                "group_attention_max_score": float(settings.get("group_attention_max_score") if settings.get("group_attention_max_score") is not None else 10.0),
-                "group_attention_focus_threshold": float(settings.get("group_attention_focus_threshold") if settings.get("group_attention_focus_threshold") is not None else 4.0),
-                "group_attention_focus_send_threshold": float(settings.get("group_attention_focus_send_threshold") if settings.get("group_attention_focus_send_threshold") is not None else 2.0),
-                "group_attention_min_threshold": float(settings.get("group_attention_min_threshold") if settings.get("group_attention_min_threshold") is not None else 1.0),
-                "group_attention_message_gain": float(settings.get("group_attention_message_gain") if settings.get("group_attention_message_gain") is not None else 0.25),
-                "attention_base_rise_rate": float(settings.get("attention_base_rise_rate") if settings.get("attention_base_rise_rate") is not None else 0.02),
-                "attention_message_boost": float(settings.get("attention_message_boost") if settings.get("attention_message_boost") is not None else 0.15),
-                "attention_keyword_boost_ratio": float(settings.get("attention_keyword_boost_ratio") if settings.get("attention_keyword_boost_ratio") is not None else 1.8),
-                "attention_honeymoon_seconds": int(settings.get("attention_honeymoon_seconds") if settings.get("attention_honeymoon_seconds") is not None else 60),
-                "attention_fall_seconds": int(settings.get("attention_fall_seconds") if settings.get("attention_fall_seconds") is not None else 30),
-                "attention_fall_rate": float(settings.get("attention_fall_rate") if settings.get("attention_fall_rate") is not None else 0.015),
-                "attention_consume_ratio": float(settings.get("attention_consume_ratio") if settings.get("attention_consume_ratio") is not None else 0.10),
-                "icebreaker_cold_threshold": int(settings.get("icebreaker_cold_threshold") if settings.get("icebreaker_cold_threshold") is not None else 3),
             },
             "guide": {
                 "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
