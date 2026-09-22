@@ -121,11 +121,20 @@ class QQDeployService:
         launcher = napcat_platform.find_launcher(napcat_dir) if napcat_dir else None
 
         if configured and launcher is None:
-            # 用户显式指了一个目录却没有启动器 —— 不要"帮"他装到别处，
-            # 那会让设置与实际位置长期不一致，下次更难看懂。
-            raise RuntimeError(
-                f"napcat_directory 指向的目录里没有 NapCat 启动器: {configured}"
-            )
+            # 配置指向的目录里没有启动器 —— 那是个**陈旧存档**（仓库搬过、目录被手删、
+            # 或早期版本把解析结果回填过）。这里不硬失败，而是就地清掉它：
+            # 一键部署无论如何都只装到 ``bundled_napcat_dir()``（见 _fetch 的
+            # target），所以这个配置**既不可能被满足、也不影响安装位置** ——
+            # 留着只会让用户卡在"部署不了、也改不动"的死角。
+            #
+            # 原实现是 raise（注释说"不要帮他装到别处，那会让设置与实际位置长期
+            # 不一致"）—— 那条理由在"配置能决定安装位置"的前提下成立，而这个前提
+            # 不成立。清掉存档反而是唯一能让设置与实际重新一致的动作。
+            step("locate", f"配置的 NapCat 目录里没有启动器，已清除该存档: {configured}")
+            await self.plugin.settings_service.save_settings(napcat_directory="")
+            configured = ""
+            napcat_dir = svc.get_napcat_directory()
+            launcher = napcat_platform.find_launcher(napcat_dir) if napcat_dir else None
         if launcher is not None and not force:
             step("locate", f"已有可用 NapCat: {napcat_dir}")
         else:
