@@ -94,8 +94,14 @@ def _preload_host_modules() -> None:
     而 `main_logic.core` 的导入图里**模块级**就会碰 config manager。若在替换了
     `get_config_manager` 之后才首次导入，那段模块级代码会打在假对象上，测的就不是
     插件逻辑了 —— 所以这里先把导入做完。
+
+    用 `import_module` 而不是 `import main_logic.core`：后者的模块名没有绑定到任何
+    变量、只靠副作用，F401 只能靠 noqa 压住；而 CI 上有一条 `--ignore-noqa` 的检查
+    （suppression 在那条 gate 下不作数）。`import_module` 是一次**调用**，本身即是"使用"。
     """
-    import main_logic.core  # noqa: F401
+    from importlib import import_module
+
+    import_module("main_logic.core")
 
 
 def _run(monkeypatch, cm: _FakeCM) -> list:

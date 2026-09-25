@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：846 passed**（见 §4.0p…§4.0z）。
+**最新：849 passed**（见 §4.0p…§4.0aa）。
 
 | 主题 | 状态 |
 |---|---|
@@ -115,6 +115,7 @@
 - `test_qq_free_route_persona.py` — **免费线请求的形态**（四处调用点：看图 / XML 修复 /
   「我在听」/ 缓冲总结；必须带本体人设、只对免费线带、标志句不许硬编码）——见 §4.0t
 - `verify_free_route_persona_fail_to_pass.py` — 同上，8 种注入全红 + 对照绿
+- `test_qq_noqa_hygiene.py` — 禁止裸 noqa 指令（CI 的 `--ignore-noqa` gate 见 §4.0aa）
 
 ---
 
@@ -1774,6 +1775,53 @@ JSON 形态 / 渲染文本含结尾与"隔了一段时间"提示）。
 下次启动即带新代码。届时的确认方式：新会话那一轮的 instructions 里出现
 `## 上一次对话的结尾（接续用）`（UI 运行时日志看不到 prompt，可在 `[Handoff]` 相关日志
 或直接看 `data/session_handoff.json` 的写入）。
+
+---
+
+### 4.0aa CI 有一条「不认 noqa」的 ruff gate —— 靠抑制压住的错误在那里会现形
+
+CI 跑的是（**钉死 ruff 0.12.4**）：
+
+```bash
+uvx ruff==0.12.4 check --ignore-noqa --isolated --target-version py311 \
+    --line-length 120 --select E4,E7,E9,F,I --exclude vendor plugin-repo
+```
+
+`--ignore-noqa` = **所有 noqa 注释一律不算数**。而本地 `ruff check .`（认 noqa）永远是
+绿的 —— 两边结论相反。2026-09-26 这条 gate 报了三处，全在 `tests/`：
+
+| 文件 | 报什么 | 为什么之前看不出来 |
+|---|---|---|
+| `test_qq_free_route_persona.py` | F401 `main_logic.core` imported but unused | 只想借副作用预热模块、模块名没绑定，靠 `noqa` 压着 |
+| `verify_save_chain_fail_to_pass.py` | E402 ×2（`import pytest`、插件导入） | 必须先改 `sys.path` 再导入，靠 `noqa` 压着 |
+
+**修法一律是"改写成不需要抑制"，而不是加 noqa**：
+
+* 预热模块 → `importlib.import_module("main_logic.core")`（一次**调用**，本身即是"使用"）
+* 三方导入 → 挪到 `sys.path` 操作**之前**（`pytest` 不需要那个路径）
+* 插件导入 → `import_module(...).QQDashboardService`（模块级不再有 import 语句）
+
+**顺带测出来的 ruff E402 豁免规则**（写下来免得下次又猜错）：
+
+```
+import sys / sys.path.insert(0, 'x') / import os                → 不报 E402
+import sys / ROOT = 'x' / sys.path.insert(0, ROOT) / import os  → 报 E402
+```
+
+即：**导入前面只有"导入"和 `sys.path` 操作**时不算越位。这就是为什么同一个仓库里
+`verify_bored_fail_to_pass.py` / `verify_empty_reply_fail_to_pass.py` 同样写着
+`# noqa: E402` 却**没有**被 CI 抓到（它们前面没有赋值），而 `verify_save_chain_…`
+（前面有 `ROOT = …`）被抓。**不要**据此去加抑制：能被豁免是巧合，整理成"导入在前"
+才是稳的。
+
+另外两条经验（都来自这次踩的坑）：
+
+* **不要用"在 pytest 里跑一遍 CI gate"当看门狗**：`--isolated` 下不同 ruff 的 I001
+  判定不同（实测 0.15.4 在插件目录报 30 个 I001、0.12.4 报 0 个），那会把测试套件
+  绑死到某个 ruff 版本上。gate 由 CI 跑，本地只要**别用抑制**就行。
+* 唯一留下的小看门狗是 `tests/test_qq_noqa_hygiene.py`（2 条）：禁止**裸 noqa 指令**
+  （不写代号的 `# noqa`）—— 它会把所有规则一起关掉，本地与 CI 都看不出问题；这条约束
+  与 ruff 版本无关，两边结论一致。
 
 ---
 

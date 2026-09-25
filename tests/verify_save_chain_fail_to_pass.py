@@ -20,14 +20,22 @@ from __future__ import annotations
 
 import inspect
 import sys
+from importlib import import_module
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[4]  # N.E.K.O 仓库根
 PLUGIN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # N.E.K.O 仓库根
 
-import pytest  # noqa: E402
-from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService  # noqa: E402
+# 用 import_module 而不是 `from … import …`：本文件必须先改 sys.path 再导入插件，
+# 而模块级 import 语句排在这些赋值/调用之后就是 E402（ruff 只豁免"前面全是导入与
+# sys.path 操作"的情形，本文件前面还有 ROOT/PLUGIN 两个赋值，所以会被报）。
+# CI 上那条 gate 带 `--ignore-noqa`，抑制在那里不作数 —— 于是从**构造上**避开。
+QQDashboardService = import_module(
+    "plugin.plugins.qq_auto_reply.dashboard_service"
+).QQDashboardService
 
 TEST_FILE = str(Path(__file__).resolve().parent / "test_qq_settings_save_chain.py")
 _ORIGINAL = QQDashboardService.save_settings
