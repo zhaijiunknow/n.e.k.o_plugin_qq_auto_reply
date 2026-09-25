@@ -599,6 +599,7 @@
   "ui.shared.sticker.read_failed": "读取失败",
   "ui.shared.sticker.select_file": "请选择或拖入图片",
   "ui.shared.sticker.delete_confirm": "确定删除这张表情包吗？图片文件会一起删掉，无法恢复。",
+  "ui.shared.sticker.auto_desc": "自动解析描述（VLM）",
   "ui.shared.table.actions": "操作",
   "ui.shared.table.desc": "描述",
   "ui.shared.table.file": "文件",

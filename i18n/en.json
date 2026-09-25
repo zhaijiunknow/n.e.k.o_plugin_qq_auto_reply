@@ -599,6 +599,7 @@
   "ui.shared.sticker.read_failed": "Read failed",
   "ui.shared.sticker.select_file": "Please select or drag in an image",
   "ui.shared.sticker.delete_confirm": "Delete this sticker? The image file is removed as well. This cannot be undone.",
+  "ui.shared.sticker.auto_desc": "Auto-describe (VLM)",
   "ui.shared.table.actions": "Actions",
   "ui.shared.table.desc": "Description",
   "ui.shared.table.file": "File",

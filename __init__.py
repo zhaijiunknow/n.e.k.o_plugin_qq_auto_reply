@@ -110,6 +110,16 @@ CONNECTION_MODES: tuple[str, ...] = tuple(
     settings_schema.BY_KEY["qq_connection_mode"].enum or ()
 )
 
+#: 表情包自动描述用的提示词。
+#:
+#: 和引用回复那句"描述这张图片"不同：这句描述**是要给模型自己以后挑图用的**
+#: （它会进 system prompt 的表情包目录），所以要素是"画面 + 情绪 + 什么场合发"，
+#: 而不是客观转写。限定 30 字是因为它要进提示词，太长会挤占上下文。
+STICKER_VLM_PROMPT = (
+    "这是一张聊天用的表情包图片。请用一句简短中文描述它的画面和情绪，"
+    "让人只看这句就知道什么场合适合发它（不超过30字；直接给描述，不要引号、不要解释）"
+)
+
 
 @neko_plugin
 class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAutoReplyTargetsMixin, NekoPluginBase):
@@ -452,8 +462,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception:
             return ""
 
-    async def _describe_reply_image(self, image_url: str) -> str:
-        """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""
+    async def _vlm_describe_locator(self, locator: str, *, prompt: str, max_tokens: int = 60) -> str:
+        """对一张图（本地路径或 http(s) URL）跑一次 VLM，返回文本；失败返回 ""。
+
+        **插件里"看图"的地方都走这一条**（conversation 模型配置 → 图片压成 JPEG b64
+        → create_chat_llm_async）。刻意收成一个函数：以前只有引用回复的图走这条路，
+        表情包自动描述再抄一份的话，两处的模型配置迟早会漂移。
+
+        失败一律返回空串（调用方决定怎么兜底）—— 这里不抛，因为调用点都在
+        "尽力而为"的位置上，抛出去只会被上层吞掉、还多一层噪音。
+        """
         import asyncio as _asyncio
         try:
             from utils.config_manager import get_config_manager
@@ -466,21 +484,20 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             if not base_url or not model:
                 return ""
 
-            # 拉取图片并压缩为 JPEG base64
-            image_b64 = await self._prepare_attachment_image_b64({"url": image_url})
+            image_b64 = await self._prepare_attachment_image_b64({"path": locator})
             if not image_b64:
                 return ""
 
             llm = await create_chat_llm_async(
                 model=model, base_url=base_url, api_key=api_key,
-                max_completion_tokens=60, timeout=15.0,
+                max_completion_tokens=max_tokens, timeout=15.0,
                 provider_type=model_config.get("provider_type"),
             )
             try:
                 response = await _asyncio.wait_for(
                     llm.ainvoke([{"role": "user", "content": [
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                        {"type": "text", "text": "用简短的中文描述这张图片的内容（不超过20字）"},
+                        {"type": "text", "text": prompt},
                     ]}]),
                     timeout=15.0,
                 )
@@ -494,6 +511,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                         pass
         except Exception:
             return ""
+
+    async def _describe_reply_image(self, image_url: str) -> str:
+        """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""
+        return await self._vlm_describe_locator(
+            image_url, prompt="用简短的中文描述这张图片的内容（不超过20字）",
+        )
 
     def _refresh_admin_qq(self) -> None:
         self._admin_qq = None
@@ -2171,6 +2194,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         fname = str(filename or "").strip()
         description = str(desc or "").strip()
         raw_b64 = str(data_base64 or "").strip()
+        #: 传了就让 VLM 生成描述（覆盖 desc）；没传 / 解析失败则沿用 desc。
+        auto_desc = bool(kw.get("auto_desc"))
         if not fname:
             return Err(SdkError("INVALID_INPUT: filename 不能为空"))
         if not raw_b64:
@@ -2220,8 +2245,70 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         with open(sticker_json, "w", encoding="utf-8") as f:
             _json.dump(data, f, ensure_ascii=False, indent=2)
         self.session_instruction_service._sticker_catalog_cache = ""
-        self.logger.info(f"上传表情包: id={sid}, file={dest_name}, desc={description}")
-        return Ok({"id": sid, "desc": description, "path": dest_name, "total": len(data)})
+
+        # 自动描述：**先注册再升级**。VLM 失败（模型没配 / 超时 / 返回空）时，
+        # 上面那条用 desc/文件名兜底的登记仍然有效 —— 不会因为一次模型抖动就丢图。
+        vlm_used = False
+        if auto_desc:
+            vlm_desc = await self._vlm_describe_locator(
+                str(dest_path), prompt=STICKER_VLM_PROMPT, max_tokens=80,
+            )
+            if vlm_desc:
+                data[sid] = {"desc": vlm_desc, "path": dest_name}
+                with open(sticker_json, "w", encoding="utf-8") as f:
+                    _json.dump(data, f, ensure_ascii=False, indent=2)
+                self.session_instruction_service._sticker_catalog_cache = ""
+                description = vlm_desc
+                vlm_used = True
+                self.logger.info(f"[VLM] 表情包自动描述: id={sid}, desc={vlm_desc}")
+            else:
+                self.logger.info(f"[VLM] 表情包自动描述返回空，沿用兜底描述: id={sid}")
+
+        self.logger.info(f"上传表情包: id={sid}, file={dest_name}, desc={description}, vlm={vlm_used}")
+        return Ok({"id": sid, "desc": description, "path": dest_name,
+                   "total": len(data), "vlm_used": vlm_used})
+
+    async def _asset_describe_sticker(self, kw: dict[str, Any]):
+        """对一张**已注册**的表情包跑 VLM，把描述写回 sticker.json。
+
+        `upload_sticker` 的 `auto_desc` 走的是同一段逻辑；这条单独开出来是为了
+        能对**以前传的**表情包补描述（那些的描述多半还是文件名）。
+        """
+        import os as _os
+
+        sid = str(kw.get("id") or "").strip()
+        if not sid:
+            return Err(SdkError("INVALID_INPUT: id 不能为空"))
+        sticker_json = str(self.data_path("sticker.json"))
+        sticker_dir = str(self.data_path("sticker"))
+        try:
+            with open(sticker_json, "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+        except Exception:
+            data = {}
+        if not isinstance(data, dict) or sid not in data:
+            return Err(SdkError(f"NOT_FOUND: 没有 id={sid} 的表情包"))
+        entry = data[sid]
+        raw_path = entry.get("path", "") if isinstance(entry, dict) else ""
+        safe_name = _os.path.basename(str(raw_path).replace("\\", "/"))
+        full_path = _os.path.join(sticker_dir, safe_name)
+        if not safe_name or not _os.path.isfile(full_path):
+            return Err(SdkError(f"NOT_FOUND: 图片文件不存在: data/sticker/{safe_name}"))
+
+        desc = await self._vlm_describe_locator(full_path, prompt=STICKER_VLM_PROMPT, max_tokens=80)
+        if not desc:
+            # 空结果要**报错**而不是静默保留旧描述：界面上点了"重新解析"却什么都没变，
+            # 用户会以为是自己没点到。多半是模型没配或没返回内容。
+            return Err(SdkError(
+                "VLM_FAILED: 没能解析出描述（对话模型未配置、不支持看图，或返回为空）"))
+
+        previous = entry.get("desc", "") if isinstance(entry, dict) else ""
+        data[sid] = {"desc": desc, "path": raw_path}
+        with open(sticker_json, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        self.session_instruction_service._sticker_catalog_cache = ""
+        self.logger.info(f"[VLM] 表情包重新描述: id={sid}, {previous!r} -> {desc!r}")
+        return Ok({"id": sid, "desc": desc, "previous": previous})
 
     async def _asset_delete_sticker(self, kw: dict[str, Any]):
         """删掉一个已注册表情包：先从 sticker.json 摘掉登记，再删磁盘上的图。
@@ -2288,12 +2375,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="asset",
         name=tr("entries.asset.name", default="表情包与注意力"),
-        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / delete_sticker / attention。**此入口对 AI 隐藏。**"),
+        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / describe_sticker / delete_sticker / attention。**此入口对 AI 隐藏。**"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
-                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "delete_sticker", "attention"],
-                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；delete_sticker=删除一个已注册表情包（连图一起删）；attention=读群注意力状态"},
-            "id": {"type": "string", "description": "delete_sticker：要删除的表情包 id（取自 list_stickers）"},
+                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "describe_sticker", "delete_sticker", "attention"],
+                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；describe_sticker=用 VLM 重新解析某张表情包的描述；delete_sticker=删除一个已注册表情包（连图一起删）；attention=读群注意力状态"},
+            "id": {"type": "string", "description": "describe_sticker / delete_sticker：表情包 id（取自 list_stickers）"},
+            "auto_desc": {"type": "boolean", "description": "upload_sticker：为 true 时用 VLM 自动生成描述并覆盖 desc；VLM 失败则沿用 desc"},
             "image_path": {"type": "string", "description": "register_sticker：data/sticker/ 下的图片文件名"},
             "filename": {"type": "string", "description": "upload_sticker：文件名（如 cat.png）"},
             "data_base64": {"type": "string", "description": "upload_sticker：图片 base64（可带 data:image/...;base64, 前缀）"},
@@ -2311,13 +2399,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._asset_register_sticker(kw)
         if action == "upload_sticker":
             return await self._asset_upload_sticker(kw)
+        if action == "describe_sticker":
+            return await self._asset_describe_sticker(kw)
         if action == "delete_sticker":
             return await self._asset_delete_sticker(kw)
         if action == "attention":
             return await self._asset_attention(kw)
         return Err(SdkError(
             f"BAD_ACTION: asset 不支持 {action!r}"
-            f"（可选 list_stickers/register_sticker/upload_sticker/delete_sticker/attention）"))
+            f"（可选 list_stickers/register_sticker/upload_sticker/describe_sticker"
+            f"/delete_sticker/attention）"))
 
     # ── send：收发 ──────────────────────────────────────────────
     #

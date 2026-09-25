@@ -246,6 +246,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     </div>
     <div id="sk-desc-list"></div>
     <button id="btn-upload-sticker" data-i18n="ui.shared.btn.upload_sticker">上传并注册</button>
+    <label style="margin-left:10px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="sk-auto-desc" checked> <span data-i18n="ui.shared.sticker.auto_desc">自动解析描述（VLM）</span></label>
   </div>
 </div>
 
@@ -623,9 +624,13 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
 
 /* ── 拖入表情包 ─────────────────────────────────────────────────────
    后端契约与 napcat / open_platform 的表情包页完全一致：
-     call('asset', {action:'upload_sticker', filename, data_base64, desc})
-   **三个参数都是必填**（后端 desc 为空直接报 INVALID_INPUT），所以描述留空时
-   用"去掉扩展名的文件名"兜底。
+     call('asset', {action:'upload_sticker', filename, data_base64, desc, auto_desc})
+   filename / data_base64 / desc **三个都是必填**（后端 desc 为空直接报 INVALID_INPUT），
+   所以描述留空时用"去掉扩展名的文件名"兜底。
+
+   `auto_desc`（默认勾选）会让后端用 VLM 生成描述并**覆盖** desc；VLM 失败
+   （模型没配 / 超时 / 返回空）时后端沿用上面那个兜底描述，不会因为模型抖动丢图。
+   所以手填的描述只在"自动解析失败"时才有意义。
 
    注意这页的辅助函数和那两页不同：这里用 esc() 而不是 escapeHtml()，
    报错走 showErr()（页面顶部的 #err）而不是 toast() —— 从那边照抄会静默失效，
@@ -675,6 +680,9 @@ async function uploadStickers() {
     return;
   }
   const inputs = document.querySelectorAll('.sk-desc-input');
+  /* 自动解析：勾了就由 VLM 生成描述（手填只作为失败兜底） */
+  const autoEl = document.getElementById('sk-auto-desc');
+  const autoDesc = !!(autoEl && autoEl.checked);
   const label = document.getElementById('sk-file-name');
   const files = _skFiles;
   const total = files.length;
@@ -700,7 +708,7 @@ async function uploadStickers() {
         continue;
       }
       try {
-        await call('asset', { action: 'upload_sticker', filename: f.name, data_base64: String(b64), desc: desc });
+        await call('asset', { action: 'upload_sticker', filename: f.name, data_base64: String(b64), desc: desc, auto_desc: autoDesc });
         done++;
       } catch (e) {
         showErr(f.name + t('ui.shared.sticker.batch_fail_infix', ' 失败: ') + ((e && e.message) ? e.message : e));

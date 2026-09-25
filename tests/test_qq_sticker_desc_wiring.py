@@ -110,3 +110,45 @@ def test_desc_can_never_be_empty():
         assert re.search(r"f\.name\.replace\(", body), (
             f"{name}: 上传时 desc 没有用文件名兜底 —— 不填描述会被后端拒收"
         )
+
+
+# ── 上传后自动用 VLM 解析描述 ────────────────────────────────────────
+#
+# 描述是猫娘挑图的唯一依据；以前只能手填或退回文件名（`cat-nod` 这种），
+# 描述没意义 → 挑出来的表情包就是错的。所以三个上传页都要带"自动解析"开关，
+# 并且把它作为 `auto_desc` 传给后端（后端在那条为真时用 VLM 覆盖 desc）。
+
+
+def test_every_upload_page_has_the_auto_desc_switch():
+    for name in PAGES:
+        text = _code(name)
+        assert 'id="sk-auto-desc"' in text, f"{name}: 没有「自动解析描述」开关"
+        m = re.search(r'<input[^>]*id="sk-auto-desc"[^>]*>', text)
+        assert m, f"{name}: 找不到 #sk-auto-desc 这个 input"
+        assert "checkbox" in m.group(0), f"{name}: #sk-auto-desc 不是复选框"
+        assert "checked" in m.group(0), (
+            f"{name}: 「自动解析」应当默认勾选（这是用户明确要的行为）"
+        )
+
+
+def test_every_upload_page_sends_auto_desc():
+    """`additionalProperties: False`：后端 schema 里没这个参数的话，传了会被拦掉。"""
+    for name in PAGES:
+        body = _fn_body(_code(name), "doUploadSticker") or _fn_body(_code(name), "uploadStickers")
+        assert body is not None, f"{name}: 找不到上传函数"
+        assert re.search(r"auto_desc\s*:", body), (
+            f"{name}: 上传时没有传 auto_desc —— 自动解析开关不会生效"
+        )
+        assert "sk-auto-desc" in body, (
+            f"{name}: 传的 auto_desc 不是读那个复选框 —— 开关和实际行为会不一致"
+        )
+
+
+def test_the_auto_desc_label_key_exists_in_both_bundles():
+    import json
+
+    zh = json.loads((BASE / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    en = json.loads((BASE / "i18n" / "en.json").read_text(encoding="utf-8"))
+    key = "ui.shared.sticker.auto_desc"
+    assert key in zh, f"zh-CN.json 里没有 {key}"
+    assert key in en, f"en.json 里没有 {key}"
