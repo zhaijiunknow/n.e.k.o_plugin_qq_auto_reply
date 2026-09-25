@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-i18n="ui.index.title">QQ 接入方式</title>
-<link rel="stylesheet" href="theme.css?v=2">
+<link rel="stylesheet" href="theme.css?v=3">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:var(--bg); color:var(--text); display:flex; align-items:center; justify-content:center; min-height:100vh; }
@@ -23,31 +23,18 @@ body { background:var(--bg); color:var(--text); display:flex; align-items:center
 .wrap { display:flex; gap:20px; flex-wrap:wrap; justify-content:center; align-items:stretch; }
 h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom:6px; width:100%; }
 .sub { color:var(--text-secondary); font-size:13px; text-align:center; margin-bottom:26px; width:100%; }
-/* 猫娘小像：纯内联 SVG，不引外部资源（插件要离线可用）。
-   装饰性元素，不带文案 —— 所以不需要 i18n 键。 */
-.mascot { display:block; margin:0 auto 12px; width:72px; height:72px; }
-.mascot .ear, .mascot .face { fill:var(--surface-strong); stroke:var(--primary); stroke-width:3; stroke-linejoin:round; }
-.mascot .eye { fill:var(--text); }
-.mascot .blush { fill:var(--blush); opacity:.8; }
-.mascot .mouth { stroke:var(--primary); stroke-width:3; stroke-linecap:round; fill:none; }
+/* 猫娘标记：直接用本体的 logo 图（来源见 static/assets/README.md），不再手画 SVG。
+   装饰性元素、不带文案，所以不需要 i18n 键。 */
+.mascot { display:block; margin:0 auto 12px; width:72px; height:72px; object-fit:contain; }
 </style>
 </head>
 <body>
 <div style="max-width:900px;width:100%;padding:0 16px;">
-    <svg class="mascot" viewBox="0 0 100 100" aria-hidden="true">
-        <path class="ear" d="M22 40 L26 14 L44 30 Z"/>
-        <path class="ear" d="M78 40 L74 14 L56 30 Z"/>
-        <ellipse class="face" cx="50" cy="56" rx="32" ry="29"/>
-        <circle class="eye" cx="39" cy="52" r="3.6"/>
-        <circle class="eye" cx="61" cy="52" r="3.6"/>
-        <ellipse class="blush" cx="31" cy="63" rx="6" ry="4"/>
-        <ellipse class="blush" cx="69" cy="63" rx="6" ry="4"/>
-        <path class="mouth" d="M44 66 Q50 71 56 66"/>
-    </svg>
+    <img class="mascot" src="assets/neko-logo.png?v=1" alt="" aria-hidden="true" draggable="false" onerror="this.style.display='none'">
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
     <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
     <div class="wrap">
-        <a class="card" href="status.html?v=2">
+        <a class="card" href="status.html?v=3">
             <div class="icon">◉</div>
             <h2 data-i18n="ui.index.status.title">一键部署</h2>
             <p>
@@ -56,7 +43,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.status.tag">自动化</span>
         </a>
-        <a class="card" href="napcat.html?v=5" onclick="go('napcat'); return false;">
+        <a class="card" href="napcat.html?v=6" onclick="go('napcat'); return false;">
             <div class="icon">N</div>
             <h2>NapCat</h2>
             <p>
@@ -67,7 +54,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
         </a>
-        <a class="card" href="open_platform.html?v=6" onclick="go('open_platform'); return false;">
+        <a class="card" href="open_platform.html?v=7" onclick="go('open_platform'); return false;">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -101,7 +88,7 @@ function go(mode) {
         return;
     }
     localStorage.setItem('qq_connection_mode', mode);
-    location.href = mode === 'napcat' ? 'napcat.html?v=5' : 'open_platform.html?v=6';
+    location.href = mode === 'napcat' ? 'napcat.html?v=6' : 'open_platform.html?v=7';
 }
 </script>
 </body>

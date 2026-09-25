@@ -93,9 +93,6 @@
     --hairline: rgba(255, 255, 255, .15);           /* 面板自己的白色发丝描边 */
     --header-shadow: inset 0 -.5px 0 rgba(255, 255, 255, .15), 0 1px 4px rgba(100, 120, 160, .04);
 
-    /* ── 非语义的装饰色 ──────────────────────────────────────────── */
-    --blush: #f9a8b8;                       /* 猫娘腮红。纯装饰，故意不占用 --danger */
-
     /* ── 别名：四页历史上用过的名字，全部指向上面这批值 ───────────── */
     --accent: var(--primary);
     --accent-hover: #337ecc;                /* Element Plus primary dark-2 */

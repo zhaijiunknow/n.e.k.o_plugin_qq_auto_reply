@@ -818,6 +818,25 @@ active 导航 = `#409eff` 压 `rgba(64,158,255,.12)` + `inset 3px 0 0 #409eff`�
 
 **测试基线：681 passed / 0 failed**（四页结构与 i18n 看门狗全绿）。
 
+**图片素材：本体有品牌图，一开始没用上（使用者指出后补上）**。
+本体侧栏品牌是 `neko-logo.png` + 文字（`Sidebar.vue`：28×28、圆角 8、17px/800、
+`letter-spacing:.5px`），标题栏左端是 `paw.png`（`AppLayout.vue`：20×16）。这两个已
+**复制**进 `static/assets/`（附 SHA-256 与再同步方法，见 `static/assets/README.md`）——
+是复制不是外链，因为插件要求离线可用。落地：
+
+* `napcat` / `open_platform` 侧栏 `.logo` 由纯文字改成 `neko-logo.png` + 文字的
+  flex 品牌行（照 `Sidebar.vue` 的尺寸）；
+* 两页顶栏左端加 `paw.png`。**有意不同**：本体标题栏是蓝渐变所以给猫爪加了
+  `filter:brightness(0) invert(1)` 变白，我们顶栏是浅色，不加滤镜保留原色；
+* `index.html` / `status.html` 原先那个**手画的内联 SVG 猫脸**换成真的 `neko-logo.png`
+  （`--blush` 这个只为腮红存在的 token 随之删掉）。
+
+**顺带纠正一条我一度报错的结论**：我曾说 `static/Tutorial/1-4.png`"从未被引用"，
+那是**假阴性**——我用了 `Select-String -SimpleMatch` 却写了 `Tutorial|tutorial` 的
+正则写法，等于在找字面量。它们在 `napcat.html` 里作为"网络配置截图 / WebSocket 配置
+截图"用了 4 次（1203×725 / 522×731 / 1133×754 / 610×707，都正常加载）。
+**插件自己的图片素材没有闲置的。**
+
 ---
 
 ### 4.1 关键认知修正
