@@ -34,7 +34,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
     <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
     <div class="wrap">
-        <a class="card" href="status.html?v=7">
+        <a class="card" href="status.html?v=8">
             <div class="icon">◉</div>
             <h2 data-i18n="ui.index.status.title">一键部署</h2>
             <p>
@@ -54,7 +54,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
         </a>
-        <a class="card" href="open_platform.html?v=8" onclick="go('open_platform'); return false;">
+        <a class="card" href="open_platform.html?v=9" onclick="go('open_platform'); return false;">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -88,7 +88,7 @@ function go(mode) {
         return;
     }
     localStorage.setItem('qq_connection_mode', mode);
-    location.href = mode === 'napcat' ? 'napcat.html?v=7' : 'open_platform.html?v=8';
+    location.href = mode === 'napcat' ? 'napcat.html?v=7' : 'open_platform.html?v=9';
 }
 </script>
 </body>

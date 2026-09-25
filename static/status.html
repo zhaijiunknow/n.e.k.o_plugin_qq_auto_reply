@@ -91,6 +91,16 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 }
 /* 操作条里的按钮比正文里的小一号，免得抢标题的视线 */
 #actions button, #actions .btn { padding:6px 13px; font-size:12px; }
+
+/* ── 拖入表情包 ──────────────────────────────────────────────────
+   落区/输入框的样式与 napcat、open_platform 的表情包页保持一致，方便对照。 */
+.drop-zone { border:2px dashed var(--border); border-radius:var(--radius-md); padding:28px 20px; text-align:center; color:var(--text-secondary); font-size:13px; transition:.2s; cursor:pointer; }
+.drop-zone:hover { border-color:var(--primary-border); }
+.drop-zone.drag-over { border-color:var(--primary); background:var(--primary-tint-soft); color:var(--primary-on-tint); }
+.form-group { margin-bottom:10px; }
+.form-label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; }
+.form-input { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius-md); font-size:13px; outline:none; transition:.15s; background:var(--input-bg); color:var(--text); }
+.form-input:focus { border-color:var(--primary-focus-border); box-shadow:0 0 0 3px var(--primary-tint); }
 </style>
 </head>
 <body>
@@ -217,6 +227,25 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
       <button id="btn-add-group" data-i18n="ui.status.add_group">添加群聊</button>
     </div>
     <ul class="list" id="group-list"></ul>
+  </div>
+
+  <!-- 拖入表情包：和 napcat / open_platform 的表情包页**同一个后端契约**
+       （asset / upload_sticker）。注意后端那三个参数 filename / data_base64 / desc
+       **都是必填**，desc 为空会直接报 INVALID_INPUT —— 所以下面留空时用文件名兜底。
+       文案键全部复用已有的 ui.shared.* 键，不新增语言包条目。 -->
+  <div class="card">
+    <h2 data-i18n="ui.shared.card.sticker_upload">上传新表情包</h2>
+    <div class="drop-zone" id="sk-drop" onclick="document.getElementById('sk-file').click()">
+      <div style="font-size:14px;margin-bottom:6px;color:var(--primary-on-tint)" data-i18n="ui.shared.sticker.drop_text">[ 拖拽图片到此处 ]</div>
+      <span data-i18n="ui.shared.sticker.or_click">或点击选择文件</span>
+      <div id="sk-file-name" style="margin-top:6px;font-weight:600;color:var(--primary-on-tint)"></div>
+    </div>
+    <input type="file" id="sk-file" accept="image/*" multiple style="display:none" onchange="skFilePicked(this.files)">
+    <div class="form-group" style="margin-top:12px">
+      <input class="form-input" id="sk-desc" data-i18n-placeholder="ui.shared.sticker.desc_placeholder" placeholder="描述（如：一只猫在摇头）">
+    </div>
+    <div id="sk-desc-list"></div>
+    <button id="btn-upload-sticker" data-i18n="ui.shared.btn.upload_sticker">上传并注册</button>
   </div>
 </div>
 
@@ -591,6 +620,157 @@ document.getElementById('btn-apply').addEventListener('click', async () => {
     deployLog('失败：' + ((e && e.message) ? e.message : e));
   } finally { busy('btn-apply', false); }
 });
+
+/* ── 拖入表情包 ─────────────────────────────────────────────────────
+   后端契约与 napcat / open_platform 的表情包页完全一致：
+     call('asset', {action:'upload_sticker', filename, data_base64, desc})
+   **三个参数都是必填**（后端 desc 为空直接报 INVALID_INPUT），所以描述留空时
+   用"去掉扩展名的文件名"兜底。
+
+   注意这页的辅助函数和那两页不同：这里用 esc() 而不是 escapeHtml()，
+   报错走 showErr()（页面顶部的 #err）而不是 toast() —— 从那边照抄会静默失效，
+   test_qq_status_sticker_drop.py 里专门钉了这两点。 */
+let _skFiles = null;
+
+function skFilePicked(files) {
+  const all = [...(files || [])];
+  const imgs = all.filter(f => f && String(f.type).startsWith('image/'));
+  _skFiles = imgs.length ? imgs : null;
+  skBuildDescList();
+  if (!imgs.length && all.length) {
+    showErr(t('ui.shared.sticker.select_file', '请选择或拖入图片'));
+  }
+}
+
+function skBuildDescList() {
+  const list = document.getElementById('sk-desc-list');
+  const label = document.getElementById('sk-file-name');
+  if (!list || !label) return;
+  if (!_skFiles || !_skFiles.length) { list.innerHTML = ''; label.textContent = ''; return; }
+  label.textContent = _skFiles.length + t('ui.shared.sticker.images_count', ' 张图片');
+  list.innerHTML = _skFiles.map((f, i) =>
+    '<div class="form-group"><label class="form-label">' + (i + 1) + '. ' + esc(f.name) + '</label>' +
+    '<input class="form-input sk-desc-input" placeholder="' + esc(f.name.replace(/\.[^.]+$/, '')) + '"></div>'
+  ).join('');
+  /* 只有一张时，上面的总描述框和它**双向**同步。
+     单向会静默丢描述：用户很可能先在总描述框里打好字、再回来选文件；而上传读的是
+     每个文件自己的输入框，于是那段描述被丢掉，后端只拿到文件名当描述。
+     实测过：在总描述框填「一只猫在摇头」，注册下去的描述是 "cat-nod"（文件名）。
+     后端 desc 是必填的，所以这种丢法不会报错，只会把错的描述写进 sticker.json，
+     猫娘之后按这个错描述挑图。 */
+  if (_skFiles.length === 1) {
+    const one = list.querySelector('.sk-desc-input');
+    const top = document.getElementById('sk-desc');
+    if (one && top) {
+      one.value = top.value;
+      one.addEventListener('input', () => { top.value = one.value; });
+      top.addEventListener('input', () => { one.value = top.value; });
+    }
+  }
+}
+
+async function uploadStickers() {
+  if (!_skFiles || !_skFiles.length) {
+    showErr(t('ui.shared.sticker.select_file', '请选择或拖入图片'));
+    return;
+  }
+  const inputs = document.querySelectorAll('.sk-desc-input');
+  const label = document.getElementById('sk-file-name');
+  const files = _skFiles;
+  const total = files.length;
+  let done = 0;
+  showErr('');
+  busy('btn-upload-sticker', true);
+  try {
+    for (let i = 0; i < total; i++) {
+      const f = files[i];
+      /* 后端 desc 必填：留空就用去掉扩展名的文件名兜底 */
+      const desc = String((inputs[i] && inputs[i].value.trim()) || f.name.replace(/\.[^.]+$/, '')).trim();
+      label.textContent = (i + 1) + '/' + total;
+      let b64;
+      try {
+        b64 = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result);
+          r.onerror = () => reject(new Error(t('ui.shared.sticker.read_failed', '读取失败')));
+          r.readAsDataURL(f);
+        });
+      } catch (e) {
+        showErr(f.name + t('ui.shared.sticker.batch_fail_infix', ' 失败: ') + ((e && e.message) ? e.message : e));
+        continue;
+      }
+      try {
+        await call('asset', { action: 'upload_sticker', filename: f.name, data_base64: String(b64), desc: desc });
+        done++;
+      } catch (e) {
+        showErr(f.name + t('ui.shared.sticker.batch_fail_infix', ' 失败: ') + ((e && e.message) ? e.message : e));
+      }
+    }
+  } finally {
+    busy('btn-upload-sticker', false);
+  }
+  _skFiles = null;
+  const picker = document.getElementById('sk-file');
+  if (picker) picker.value = '';
+  const top = document.getElementById('sk-desc');
+  if (top) top.value = '';
+  const list = document.getElementById('sk-desc-list');
+  if (list) list.innerHTML = '';
+  label.textContent = t('ui.shared.sticker.complete_prefix', '完成 ') + done + '/' + total +
+    t('ui.shared.sticker.complete_suffix', ' 张');
+}
+
+(function () {
+  const dz = document.getElementById('sk-drop');
+  const isImg = f => f && String(f.type).startsWith('image/');
+
+  async function collect(dt) {
+    /* 先用 webkitGetAsEntry 递归扫目录 —— 整包表情包可以直接拖文件夹进来。
+       拿不到 entry（浏览器不支持、或是合成事件）就退回普通文件列表。 */
+    const found = [];
+    const items = dt && dt.items ? [...dt.items] : [];
+    const first = items.length && items[0].webkitGetAsEntry ? items[0].webkitGetAsEntry() : null;
+    if (first) {
+      async function scan(entry) {
+        if (!entry) return;
+        if (entry.isFile) {
+          const f = await new Promise(r => entry.file(r));
+          if (isImg(f)) found.push(f);
+        } else if (entry.isDirectory) {
+          const reader = entry.createReader();
+          const kids = await new Promise(r => reader.readEntries(r));
+          for (const kid of kids) await scan(kid);
+        }
+      }
+      for (const item of items) await scan(item.webkitGetAsEntry());
+    }
+    if (!found.length && dt && dt.files) found.push(...[...dt.files].filter(isImg));
+    return found;
+  }
+
+  if (dz) {
+    ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => {
+      e.preventDefault(); dz.classList.add('drag-over');
+    }));
+    ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => {
+      e.preventDefault(); dz.classList.remove('drag-over');
+    }));
+    dz.addEventListener('drop', async e => {
+      const found = await collect(e.dataTransfer);
+      if (found.length) skFilePicked(found);
+      else showErr(t('ui.shared.sticker.select_file', '请选择或拖入图片'));
+    });
+  }
+
+  /* 拖到落区**外面**松手时，浏览器默认会直接打开那张图、把整个页面顶掉。
+     统一拦一下默认行为，免得误操作把页面弄没了。 */
+  ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => {
+    const hasFiles = e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+    if (hasFiles) e.preventDefault();
+  }));
+})();
+
+document.getElementById('btn-upload-sticker').addEventListener('click', uploadStickers);
 
 (async () => {
   await load();
