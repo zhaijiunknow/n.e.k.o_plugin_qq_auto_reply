@@ -213,12 +213,22 @@ def test_rise_phase_does_not_clamp_above_focus_line():
     state.last_decay_at = 90  # 10 秒前，保证 dt=10 正常推进
     service._write_state(state)
 
-    # 推进 10 秒：rise 相位不应把 8.0 砍回焦点线
+    # 推进 10 秒：rise 相位不应把 8.0 砍回焦点线，且现在可以继续往上长
+    # （自然增长上限已从焦点线改为 max_score，见 _advance_phase 的注释）。
+    #
+    # 期望值只断言**方向与上限**，不钉具体数值：频率缩放的 dt 组合容易手算错，
+    # 而本测试要钉的行为是「高于焦点线时不回砍、且还能继续涨」。
     now[0] += 10
     after = service._apply_decay(service._load_state("g1"), now[0])
 
-    assert after.attention_score == pytest.approx(8.0, rel=1e-3)
+    assert after.attention_score >= 8.0, "rise 绝不能把高分砍回焦点线"
+    assert after.attention_score > 8.0, (
+        f"rise 相位应当继续增长（上限已改为 max_score={service._max_attention()}），"
+        f"实际停在 {after.attention_score:.2f} —— 焦点线封顶会让夺冠后零余量"
+    )
+    assert after.attention_score <= service._max_attention()
     assert after.focus_acquired_at == 110  # 本来就高于线，夺冠计时已记录
+    assert after.steady_since == 110       # 同时记稳线时刻（蜜月从它起算）
     assert after.phase == "rise"
 
 

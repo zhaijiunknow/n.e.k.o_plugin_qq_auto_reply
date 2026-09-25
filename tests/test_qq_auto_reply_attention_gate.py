@@ -53,6 +53,10 @@ class _FakeAttention:
     def mark_focus(self, group_id: str) -> None:
         self.calls.append(f"mark_focus:{group_id}")
 
+    def lock_group(self, group_id: str) -> None:
+        # 被 @ 现在会加锁（期内独占焦点）——桩必须跟上，否则门控在这一步就炸。
+        self.calls.append(f"lock_group:{group_id}")
+
     def wake_boost(self, group_id: str) -> None:
         self.calls.append(f"wake_boost:{group_id}")
 
@@ -298,6 +302,9 @@ class _OrderSensitiveAttention:
 
     def mark_focus(self, group_id: str) -> None:
         self.calls.append(f"mark_focus:{group_id}")
+
+    def lock_group(self, group_id: str) -> None:
+        self.calls.append(f"lock_group:{group_id}")
 
     def wake_boost(self, group_id: str) -> None:
         self.calls.append(f"wake_boost:{group_id}")

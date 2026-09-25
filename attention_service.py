@@ -17,6 +17,11 @@ from typing import Any
 from .feedback_classifier import QQFeedbackClassifier
 
 # ── 情绪 → 注意力速率偏移（rise 加速 / fall 减速）──
+#
+# 这张表是情绪的**唯一真源**：倍率符号决定该情绪属于上升侧还是回落侧，
+# `_EMOTION_DECAY_ORDER` 必须按倍率单调递减排列（从最猛到最丧，中间是 calm）。
+# `tests/test_qq_emotion_vocabulary.py` 强制这三条不变量，并强制它和
+# `settings_schema.DEFAULT_EMOTION_MULTIPLIERS` 逐键一致。
 _EMOTION_MULTIPLIER: dict[str, float] = {
     "arguing": 1.2,      # 上头死磕，涨得快跌得慢
     "proud": 0.8,        # 赢了要炫耀，猛拉注意力
@@ -25,13 +30,26 @@ _EMOTION_MULTIPLIER: dict[str, float] = {
     "curious": 0.2,      # 被勾起兴趣
     "calm": 0.0,         # 正常
     "sad": -0.4,         # 难过，不太想说话
-    "embarrassed": -0.6, # 尴尬想溜
+    "embarrassed": -0.6,  # 尴尬想溜
+    "bored": -0.7,       # 没兴趣的话题，主动掉注意力去找别的群
     "sulking": -0.9,     # 赌气——基本清零，主动让出焦点
 }
-# 强情绪直接触发焦点切换
+# 强情绪直接触发焦点切换。
+#
+# ⚠️ 这两个集合与 `_EMOTION_MULTIPLIER` 是**分开维护**的：往倍率表加新情绪不会
+# 自动让它获得抢/让焦点行为。新增情绪时必须同时决定它属于哪一档（或都不属于），
+# 否则该情绪会「能配置但无行为」。`tests/test_qq_emotion_vocabulary.py` 盯着这条
+# 一致性 —— 新情绪若既不在抢焦点也不在让焦点集合里，必须显式登记到该测试的
+# `_NEUTRAL_EMOTIONS` 白名单，逼作者做一次有意识的选择。
 _EMOTION_FORCE_FOCUS = {"arguing", "proud"}     # 立刻抢焦点
-_EMOTION_DROP_FOCUS = {"sulking", "embarrassed"} # 立刻让出焦点
-_EMOTION_DECAY_ORDER = ["arguing", "annoyed", "playful", "curious", "calm", "sad", "embarrassed", "sulking"]
+_EMOTION_DROP_FOCUS = {"sulking", "embarrassed", "bored"}  # 立刻让出焦点
+# 情绪降温阶梯：30 秒无新情绪就朝 calm 方向走一级。顺序 = 倍率从高到低，
+# 于是「上升侧 = calm 之前」「回落侧 = calm 之后」与倍率符号自动一致。
+_EMOTION_DECAY_ORDER = [
+    "arguing", "proud", "annoyed", "playful", "curious",
+    "calm",
+    "sad", "embarrassed", "bored", "sulking",
+]
 _EMOTION_DECAY_SECONDS = 30
 
 
@@ -55,11 +73,23 @@ class QQGroupAttentionState:
     last_reply_at: int = 0
     last_boost_at: int = 0
     last_focus_at: int = 0
-    focus_acquired_at: int = 0        # 最近夺冠时刻（蜜月窗口计时）
+    focus_acquired_at: int = 0        # 最近夺冠时刻（夺冠身份，不参与蜜月计时）
+    #: 首次「稳住焦点线」的时刻 —— **蜜月计时用它，不用 focus_acquired_at**。
+    #:
+    #: 两者必须分开：从 0 自然涨到焦点线的群一到线就夺冠，若蜜月也从那一刻起算，
+    #: 它还没积累任何余量就被判「蜜月结束」转入 fall，使用者要的「能一直聊很久」
+    #: 在结构上不可能。稳线时刻给了夺冠之后一段纯积累期。
+    steady_since: int = 0
+    #: 锁到期时刻（`@猫娘` / 唤醒词触发）。期内该群独占焦点，其余群不参与竞争。
+    #:
+    #: 与分数是**两个独立信号**：分数表达「没人叫我时我自己看哪」，
+    #: 锁表达「有人点名，我必须回头应对」。合成一个数就会互相污染参数
+    #: （这正是本模块此前调不明白的原因，见 docs/attention-redesign-draft.md §4）。
+    lock_until: int = 0
     last_focus_reason: str = ""
     total_interactions: int = 0
     # ── 情绪 ──
-    emotion: str = "calm"             # calm/playful/curious/annoyed/arguing/proud/embarrassed/sad/sulking
+    emotion: str = "calm"             # 取值见 _EMOTION_MULTIPLIER（唯一真源）
     emotion_updated_at: int = 0
     emotion_display: str = "calm"     # 前端展示用标签，衰减比 logic emotion 慢
     emotion_display_until: int = 0
@@ -95,6 +125,8 @@ class QQGroupAttentionState:
             "last_boost_at": int(self.last_boost_at),
             "last_focus_at": int(self.last_focus_at),
             "focus_acquired_at": int(self.focus_acquired_at),
+            "steady_since": int(self.steady_since),
+            "lock_until": int(self.lock_until),
             "last_focus_reason": str(self.last_focus_reason or ""),
             "total_interactions": int(self.total_interactions),
             "emotion": str(self.emotion or "calm"),
@@ -117,6 +149,11 @@ class QQGroupAttentionState:
             last_boost_at=int(data.get("last_boost_at") or 0),
             last_focus_at=int(data.get("last_focus_at") or 0),
             focus_acquired_at=int(data.get("focus_acquired_at") or data.get("last_focus_at") or 0),
+            # 旧存档没有这个键 → 0。回落到 focus_acquired_at 会让老数据沿用旧的
+            # 「一到线就开始蜜月」行为，反而把要修的场景重新引入；取 0 表示
+            # 「尚未稳线」，下一轮 _advance_phase 会在分数到线时补记。
+            steady_since=int(data.get("steady_since") or 0),
+            lock_until=int(data.get("lock_until") or 0),
             last_focus_reason=str(data.get("last_focus_reason") or ""),
             total_interactions=int(data.get("total_interactions") or 0),
             emotion=str(data.get("emotion") or "calm"),
@@ -152,6 +189,21 @@ class QQAttentionService:
             if isinstance(payload, dict):
                 payload["last_decay_at"] = now
                 payload["phase_started_at"] = now
+                # `steady_since` 是后加的键：旧存档没有它。若不补，那些状态会
+                # **永远不进入 fall** —— `_advance_phase` 的回落判定要求它非零，
+                # 而它只在「分数从线下站上焦点线」时才被写入，一个本来就高于
+                # 焦点线的群永远不会走到那个分支。
+                #
+                # 迁移策略：分数已在线上的，把稳线时刻定义为**此刻**（重启后的
+                # 新起点）。这既给了它一个完整的蜜月积累期，也不会因为沿用旧
+                # 时间戳而立刻判 fall。
+                if not int(payload.get("steady_since") or 0):
+                    try:
+                        score = float(payload.get("attention_score") or 0.0)
+                    except (TypeError, ValueError):
+                        score = 0.0
+                    if score >= self._focus_threshold():
+                        payload["steady_since"] = now
 
     def _current_time(self) -> int:
         return int(__import__("time").time())
@@ -310,8 +362,55 @@ class QQAttentionService:
         """注意力衰减循环的 tick 间隔（秒）。"""
         return max(0.1, float(self._setting("attention_decay_interval_seconds", 5.0)))
 
+    def _frequency_target_gap(self) -> float:
+        """发言频率的目标间隔（秒）：恰好这个节奏时增速为基准 1.0×。"""
+        return max(1.0, float(self._setting("attention_frequency_target_gap", 30.0)))
+
+    def _frequency_min_multiplier(self) -> float:
+        """冷群增速下限（0~1）。不为 0：冷群该涨得慢，但不该被彻底冻结。"""
+        return min(1.0, max(0.0, float(self._setting("attention_frequency_min_multiplier", 0.15))))
+
+    def _frequency_max_multiplier(self) -> float:
+        """热群增速上限（>=1）。
+
+        兜底值必须与 ``settings_schema`` 声明的默认值一致（1.8）。这里曾是 3.0 ——
+        早先真源默认值也是 3.0，后来降到 1.8 时只改了真源，读取端漏改。生产里
+        键恒在（`_qq_settings` 由 `default_config()` 播种）所以线上看不出，
+        但**任何只塞部分 settings 的调用方（测试、debug 脚本）拿到的是 3.0**:
+        用 `business_config.json` 的真实参数构造出来却是 3.0× 封顶，
+        等于在验证产品不使用的行为。
+        """
+        return max(1.0, float(self._setting("attention_frequency_max_multiplier", 1.8)))
+
+    def _frequency_scale(self, state: QQGroupAttentionState, now: int) -> float:
+        """按本群的发言节奏缩放自然增速：``目标间隔 / 实际间隔``，再钳到 [min, max]。
+
+        热群（间隔小于目标）涨得快，冷群（间隔大于目标）涨得慢。只用
+        ``last_message_at`` 这一个既有字段算间隔 —— 没有滑动窗口、没有计数器，
+        因此无状态、可复现，也不需要额外的老化机制。
+
+        调用点必须保证 ``now`` 早于写入本条消息的 ``last_message_at``
+        （``_advance_phase`` 由 ``_apply_decay`` 在 ``update_on_message`` 更新该
+        字段之前调用），否则间隔恒为 0、所有群都会拿到上限倍率。
+        """
+        last = int(state.last_message_at or 0)
+        gap = float(now - last) if last > 0 else float("inf")
+        if gap <= 0.0:
+            # 同一秒内连发（或时钟未前进）：按最热处理。
+            return self._frequency_max_multiplier()
+        scale = self._frequency_target_gap() / max(gap, 1.0)
+        return min(max(scale, self._frequency_min_multiplier()), self._frequency_max_multiplier())
+
     def _emotion_multipliers(self) -> dict[str, float]:
-        """情绪 → 升降速率倍率表。
+        """情绪 → 升降速率倍率表（配置表 = **覆盖表**）。
+
+        内置 ``_EMOTION_MULTIPLIER`` 是基准，用户配置只覆盖它写到的键。没写的键
+        回落到内置默认值 —— 这一条是必需的，不是宽容：老配置是在旧版本存的快照，
+        新版本往默认表加的**新情绪在老配置里没有键**。如果按「表里没有就 0.0」处理，
+        新情绪对老用户会彻底静默失效（``set_emotion`` 会直接 return），
+        表现为「升级后新情绪标记毫无反应」，而且没有任何日志。
+
+        想关掉某个情绪的影响，请显式写 ``0.0``；删掉键表示「跟随内置默认值」。
 
         写入侧由 ``config_store.normalize_emotion_multipliers`` 保证合法；这里再做一次
         防御性校验，非法就整份回退内置默认 —— 这张表参与涨跌计算，半份坏数据比没有更难查。
@@ -319,7 +418,7 @@ class QQAttentionService:
         raw = self._setting("attention_emotion_multipliers", None)
         if not isinstance(raw, dict) or not raw:
             return dict(_EMOTION_MULTIPLIER)
-        out: dict[str, float] = {}
+        out: dict[str, float] = dict(_EMOTION_MULTIPLIER)
         for key, value in raw.items():
             try:
                 out[str(key)] = float(value)
@@ -328,7 +427,7 @@ class QQAttentionService:
         return out
 
     def _emotion_multiplier(self, emotion: Any) -> float:
-        """单个情绪的倍率；未知情绪按 0.0（与内置表同口径）。"""
+        """单个情绪的倍率；表外情绪按 0.0（即不影响速率）。"""
         return float(self._emotion_multipliers().get(str(emotion or "calm"), 0.0))
 
     # ── 相位推进 ──
@@ -360,27 +459,55 @@ class QQAttentionService:
                 state.phase_started_at = now
         else:
             # 上升：正向情绪涨得快，疲劳涨得慢。
-            # 自然上升只作用于低于焦点线的群：未到线的群随时间涨到焦点线就停，
-            # 不会一路打满到 max_attention。高于焦点线的分数来自消息/@/关键词
-            # boost（update_on_message）或情绪抢焦点（set_emotion），rise 相位
-            # 不叠加时间增长、也绝不砍掉——min(焦点线, 高分) 会把 8.0 直接砍回
-            # 4.0，让 @bot 抢来的高注意力在 decay_all（每 5s）里瞬间蒸发。
-            rate = self._rise_rate() * (1.0 + emo) * rise_scale
-            if state.attention_score < self._focus_threshold():
-                state.attention_score = min(self._focus_threshold(), state.attention_score + rate * dt)
+            #
+            # 自然增长的上限是 **max_score 而不是焦点线**。
+            #
+            # 旧写法 `min(focus_threshold, …)` 把增长钉死在焦点线上，意味着夺冠
+            # 那一刻分数**恰好等于门槛、零余量**；而每次回复都要消耗一部分，于是
+            # 任何一次回复都会把群打到线下——使用者要的"能一直聊很久"在结构上
+            # 不可能。同时它让"分数高于焦点线"这件事只能由消息/@ 一次性 boost
+            # 造成，无法随时间积累。
+            #
+            # 改成 max_score 之后，焦点线恢复它本来的语义：**夺冠资格线**，不是
+            # 分数天花板。余量从夺冠后继续增长的时间里来。
+            #
+            # 注意：高于焦点线的分数**绝不砍掉**（旧注释保留这条约束）：
+            # min(焦点线, 高分) 会把 @bot 抢来的高注意力瞬间蒸发。
+            rate = self._rise_rate() * self._frequency_scale(state, now) * (1.0 + emo) * rise_scale
+            if state.attention_score < self._max_attention():
+                state.attention_score = min(
+                    self._max_attention(), state.attention_score + rate * dt,
+                )
             # 分数不低于焦点线且夺冠计时未记录 → 记录夺冠时刻（蜜月窗口从此刻起算）。
             # 覆盖「从低涨到线」和「本来就高于线」两种情况——旧条件 before < th
             # 在分数本来就高于 th 时永远不成立，导致 focus_acquired_at 记不上。
             if state.attention_score >= self._focus_threshold() and int(state.focus_acquired_at or 0) <= 0:
                 state.focus_acquired_at = now
-            # 到线夺冠后蜜月结束 → 回落；未到线的群继续上升不回落
+                # 蜜月**从「稳住」开始算，不是从「刚到线」开始**。
+                #
+                # 旧写法用同一个 focus_acquired_at 兼作蜜月起点，于是从 0 自然涨到
+                # 焦点线的群一到线就开始倒计时蜜月——它还没积累任何余量，60 秒后
+                # 就被判「蜜月结束」转入 fall。使用者要的「能一直聊很久」需要
+                # 夺冠后有一段**纯积累**的时间。
+                #
+                # 这里单独记「稳线时刻」（首次到线或跌破后再站上都算），蜜月从它算，
+                # 最少留出蜜月窗口那么长的积累期。_advance_phase 的 fall 判定读它。
+                state.steady_since = int(state.steady_since or 0) or now
+            # 到线夺冠后蜜月结束 → 回落；未到线的群继续上升不回落。
+            #
+            # 读 steady_since（稳线时刻）而不是 focus_acquired_at（夺冠身份）：
+            # 后者在第一次到线的瞬间就盖章，会让蜜月从「刚到线」起算。
             if (
                 state.attention_score >= self._focus_threshold()
-                and state.focus_acquired_at
-                and now - state.focus_acquired_at >= self._honeymoon_seconds()
+                and state.steady_since
+                and now - state.steady_since >= self._honeymoon_seconds()
             ):
                 state.phase = "fall"
                 state.phase_started_at = now
+            elif state.attention_score < self._focus_threshold():
+                # 跌破焦点线 → 不再算「稳住」，下次站上时重新开始积累。
+                # 不回退 focus_acquired_at：夺冠身份要留着（焦点保持逻辑依赖它）。
+                state.steady_since = 0
 
     # ── 焦点选择 ──
 
@@ -455,6 +582,17 @@ class QQAttentionService:
     ) -> QQGroupAttentionState | None:
         if not states:
             return None
+        # ── 优先级 1：锁（`@猫娘` / 唤醒词）────────────────────────────
+        # 锁内该群独占焦点，其余群不参与竞争。这是「有人点名叫我，我必须回头
+        # 应对」；分数则表达「没人叫我时我自己看哪」。两者是独立信号，锁必须
+        # 先判——否则一个刚被 @ 的群会因为分数还没涨上来而被别的群顶掉。
+        for state in states:
+            if int(state.lock_until or 0) > now:
+                return state
+        # ── 优先级 2：分数仲裁（无锁时的连续归属）──────────────────────
+        # 归属每 tick 重算 ⇒ 「看一眼新群，没兴趣就回旧群」是免费的：旧群只要
+        # 还是最有意思的，下一个 tick 自动回去，不需要等相位走完一轮。
+        #
         # 新焦点候选：必须达到焦点线（_focus_threshold，默认 4.0）
         candidate = self._top_candidate_state(states, now)
         # 焦点保持：曾夺得焦点的群只要分数 >= 发送保持线（2.0）就继续持有，
@@ -525,9 +663,16 @@ class QQAttentionService:
         if category and category != "chat":
             boost *= self._keyword_boost_ratio()
             state.last_focus_reason = category
-        # fall 相位消息加成减弱：正在让位的群不会因继续刷屏而赖着不走
-        if state.phase == "fall":
-            boost *= self._fall_boost_attenuation()
+        # **消息加成不再按相位衰减**（旧写法：fall 相位乘 attention_fall_boost_attenuation）。
+        #
+        # 那个衰减的意图是「正在让位的群不会因继续刷屏而赖着不走」，但它的量级算错了：
+        # fall 衰减是 0.015/秒，即 30 秒掉 0.45；而被压到 0.3 的加成只有
+        # 0.15 × 0.3 = 0.045/条 —— 就算群友 30 秒发一条，净增速恒为 −0.36/30s。
+        # 于是**任何群一旦进入 fall 就必然一路跌到底**，回血通道实际不存在，
+        # 「切去别的群看看再切回来」也就无从发生。
+        #
+        # 去掉之后 fall 仍然在退潮（时间衰减还在，净增速约 −0.3/30s），只是不再是
+        # 「致命抽干」。让位的压力交给时间衰减与焦点竞争，而不是把回血掐断。
         # 疲劳减慢回升：高疲劳时消息增益被压缩
         fatigue_svc = getattr(self.plugin, "fatigue_service", None)
         if fatigue_svc:
@@ -574,11 +719,23 @@ class QQAttentionService:
         now = self._current_time()
         state = self._apply_decay(self._load_state(normalized_group_id), now, is_focus=(normalized_group_id == focus_group_id))
         state.last_reply_at = now
-        # 猫娘发言消耗注意力：回复一次按比例扣减，并进入回落相位（耗光让位）
-        consume = self._consume_ratio()
-        state.attention_score = max(0.0, state.attention_score * (1.0 - consume))
-        state.phase = "fall"
-        state.phase_started_at = now
+        # 猫娘发言消耗注意力：回复一次扣掉一个**绝对量**。
+        #
+        # **不用乘性消耗**（旧写法 `score *= 1 - ratio`）。乘性意味着扣掉的绝对量
+        # 与当前分数成正比：4.0 扣 0.4、8.0 扣 0.8 —— 越是聊得起劲的群被罚得越重，
+        # 与使用者要的「能一直聊很久」正好相反。改成一个常数，代价可预期。
+        #
+        # 数值口径：`consume_ratio` 仍按「max_score 的比例」解释
+        # （0.1 × 10.0 = 1.0 分/条），所以 UI 上「回复消耗比例」的标签依然成立，
+        # 且与分数高低解耦。
+        #
+        # **不在这里改相位**（见下方原注释保留的语义）：回落是「蜜月结束」或
+        # 「被别的群抢走焦点」的结果，由 `_advance_phase` 依时间线判定，不该由
+        # 「猫娘说了句话」触发。此前这里无条件 `phase = "fall"` 并覆盖
+        # `phase_started_at`，等于每次回复都把蜜月掐断、逼这个群重新熬满
+        # `attention_fall_seconds`（用户配置 240s→30s）。
+        cost = max(0.0, self._max_attention() * self._consume_ratio())
+        state.attention_score = max(0.0, state.attention_score - cost)
         state.last_focus_reason = "reply_consume"
         self._write_state(self._normalize_state(state))
         await self._persist()
@@ -764,6 +921,63 @@ class QQAttentionService:
             self.plugin._emit_log("INFO", f"[Attention] 唤醒 boost: 群{normalized_group_id} score={state.attention_score:.1f}")
             getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力唤醒 → SSE 通知前端
 
+    # ── 锁（@ / 唤醒词）───────────────────────────────────────────────
+    #
+    # 设计意图（见 docs/attention-redesign-draft.md §2）：
+    #   无锁时归属 = 分数最高的群，**随时可变** —— 这就是「看一眼新群、没兴趣
+    #   就回旧群」的实现：旧群只要还是最有意思的，下一个 tick 就自动回去。
+    #   有锁时该群独占，其余群不参与竞争。
+    #
+    # 与「让位」的分工：锁表达「有人点名叫我，我必须回头应对」；分数表达
+    # 「没人叫我，我自己按兴趣看哪」。两者是不同信号，不该合成一个数。
+
+    def lock_group(self, group_id: str) -> None:
+        """把注意力锁在某个群一段时间（`@猫娘` / 唤醒词触发）。
+
+        锁内 `get_focus_group()` 直接返回该群，其余群不参与竞争；到期自动解除。
+        重复锁会**重置**计时（再叫一次就重新锁满）—— 这与人对重复召唤的直觉一致。
+        """
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id:
+            return
+        now = self._current_time()
+        state = self._load_state(normalized_group_id)
+        state.lock_until = now + max(0, self._lock_seconds())
+        state.last_focus_reason = "lock"
+        self._write_state(state)
+        self.plugin._emit_log(
+            "INFO",
+            f"[Attention] 群{normalized_group_id} 上锁 {self._lock_seconds()}s"
+            f"（@/唤醒词），期内独占焦点",
+        )
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
+
+    def release_lock(self, group_id: str) -> None:
+        """提前解除锁（如锁群被移除信任）。"""
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id:
+            return
+        state = self._load_state(normalized_group_id)
+        if int(state.lock_until or 0):
+            state.lock_until = 0
+            self._write_state(state)
+            self.plugin._emit_log("INFO", f"[Attention] 群{normalized_group_id} 解锁")
+
+    def locked_group_id(self, *, now: int | None = None) -> str:
+        """当前仍在锁内的群（无 / 已过期 → 空串）。"""
+        moment = self._current_time() if now is None else now
+        best: tuple[int, str] = (0, "")
+        for group_id in self._normalized_groups():
+            state = self._load_state(group_id)
+            until = int(state.lock_until or 0)
+            if until > moment and until > best[0]:
+                best = (until, state.group_id)
+        return best[1]
+
+    def _lock_seconds(self) -> int:
+        """锁的时长（秒）。0 = 不锁（回到纯分数仲裁）。"""
+        return max(0, int(self._setting("attention_lock_seconds", 90)))
+
     def get_last_focus_at(self, group_id: str) -> int:
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
@@ -801,7 +1015,8 @@ class QQAttentionService:
     async def set_emotion(self, group_id: str, emotion: str) -> None:
         """LLM 回复中的 <feeling> 标签更新情绪状态。
 
-        强情绪直接触发焦点切换：arguing/proud 抢焦点，sulking/embarrassed 让焦点。
+        强情绪直接触发焦点切换：``_EMOTION_FORCE_FOCUS`` 抢焦点、
+        ``_EMOTION_DROP_FOCUS`` 让焦点（名字见那两个集合，不在此处重抄）。
         """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
@@ -839,27 +1054,29 @@ class QQAttentionService:
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 情绪变更 → SSE 通知前端
 
     def _decay_emotion(self, state: QQGroupAttentionState, now: int) -> None:
-        """情绪自然衰减：30秒无新情绪则向 calm 方向降温一级。"""
+        """情绪自然衰减：30秒无新情绪则向 calm 方向降温一级。
+
+        上升侧/回落侧的判定来自 ``_EMOTION_MULTIPLIER`` 的符号，不另抄一份名单 ——
+        以前这里硬编码了 ``("arguing", "annoyed", "playful", "curious")``，导致任何
+        新加的正倍率情绪都会走回落侧分支、越衰减越强。
+        """
         if state.emotion == "calm":
             return
         elapsed = now - state.emotion_updated_at
         if elapsed < _EMOTION_DECAY_SECONDS:
             return
         order = _EMOTION_DECAY_ORDER
+        calm_idx = order.index("calm")
         idx = order.index(state.emotion) if state.emotion in order else -1
         if idx < 0:
+            # 表外情绪（LLM 可能自造标签）直接归位到 calm
             state.emotion = "calm"
-        elif state.emotion in ("arguing", "annoyed", "playful", "curious"):
-            if idx + 1 >= order.index("calm"):
-                state.emotion = "calm"
-            else:
-                state.emotion = order[idx + 1]
+        elif _EMOTION_MULTIPLIER.get(state.emotion, 0.0) > 0:
+            # 上升侧：朝 calm 走一级，不越界
+            state.emotion = order[idx + 1] if idx + 1 < calm_idx else "calm"
         else:
-            calm_idx = order.index("calm")
-            if idx - 1 <= calm_idx:
-                state.emotion = "calm"
-            else:
-                state.emotion = order[idx - 1]
+            # 回落侧：同样朝 calm 走一级
+            state.emotion = order[idx - 1] if idx - 1 > calm_idx else "calm"
         state.emotion_updated_at = now
         state.emotion_display = state.emotion
 
@@ -911,12 +1128,26 @@ class QQAttentionService:
             pass
 
     async def _decay_loop(self, interval_seconds: float) -> None:
+        """注意力衰减驱动。
+
+        ``decay_all`` 会在 try **外面**执行——它碰磁盘（``_persist`` 读改写
+        backlog_state.json），一次坏 JSON / 磁盘错误 / 目录被撤权就会
+        直接杀掉这个循环，而注意力推进与焦点释放随之中止：UI 仍显示旧值、
+        没有任何报错，只能手动停止再启动插件。异常必须在这里就地吞掉并
+        记录，让下一轮继续推进。
+        """
         while True:
             try:
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:
                 break
-            await self.decay_all()
+            try:
+                await self.decay_all()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if self.plugin.logger:
+                    self.plugin.logger.warning(f"[Attention] 衰减轮次异常，已跳过本轮: {e}")
 
     async def decay_all(self) -> None:
         if not self._enabled():
@@ -944,9 +1175,18 @@ class QQAttentionService:
         await self._persist()
 
     async def _persist(self) -> None:
-        if not getattr(self.plugin, "backlog_store", None):
+        """把内存缓存里的注意力状态落盘。
+
+        落盘走 ``backlog_store.update_group_attention_state``（锁内读改写）而
+        不是自己 ``load→save``：后者与 ``append_message`` 交错时会互相覆盖
+        —— 要么丢刚 append 的群消息，要么丢刚推进的注意力分数。
+        """
+        store = getattr(self.plugin, "backlog_store", None)
+        if not store:
+            # 早退语义必须保留：``cleanup_stale_cache`` 在 group_permission_mgr
+            # 缺失时会把**所有**群从缓存里删掉（它按"不在信任列表里"清理），
+            # 而 ``update_on_message`` 每轮都调 ``_persist``（``_KwPlugin`` 这类
+            # 桩把两个依赖都设为 None）。先清理会把刚算出来的分数一起抹掉。
             return
         self.cleanup_stale_cache()
-        state = await self.plugin.backlog_store.load()
-        state["group_attention_state"] = dict(self._cache)
-        await self.plugin.backlog_store.save(state)
+        await store.update_group_attention_state(dict(self._cache))
