@@ -24,35 +24,29 @@ from __future__ import annotations
 import pathlib
 import re
 
+from _ui_source import code_of, fn_body
+
 BASE = pathlib.Path(__file__).resolve().parents[1]
 STATIC = BASE / "static"
 PAGES = ("napcat.html", "open_platform.html", "status.html")
 
 
 def _code(name: str) -> str:
-    """去掉块注释 —— 这条检查的是代码，注释里提到函数名不算。"""
-    return re.sub(r"/\*.*?\*/", "", (STATIC / name).read_text(encoding="utf-8"), flags=re.S)
+    """去掉块注释 —— 检查的是代码，注释里提到函数名不算。
+
+    走共享的 code_of()：naive 的剥注释会被 `accept="image/*"` 骗到，
+    把那个 `/*` 和很远的 `*/` 配成一对、**静默吞掉几 KB**。
+    """
+    return code_of(name)
 
 
 def _fn_body(text: str, name: str) -> str | None:
-    """取 `function name(...){ ... }` 的函数体（按花括号配平，不靠下一行缩进）。
+    """取函数体，**取最后一个定义**（JS 同名声明后者胜出）。
 
-    **取最后一个定义**：JS 里同名函数声明重复时，后声明的覆盖先声明的。
-    `napcat.html` 就真的有两份 `skFilePicked` —— 早的那份（老的单文件版本，
-    用的是 `_skPickedFile` 单数）已经被后面那份覆盖，只看第一份会得出错误结论。
+    `napcat.html` 真的有两份 `skFilePicked` —— 早的那份被覆盖了，
+    只看第一份会得出"napcat 也有这个缺陷"的错误结论。
     """
-    bodies: list[str] = []
-    for m in re.finditer(rf"function\s+{name}\s*\([^)]*\)\s*\{{", text):
-        depth = 0
-        for i in range(m.end() - 1, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    bodies.append(text[m.end():i])
-                    break
-    return bodies[-1] if bodies else None
+    return fn_body(text, name)
 
 
 def test_the_body_extractor_actually_works():

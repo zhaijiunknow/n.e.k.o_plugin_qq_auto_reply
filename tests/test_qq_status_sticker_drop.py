@@ -21,11 +21,14 @@ import json
 import pathlib
 import re
 
+from _ui_source import code_of, read
+
 BASE = pathlib.Path(__file__).resolve().parents[1]
-STATUS = (BASE / "static" / "status.html").read_text(encoding="utf-8")
+STATUS = read("status.html")
 #: 去掉块注释后的源码 —— 检查"有没有调用某个函数"时不能连注释一起查：
 #: 本文件的注释里就写着 escapeHtml() / toast() 这两个词。
-CODE = re.sub(r"/\*.*?\*/", "", STATUS, flags=re.S)
+#: 用共享的 code_of()：naive 的剥注释会被 `accept="image/*"` 骗到、静默吞掉几 KB。
+CODE = code_of("status.html")
 BUNDLE = json.loads((BASE / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
 
 #: uploadStickers 的函数体（从函数头到下一个顶格 `}`）

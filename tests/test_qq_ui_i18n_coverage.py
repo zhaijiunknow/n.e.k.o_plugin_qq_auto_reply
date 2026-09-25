@@ -127,6 +127,37 @@ def test_the_scanner_ignores_elements_with_fallback_text():
     assert _empty_i18n_elements(text) == set()
 
 
+def test_no_unknown_data_i18n_attributes():
+    """只认 `data-i18n` 和 `data-i18n-placeholder` —— 写错名字不会报错，也不会有空缺提示。
+
+    **为什么要有这条**：`status.html` 里有 3 个输入框写的是 `data-i18n-ph="ui.status.qq_ph"`
+    这种属性。`i18n.js` 只扫 `data-i18n` 和 `data-i18n-placeholder`，**没有任何脚本认
+    `data-i18n-ph`** —— 于是那三个 placeholder 永远是硬编码中文（英文界面下也不变），
+    而且上面三类检查全都照不到（属性名不对，键压根没进扫描集合）。
+
+    只钉"属性名必须是 i18n.js 支持的"这一件事：键存不存在由上面那条负责。
+    """
+    known = {"data-i18n", "data-i18n-placeholder"}
+    problems: list[str] = []
+    for path in _PAGES:
+        text = path.read_text(encoding="utf-8")
+        for attr in sorted(set(re.findall(r'\b(data-i18n[a-z-]*)="', text))):
+            if attr not in known:
+                problems.append(f"{path.name}: {attr}（i18n.js 不认这个属性）")
+    assert not problems, (
+        "页面上有 i18n.js 不认识的 data-i18n-* 属性 —— 那些文案不会被翻译：\n"
+        + "\n".join(f"  ✗ {p}" for p in problems)
+    )
+
+
+def test_the_unknown_attribute_scanner_works():
+    """先证明扫描器能抓到 —— 注入一个写错的属性名必须被报出来。"""
+    assert re.findall(r'\b(data-i18n[a-z-]*)="', '<input data-i18n-ph="k">') == ["data-i18n-ph"]
+    assert re.findall(r'\b(data-i18n[a-z-]*)="', '<i data-i18n-placeholder="k">') == [
+        "data-i18n-placeholder"
+    ]
+
+
 def test_bundles_have_the_same_key_set():
     """两个语种的键集合必须一致 —— 少一个就是某个语种下静默缺文案。"""
     bundles = _bundles()

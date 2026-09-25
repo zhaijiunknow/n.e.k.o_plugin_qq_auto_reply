@@ -2223,6 +2223,59 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.logger.info(f"上传表情包: id={sid}, file={dest_name}, desc={description}")
         return Ok({"id": sid, "desc": description, "path": dest_name, "total": len(data)})
 
+    async def _asset_delete_sticker(self, kw: dict[str, Any]):
+        """删掉一个已注册表情包：先从 sticker.json 摘掉登记，再删磁盘上的图。
+
+        **顺序是刻意的**：先摘登记、再删文件。万一删文件失败（被占用 / 权限），
+        登记已经没了，猫娘不会再引用一张不存在的图；反过来则会留下悬空登记 ——
+        那比留个孤儿文件糟得多。
+        """
+        import os as _os
+
+        sid = str(kw.get("id") or "").strip()
+        if not sid:
+            return Err(SdkError("INVALID_INPUT: id 不能为空"))
+        sticker_json = str(self.data_path("sticker.json"))
+        sticker_dir = str(self.data_path("sticker"))
+        try:
+            with open(sticker_json, "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        if sid not in data:
+            return Err(SdkError(f"NOT_FOUND: 没有 id={sid} 的表情包"))
+
+        entry = data.pop(sid)
+        raw_path = entry.get("path", "") if isinstance(entry, dict) else ""
+        with open(sticker_json, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        removed_file = False
+        # 同一个文件可能被登记了多次（register_sticker 允许这么做）；
+        # 还有人引用就别删图，否则会把别人那条表情包一起弄坏。
+        still_used = any(
+            (v.get("path", "") if isinstance(v, dict) else "") == raw_path
+            for v in data.values()
+        )
+        # 只取 basename 并统一分隔符：sticker.json 是本地文件，理论上可能被手改，
+        # 不能让 "../../x" 这种值逃出表情包目录。
+        safe_name = _os.path.basename(str(raw_path).replace("\\", "/"))
+        if safe_name and not still_used:
+            target = _os.path.join(sticker_dir, safe_name)
+            try:
+                if _os.path.isfile(target):
+                    _os.remove(target)
+                    removed_file = True
+            except Exception as e:
+                # 文件删不掉不影响这次调用的结果：登记已经摘掉了
+                self.logger.warning(f"删除表情包文件失败（登记已摘除）: {target}: {e}")
+
+        self.session_instruction_service._sticker_catalog_cache = ""
+        self.logger.info(f"删除表情包: id={sid}, path={raw_path}, 文件已删={removed_file}")
+        return Ok({"id": sid, "path": raw_path, "removed_file": removed_file, "total": len(data)})
+
     # ── asset：机器人自有资源 ───────────────────────────────────
     #
     # 表情包目录与注意力读数。
@@ -2235,11 +2288,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="asset",
         name=tr("entries.asset.name", default="表情包与注意力"),
-        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / attention。**此入口对 AI 隐藏。**"),
+        description=tr("entries.asset.description", default="表情包目录的读写与注意力读数。action 取 list_stickers / register_sticker / upload_sticker / delete_sticker / attention。**此入口对 AI 隐藏。**"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
-                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "attention"],
-                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；attention=读群注意力状态"},
+                       "enum": ["list_stickers", "register_sticker", "upload_sticker", "delete_sticker", "attention"],
+                       "description": "list_stickers=列出已注册表情包；register_sticker=登记磁盘上已有的图片；upload_sticker=上传 base64 图片并存档；delete_sticker=删除一个已注册表情包（连图一起删）；attention=读群注意力状态"},
+            "id": {"type": "string", "description": "delete_sticker：要删除的表情包 id（取自 list_stickers）"},
             "image_path": {"type": "string", "description": "register_sticker：data/sticker/ 下的图片文件名"},
             "filename": {"type": "string", "description": "upload_sticker：文件名（如 cat.png）"},
             "data_base64": {"type": "string", "description": "upload_sticker：图片 base64（可带 data:image/...;base64, 前缀）"},
@@ -2257,11 +2311,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._asset_register_sticker(kw)
         if action == "upload_sticker":
             return await self._asset_upload_sticker(kw)
+        if action == "delete_sticker":
+            return await self._asset_delete_sticker(kw)
         if action == "attention":
             return await self._asset_attention(kw)
         return Err(SdkError(
             f"BAD_ACTION: asset 不支持 {action!r}"
-            f"（可选 list_stickers/register_sticker/upload_sticker/attention）"))
+            f"（可选 list_stickers/register_sticker/upload_sticker/delete_sticker/attention）"))
 
     # ── send：收发 ──────────────────────────────────────────────
     #

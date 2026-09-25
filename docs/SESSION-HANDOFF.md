@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：703 passed**（见 §4.0p / §4.0q）。
+**最新：720 passed**（见 §4.0p / §4.0q / §4.0r）。
 
 | 主题 | 状态 |
 |---|---|
@@ -29,6 +29,8 @@
 | 界面配色：四页统一到 `theme.css`，**色板取自本体**（见 §4.0n） | ✅ 落地 |
 | 界面素材：本体品牌图 `neko-logo.png` / `paw.png`（见 §4.0n） | ✅ 落地 |
 | status 页拖入表情包（同一个后端契约）+ 操作条（见 §4.0p / §4.0q） | ✅ 落地 |
+| 表情包删除：后端新增 `delete_sticker` + 三页入口（见 §4.0r） | ✅ 落地 |
+| `status.html` 三个 `data-i18n-ph` 从来没被翻译（属性名 i18n.js 不认 + 键不存在） | ✅ 已修 + 第 4 类 i18n 检查 |
 | `open_platform` 的表情包描述永远是文件名（两个缺陷叠加，静默） | ✅ 已修 + 跨页看门狗 |
 | 界面背景：**分页面配图** —— status 用森林插画 `.30`，其余用蓝白图形 `.45`（见 §4.0o-2 / §4.0o-3） | ✅ 落地 |
 | 淡底/描边改为**不透明**，使面板与底图无关（四页不达标 37 → 35） | ✅ 落地 |
@@ -1073,6 +1075,72 @@ status 森林）= 35** —— 比纯色底还低 2 处，正因为淡底不再�
    取最后一个，否则会得出"napcat 也有这个缺陷"的错误结论。
 
 **测试基线：703 passed**（688 + 9 + 6）。
+
+---
+
+### 4.0r 表情包删除按钮（后端新动作 + 三页入口）
+
+**需求**（使用者）："表情包需要一个删除的按钮"。
+
+**后端原本没有删除**：`asset` 只有 `list_stickers` / `register_sticker` /
+`upload_sticker` / `attention`。所以新加了 `delete_sticker`（`_asset_delete_sticker`），
+并且**必须同时改 schema** —— `asset` 的 `additionalProperties: False`，
+dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会被参数校验直接拦掉、
+界面上表现为"点了没反应"。
+
+**顺序是刻意的：先摘登记、再删文件**。万一删文件失败（占用 / 权限），登记已经没了，
+猫娘不会再引用一张不存在的图；反过来则会留下悬空登记 —— 那比留个孤儿文件糟得多。
+删文件失败只记 warning，不影响这次调用的结果。
+
+两处防御性细节（都有测试）：
+
+* **同一个图片文件被登记了两次**（`register_sticker` 允许）→ 删掉其中一条时
+  **不删文件**，否则另一条登记就成了死链；
+* **`path` 只取 basename**（并统一分隔符）—— `sticker.json` 是本地文件、可能被手改过，
+  不能让 `../../x` 逃出 `data/sticker/` 删到外面的文件。
+
+顺带清 `_sticker_catalog_cache`：表情包目录是进 system prompt 的，有缓存。
+
+**前端**：三页都加了入口。
+
+* `napcat` / `open_platform`：已注册表情包的表格加「操作」列，每行一个删除按钮；
+* `status.html`：新增「已注册表情包」卡片（列表 + 刷新列表 + 删除）。它这页的列表用
+  `ul.list` / `.del` 的既有样式，**删除按钮走事件委托读 `data-id`** —— 因为本页没有
+  `escapeOnclick()`，为个按钮再引一个本页没有的函数是这类页面最典型的静默失效。
+
+删除前一律 `confirm()`（这个仓库的破坏性操作都这么做），文案键
+`ui.shared.sticker.delete_confirm` 新加到两个语言包。
+
+#### 顺带修掉：`status.html` 的 3 个 placeholder 从来没被翻译过
+
+那三个输入框写的是 **`data-i18n-ph`**，而 `i18n.js` 只扫 `data-i18n` 和
+`data-i18n-placeholder` —— **没有任何脚本认这个属性**；更巧的是它指向的键
+（`ui.status.uin_ph` / `qq_ph` / `group_ph`）**在两个语言包里都不存在**，
+是双重失效。结果那三条 placeholder 永远是硬编码中文，英文界面下也不变，
+而既有的三类 i18n 检查全都照不到（属性名不对，键压根没进扫描集合）。
+
+已改成 `data-i18n-placeholder` 并补上那三个键；`test_qq_ui_i18n_coverage.py` 里
+加了第 4 类检查：**页面上不得出现 i18n.js 不认识的 `data-i18n-*` 属性**。
+
+#### 我自己测试工具的 bug（误报的直接原因）
+
+给新卡片加断言时报"status.html 没有 `id="sticker-list"`"，而文件里明明有。
+查下来是**我的剥注释工具被 `accept="image/*"` 骗了**：naive 的
+`re.sub(r"/\*.*?\*/", "", text)` 把那个 `/*` 和后面很远的某个 `*/` 配成一对，
+**静默吞掉 5.2 KB**（正好含那个标签）。换个断言方向就会变成"看着通过、其实没检查"。
+
+已抽出 `tests/_ui_source.py` 共用（剥注释前先挡掉 `image/*`，`fn_body` 取**最后一个**
+同名函数定义），并留了一条自检用例钉住"工具不许吞 markup"。
+
+**验证**：`tests/test_qq_sticker_delete.py`（7 条，行为：摘登记 / 删文件 / 缓存 /
+共享文件守卫 / `../` 逃逸 / id 校验 / schema 契约）、
+`tests/test_qq_sticker_delete_ui.py`（8 条，界面接线 + 确认在前 + 删完刷新）。
+`tests/verify_sticker_delete_fail_to_pass.py` 4 种注入全红 + 对照组绿。
+端到端（`window.call` + `window.confirm` 双桩）：
+`.dsh-artifacts/verify-sticker-delete.py` —— 三页各测"确认删除"和"点取消"两条路，
+实测参数是 `asset` / `{action:'delete_sticker', id:'1'}`、取消时**不发请求**。
+
+**测试基线：720 passed**（703 + 7 + 8 + 2）。
 
 ---
 
