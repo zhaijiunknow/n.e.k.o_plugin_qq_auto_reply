@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -50,6 +51,18 @@ DEFAULT_MIRROR_PREFIXES: tuple[str, ...] = ("https://gh-proxy.com/", "")
 #: 单次下载的上限时间。官方源慢到 26 分钟量级，但用户不该被无限期挂着 ——
 #: 超时后回退下一个候选源。
 DOWNLOAD_TIMEOUT_SECONDS = 300.0
+
+#: **单次读的上限**（两次收到数据之间的最大间隔）。
+#:
+#: 300 秒是"整次下载"的预算，但它替代不了停滞检测：镜像**连上之后不再发数据**
+#: 是常见故障（尤其第三方中转），此时 `httpx.Timeout(300)` 会一声不响地挂满 5 分钟，
+#: 界面上就是"进度条卡在下载不动"，用户看不出是在重试还是死了。30 秒没有新字节
+#: 就判定这条源废掉，交给下一个候选源（`.part` 保留，续传接着下）。
+STALL_TIMEOUT_SECONDS = 30.0
+
+#: 建连超时。与上面同理：连不上就该马上换源，而不是等着耗完总预算。
+CONNECT_TIMEOUT_SECONDS = 15.0
+
 _CHUNK = 65536
 
 
@@ -123,6 +136,7 @@ async def download_asset(
     mirrors: Iterable[str] | None = None,
     progress: Callable[[int, int], None] | None = None,
     timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
+    on_attempt: Callable[[int, int, str, int], None] | None = None,
 ) -> Path:
     """下载并校验，返回落盘的 zip 路径。失败抛 ``RuntimeError``。
 
@@ -165,8 +179,13 @@ async def download_asset(
             part.unlink(missing_ok=True)    # 比钉死的还长（换过版本？）→ 只能重来
 
     errors: list[str] = []
-    for url in candidate_urls(asset, mirrors):
+    urls = list(candidate_urls(asset, mirrors))
+    for index, url in enumerate(urls, 1):
         resume_from = part.stat().st_size if part.exists() else 0
+        # 每个源都要上报：以前这条循环在界面上是完全静默的，换源/续传都看不出来，
+        # 用户只能看到最后一行进度挂着不动。
+        if on_attempt is not None:
+            on_attempt(index, len(urls), url, resume_from)
         try:
             await _fetch(url, part, progress=progress, timeout=timeout,
                          fallback_total=fallback_total, resume_from=resume_from)
@@ -195,7 +214,14 @@ async def _fetch(url: str, dest: Path, *, progress: Callable[[int, int], None] |
     """
     headers = {"Range": f"bytes={resume_from}-"} if resume_from > 0 else None
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout), follow_redirects=True, max_redirects=5,
+        timeout=httpx.Timeout(
+            timeout,
+            connect=CONNECT_TIMEOUT_SECONDS,
+            read=STALL_TIMEOUT_SECONDS,
+            write=STALL_TIMEOUT_SECONDS,
+            pool=CONNECT_TIMEOUT_SECONDS,
+        ),
+        follow_redirects=True, max_redirects=5,
     ) as client:
         async with client.stream("GET", url, headers=headers) as resp:
             resp.raise_for_status()
@@ -214,7 +240,22 @@ async def _fetch(url: str, dest: Path, *, progress: Callable[[int, int], None] |
             if progress:
                 progress(done, total_expected)
             with open(dest, "ab" if offset else "wb") as f:
-                async for chunk in resp.aiter_bytes(chunk_size=_CHUNK):
+                stream = resp.aiter_bytes(chunk_size=_CHUNK)
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            stream.__anext__(), timeout=STALL_TIMEOUT_SECONDS,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError as exc:
+                        # 停滞判定：连上了却不再给数据。抛出去让
+                        # `download_asset` 换下一个候选源，而不是把整次部署挂满
+                        # 300 秒预算（界面上那会儿正是"卡在下载不动"）。
+                        raise RuntimeError(
+                            f"下载停滞：{STALL_TIMEOUT_SECONDS:.0f} 秒没有收到新数据"
+                            f"（已收到 {done / 1048576:.1f} MB）"
+                        ) from exc
                     f.write(chunk)
                     done += len(chunk)
                     if progress:

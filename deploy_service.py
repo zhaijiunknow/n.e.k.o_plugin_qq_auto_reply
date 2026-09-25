@@ -206,9 +206,19 @@ class QQDeployService:
         downloads = self.plugin.data_path("downloads")
 
         step("fetch", f"下载 {asset}（{napcat_install.NAPCAT_VERSION}）…")
+
+        def _on_attempt(index: int, total: int, url: str, resume_from: int) -> None:
+            """每个候选源都报一行：不然换源/续传在界面上完全看不出来。"""
+            host = url.split("/")[2] if "://" in url else url
+            text = f"尝试下载源 {index}/{total}: {host}"
+            if resume_from > 0:
+                text += f"（从 {resume_from / 1048576:.1f} MB 续传）"
+            step("fetch", text)
+
         zip_path = await napcat_install.download_asset(
             asset, downloads,
             progress=lambda d, t: self._progress(emit, "fetch", d, t),
+            on_attempt=_on_attempt,
         )
         step("fetch", f"下载完成并通过校验: {zip_path.stat().st_size / 1048576:.1f} MB")
 
