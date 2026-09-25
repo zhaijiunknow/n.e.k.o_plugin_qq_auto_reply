@@ -22,7 +22,7 @@ paw.png        96039C96CED97179A2E1E366388117E78255AEDE4EB3B1026D653BA5CEF57CDD
 
 | 页面 | 底图 | 纱 | 在哪定义 |
 |---|---|---|---|
-| `index.html` | `page-bg-blue.webp` | `.45` | theme.css 的默认值 |
+| `index.html` | **无（纯白 `#fff`）** | — | **index.html 自己的 `<style>` 里覆写成 `none` / `transparent`** |
 | `napcat.html` | `page-bg-blue.webp` | `.45` | theme.css 的默认值 |
 | `open_platform.html` | `page-bg-blue.webp` | `.45` | theme.css 的默认值 |
 | `status.html` | **`page-bg-forest.webp`** | `.30` | **status.html 自己的 `<style>` 里覆写** |
@@ -30,6 +30,12 @@ paw.png        96039C96CED97179A2E1E366388117E78255AEDE4EB3B1026D653BA5CEF57CDD
 `theme.css` 的 `--page-bg-image` / `--page-scrim-color` 是**默认值**；某个页面要换图，
 就在它自己的 `<style>` 里覆写这两个（图和纱要**成对**改）。备选还有本体的原背景
 `page-bg.webp`（37 KB，纱 `.30`）。
+
+`index.html` 是**纯白无图**（使用者拍板）：它清的是**两个**变量 —— `--page-bg-image: none`
+之外还要 `--page-scrim-color: transparent`，因为那层纱是 `rgba(255,255,255,.45)`，压在
+`--bg`（`#f7f9fc`）上出来是 `rgb(250,251,252)`，不是纯白。它也是四页里唯一在 `body` 规则里
+自己写 `background-color` 的（另三页由 theme.css 统一决定）。这四条不变量由
+`tests/test_qq_page_backgrounds.py` 钉住（源码级看门狗，不需要浏览器）。
 
 ### 为什么 `status.html` 覆写时还要动卡片
 
@@ -63,8 +69,9 @@ paw.png        96039C96CED97179A2E1E366388117E78255AEDE4EB3B1026D653BA5CEF57CDD
 （3.74 / 3.93）不再受底图影响。
 
 `index.html` 的文字直接压在底图上、没有卡片挡，是全四页里对"花底图"最敏感的一页：
-它配森林 `.30` 时实测不达标会从 3 处涨到 14 处。使用者没有点名它，所以它跟着默认走
-（蓝白那张）。
+它配森林 `.30` 时实测不达标会从 3 处涨到 14 处。**使用者后来拍板：这一页不要底图，
+纯白即可** —— 于是它现在既不敏感也不需要纱。纯白下的实测：标题
+`rgb(31,41,55)` 对白底 **14.68:1**，卡片仍靠 `--border`（`#d9dee5`）描边立住。
 
 ### 使用者给的两张（来源：桌面）
 
