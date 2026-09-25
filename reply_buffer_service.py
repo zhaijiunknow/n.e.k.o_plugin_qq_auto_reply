@@ -906,6 +906,30 @@ class QQReplyBufferService:
             return
 
         # 多条缓冲 → 走 pipeline 生成总结（兼容 Lanlan）
+        #
+        # 例外：整批都是"刚跟着复读过的同一句"就不再总结 —— 否则群里会连着看到
+        # 两条互相矛盾的回复：她刚跟着复读了一句，紧接着又吐槽"你是复读机吗喵？"。
+        # 判据在 repeat_echo_service（要求整批归一化后是同一句，且这一句在冷却期内
+        # 刚被她跟过），混了别的内容的批次照常总结。
+        _repeat_echo = getattr(self.plugin, "repeat_echo_service", None)
+        if (
+            _repeat_echo is not None
+            and pending.is_group
+            and _repeat_echo.should_skip_batch_summary(
+                group_id=str(pending.group_id or ""),
+                texts=list(pending.buffered_user_texts or texts),
+            )
+        ):
+            self.plugin._emit_log("INFO", "[Repeat] 整批都是刚跟过的复读，跳过总结")
+            if self._detach_pending(session_key, pending, generation):
+                self._settle_provisional(
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+                        session_key
+                    ),
+                    pending,
+                )
+            return
+
         self.plugin._emit_log("INFO", f"缓冲{pending.message_count}条消息，走 pipeline 生成总结...")
         try:
             from .pipeline_models import QQReplyRequest

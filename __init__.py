@@ -62,6 +62,7 @@ from .permission import PermissionManager
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
 from .relay_service import QQRelayService
+from .repeat_echo_service import QQRepeatEchoService
 from .reply_buffer_service import QQReplyBufferService
 from .reply_context_node import QQReplyContextNode
 from .reply_decision_node import QQReplyDecisionNode
@@ -742,6 +743,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self.attention_service.load_cached_state()
         self.fatigue_service = QQFatigueService(self)
         self.reply_buffer_service = QQReplyBufferService(self)
+        # 群友复读 → 跟着复读一次（判定要按人去重、跨消息累积，所以单独一个服务；
+        # 规则与理由见 repeat_echo_service 的模块 docstring）。
+        self.repeat_echo_service = QQRepeatEchoService(self)
         self._ensure_qq_client_initialized()
         if self.attention_gate_service:
             await self.attention_gate_service.start_proactive_loop()

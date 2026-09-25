@@ -870,12 +870,22 @@ class QQMessageDispatcher:
                 timestamp=message_timestamp,
                 is_reply_to_bot=is_reply_to_bot,
             )
+            # 群友复读 → 跟着复读一次（>5 个不同的人 + 这个群是焦点才触发，
+            # 见 repeat_echo_service）。刻意放在门控**之后**（那条 evaluate
+            # 刚把这条消息计进注意力，焦点判定才反映"现在"）、ignore 判断
+            # **之前**（她要不要跟一句复读，与"这条消息本身放不放行给 LLM"
+            # 是两件事：回复频率闸拦的是普通回复，不该顺带把复读也拦掉；
+            # 而"整批都是复读"时缓冲那边的总结会被抑制，不会变成两条）。
+            if self.plugin.repeat_echo_service is not None:
+                await self.plugin.repeat_echo_service.maybe_echo(
+                    group_id=group_id, sender_id=sender_id, text=message_text,
+                )
             if gate_decision.action == "ignore":
                 self.plugin.logger.info(
                     f"[AttentionGate] 群 {group_id} 消息被忽略 (sender={sender_id}, reason={gate_decision.reason})"
                 )
                 # ignore 分支也要推进焦点切换：一条非焦点消息 boost 后可能让该群
-                # 变成焦点，若不在这里 check_focus_shift，_last_focus_group 不更新、
+                # 变成焦点，若不在这里 check_shift，_last_focus_group 不更新、
                 # 回溯补回不触发、切换点消息留在 backlog（等下次 LLM 消息才补）。
                 await self._run_focus_shift_check()
                 return
