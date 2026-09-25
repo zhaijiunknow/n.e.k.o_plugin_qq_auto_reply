@@ -43,6 +43,21 @@ _PROTOCOL_TAG_RE = re.compile(
 #: 这样「一江大气喵」「一江大气喵！」「[CQ:at,qq=1] 一 江大气喵」算同一句。
 _NORMALIZE_DROP_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff\u3040-\u30ff]+")
 
+#: **不是"一句文本"**的消息标记 —— 这类消息没有"原文"可跟：
+#:
+#: * `[Image …]`：图片消息经 VLM 描述后写进正文的标记（`enrichment._inject_image_descriptions`）
+#: * `戳一戳`：戳一戳通知被渲染成的文本
+#: * 其余 CQ 段（file/record/forward/video/json/xml/face…）在正文里的残留
+#:
+#: 为什么必须挡：群里六个人连发**同一张图**是很常见的复读，而图片消息的正文是
+#: `[Image 这是mc风格的精致Q版…]`。不挡的话她会把这段内部标记（连同别人的图描述）
+#: 当成"复读原文"发进群里 —— 既是垃圾话，也把内部标记漏给了群。
+_NON_TEXT_MARKERS = (
+    "[image ", "[image]", "[图片", "戳一戳",
+    "[cq:file", "[cq:record", "[cq:forward", "[cq:video", "[cq:json", "[cq:xml",
+    "[cq:face", "[cq:mface", "[cq:music", "[cq:contact", "[cq:rps", "[cq:dice",
+)
+
 
 class QQRepeatEchoService:
     #: "复读的人大于5" —— 严格大于，所以阈值是 6 个**不同的人**。
@@ -89,6 +104,18 @@ class QQRepeatEchoService:
         return max(1, int(self._setting("repeat_echo_max_text_chars", self.DEFAULT_MAX_TEXT_CHARS)))
 
     # ── 文本处理 ────────────────────────────────────────────────
+
+    @classmethod
+    def is_repeatable_text(cls, text: Any) -> bool:
+        """这条消息是不是"一句可以跟着复读的文本"（排除图片/戳一戳/文件等）。"""
+        raw = str(text or "")
+        if not raw.strip():
+            return False
+        lowered = raw.casefold()
+        if any(marker in lowered for marker in _NON_TEXT_MARKERS):
+            return False
+        # 只剩 CQ 段的消息（例如纯图片无描述、纯文件）：剥完就没内容了
+        return bool(cls.normalize(raw))
 
     @classmethod
     def sanitize(cls, text: Any) -> str:
@@ -145,6 +172,8 @@ class QQRepeatEchoService:
         group = str(group_id or "").strip()
         sender = str(sender_id or "").strip()
         if not group or not sender:
+            return None
+        if not self.is_repeatable_text(text):
             return None
         clean = self.sanitize(text)
         normalized = self.normalize(text)

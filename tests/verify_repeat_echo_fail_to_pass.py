@@ -8,7 +8,10 @@
 4. 把 CQ 码一起发出去 → 复读里带 `[CQ:at,qq=…]` 时会变成她 @人 / 发图
 5. 阈值改成 5（而不是「大于 5」） → 使用者说的是大于 5
 6. 发送失败也落冷却 → 一次网络抖动吃掉这一轮机会，之后不再跟
+7. 不挡"图片消息的 VLM 描述" → 六个人连发同一张图时，她会把 `[Image …]` 这段
+   内部标记（连同别人的图描述）当成复读原文发进群（线上钩子观察到的真实文本）
 
+铁律
 铁律（沿用 verify_free_route_persona_fail_to_pass.py）：替换前确认替换真的发生；
 恢复放 `finally` 并逐字节核对；每个用例起新进程。
 
@@ -63,6 +66,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "阈值改成 5（使用者说的是「大于 5」）",
         "    DEFAULT_MIN_SENDERS = 6",
         "    DEFAULT_MIN_SENDERS = 5",
+    ),
+    (
+        "repeat_echo_service.py",
+        "不挡图片/戳一戳等非文本消息（会把 [Image …] 内部标记发进群）",
+        "        if not self.is_repeatable_text(text):\n            return None",
+        "        if False:\n            return None",
     ),
     (
         "repeat_echo_service.py",
@@ -122,7 +131,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 「>5 人 + 焦点群 + 只跟一次」三个条件都真的被钉住了")
+    print(f"[PASS] {len(results)}/{len(results)} —— 「>5 人 + 焦点群 + 只跟一次 + 只跟纯文本」都真的被钉住了")
     return 0
 
 

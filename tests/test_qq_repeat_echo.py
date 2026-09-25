@@ -282,6 +282,45 @@ def test_overlong_text_does_not_trigger():
     assert _repeat(service, senders=8, text="喵" * 41) == []
 
 
+# ── 只有"一句文本"才跟 ────────────────────────────────────────────
+#
+# 实测踩到的（线上钩子观察到）：图片消息经 VLM 描述后正文是
+# `[Image 这是mc风格的精致Q版…]`，而"六个人连发同一张图"是很常见的复读。
+# 不挡的话她会把这段内部标记（连同别人的图描述）当成复读原文发进群。
+
+def test_image_messages_do_not_trigger():
+    service = _service()
+
+    assert _repeat(service, senders=8, text="[Image 这是mc风格的精致Q版动漫女孩]") == []
+
+
+def test_poke_notices_do_not_trigger():
+    service = _service()
+
+    assert _repeat(service, senders=8, text="戳一戳qq用户1561615") == []
+
+
+def test_file_and_record_segments_do_not_trigger():
+    service = _service()
+
+    assert _repeat(service, senders=8, text="[CQ:file,file=a.md,file_id=53d3e03]") == []
+    assert _repeat(service, senders=8, text="[CQ:record,file=x.silk]") == []
+
+
+def test_cq_hidden_message_without_text_does_not_trigger():
+    """只剩 CQ 段（没有描述）：剥完什么都不剩，没有"原文"可跟。"""
+    service = _service()
+
+    assert _repeat(service, senders=8, text="[CQ:at,qq=123]") == []
+
+
+def test_at_prefix_on_plain_text_still_triggers():
+    """带 @ 的纯文本仍然算 —— @ 只是前缀，剥掉就是那句原文。"""
+    service = _service()
+
+    assert _repeat(service, senders=6, text="[CQ:at,qq=12345] 一江大气喵") == ["一江大气喵"]
+
+
 # ── 发送侧 ──────────────────────────────────────────────────────
 
 def test_maybe_echo_sends_exactly_one_message():
