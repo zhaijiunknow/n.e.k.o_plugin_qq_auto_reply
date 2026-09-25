@@ -86,26 +86,31 @@
 
     --table-head-bg: rgba(148, 163, 184, .08);      /* = .neko-table th */
 
-    /* ── 整页背景图 ────────────────────────────────────────────────
-     * 取本体自己的整页背景（`static/icons/model_manager_background.png`，
-     * AppLayout / model_manager.css 里就是 `html,body` 的背景）。本体那张是
-     * 1920x1080 的 395 KB PNG；这里压成 WebP q=88 = 37 KB，按 8x8 区块量过
-     * 保真度，**最差的一块** PSNR 仍有 44.67 dB。压缩脚本与数字见
-     * static/assets/README.md。
+    /* ── 整页背景图（可换，见 static/assets/README.md）─────────────────
+     * 三个方案，切换时**成对**改下面两行（图和纱要配套）：
+     *
+     *   A 蓝白图形（当前默认） assets/page-bg-blue.webp   + 纱 .45
+     *      使用者给的两张之一。实测代价与纯色底几乎一样。
+     *   B 本体的原背景         assets/page-bg.webp        + 纱 .30
+     *      取本体 static/icons/model_manager_background.png，压到 37 KB。
+     *   C 森林插画             assets/page-bg-forest.webp + 纱 .65
+     *      使用者给的两张之一。细节多、四分之一面积偏暗，对浅色主题代价明显更大：
+     *      napcat 不达标 16→23（纱 .30）、index 3→14；要压到 .65 才回到持平，
+     *      但那时画面已经发白。若想让它更好看，可把 --card-bg 改回
+     *      var(--surface-strong)（卡片更实）来换回可读性。
      *
      * 也正因为底图不是纯色，本体那套半透明 surface（.84 / .72 / .65）才成立，
      * 所以卡片跟着用 --surface 而不是不透明的白。 */
-    --page-bg-image: url('assets/page-bg.webp?v=1');
+    --page-bg-image: url('assets/page-bg-blue.webp?v=1');
 
     /* 底图上的「纱」。本体自己就是这么干的：character_card_manager.css 里
      * background-image: linear-gradient(...), url('steam_shop_bg.png') ——
      * 一层渐变压在图上面保可读性。
      *
-     * 0.30 是**审美取值，不是为对比度**：实测把它从 0 加到 0.75，压在底图上的
-     * 文字对比度只从 3.39 爬到 3.66，但底图影响度从 55 掉到 8（等于把图盖死）。
-     * 原因是剩下的低对比度主要来自「同色字压同色淡底」的徽标/按钮，与底图无关，
-     * 加纱救不了。所以这里只取到"把偏饱和的天蓝压柔一点"的程度。 */
-    --page-scrim-color: rgba(255, 255, 255, .30);
+     * .45 是量出来的：napcat 的不达标项从 21（.30）降到 17，与纯色底的 16 基本持平。
+     * 注意纱能买到的东西有限 —— 剩下的低对比度主要来自「同色字压同色淡底」的
+     * 徽标/按钮，与底图无关，加纱救不了。 */
+    --page-scrim-color: rgba(255, 255, 255, .45);
 
     /* ── 毛玻璃外壳（照抄 AppLayout.vue 的 .app-sidebar / .app-header）── */
     --surface-glass: rgba(255, 255, 255, .72);      /* = .app-sidebar 底色 */
