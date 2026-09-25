@@ -18,7 +18,7 @@
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { color:var(--text-primary); padding:20px; }
-.wrap { max-width:760px; margin:0 auto; padding-bottom:76px; }
+.wrap { max-width:760px; margin:0 auto; }
 header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
 header h1 { font-size:20px; flex:1 1 auto; }
 /* 猫娘标记：直接用本体的 logo 图（来源见 static/assets/README.md），不再手画 SVG。
@@ -68,29 +68,29 @@ ul.list .lv { color:var(--text-secondary); font-size:12px; }
 ul.list .del { margin-left:auto; padding:3px 11px; font-size:12px; background:var(--card-bg); color:var(--danger-on-tint); border:1px solid var(--danger); border-radius:var(--radius-pill); cursor:pointer; box-shadow:none; }
 ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 
-/* ── 浮动刷新按钮 ──────────────────────────────────────────────
-   这页有 6 张卡片，滑到底时顶部 header 里那个「刷新」就够不着了 ——
-   得一路滚回顶才能点，很别扭。所以补一个跟着滚动的浮动按钮。
-   本体那边浮动控件用的就是半透明白 + 分层投影（--neko-btn-bg / --neko-btn-shadow），
-   照同一套语言做。默认不显示，滚过顶部那排按钮之后才出现，
-   免得同屏出现两个「刷新」。 */
-#btn-refresh-fab {
-    position:fixed; right:20px; bottom:20px; z-index:40;
-    display:none; align-items:center; gap:6px;
-    padding:9px 16px 9px 13px;
-    border:1px solid var(--primary-border);
-    border-radius:var(--radius-pill);
-    background:var(--surface-strong);
-    color:var(--primary-on-tint);
-    font-size:13px; font-weight:650; cursor:pointer;
-    box-shadow:var(--shadow-soft);
-    transition:transform .14s, box-shadow .14s;
+/* ── 操作条：自动刷新 / 刷新 / 刷新二维码 / 返回 ─────────────────────
+   这四个原本和标题挤在同一个 <header> 里（flex-wrap，窄一点就折行，很难看），
+   而且页面有 6 张卡片，滑到底就够不着了。
+
+   改成一条 sticky 操作条：
+     · sticky **不脱离文档流** → 不会横向压住内容，也不用给 .wrap 预留遮挡空间
+       （上一版用的是 fixed 浮动按钮，得靠 padding-bottom 才能不压住最后一张卡）
+     · 贴住视口顶部 → 任何滚动位置都点得到
+     · 玻璃底沿用本体 .app-header 的做法（半透明白 + blur + 发丝投影） */
+#actions {
+    position:sticky; top:0; z-index:40;
+    display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap;
+    margin:0 0 16px;
+    padding:8px 10px;
+    border:1px solid var(--border);
+    border-radius:var(--radius-md);
+    background:var(--surface-glass);
+    backdrop-filter:var(--glass-blur);
+    -webkit-backdrop-filter:var(--glass-blur);
+    box-shadow:var(--header-shadow);
 }
-#btn-refresh-fab.show { display:inline-flex; }
-#btn-refresh-fab:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 8px 18px var(--primary-glow); }
-#btn-refresh-fab:not(:disabled):active { transform:none; box-shadow:none; }
-#btn-refresh-fab:disabled { opacity:.55; cursor:wait; }
-#btn-refresh-fab svg { width:14px; height:14px; flex:none; }
+/* 操作条里的按钮比正文里的小一号，免得抢标题的视线 */
+#actions button, #actions .btn { padding:6px 13px; font-size:12px; }
 </style>
 </head>
 <body>
@@ -98,11 +98,17 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
   <header>
     <img class="mascot" src="assets/neko-logo.png?v=1" alt="" aria-hidden="true" draggable="false" onerror="this.style.display='none'">
     <h1 id="title" data-i18n="ui.status.title">QQ 一键部署</h1>
+  </header>
+
+  <!-- 操作条：自动刷新 / 刷新 / 刷新二维码 / 返回。
+       这四个原本挤在 <header> 里标题旁边（又挤又难看），而且页面有 6 张卡片，
+       滑到底就够不着了。挪出来做成一条 sticky 操作条 —— 见 <style> 里的说明。 -->
+  <div id="actions">
     <label class="auto"><input type="checkbox" id="auto" checked><span data-i18n="ui.status.auto">自动刷新</span></label>
     <button class="ghost" id="btn-refresh" data-i18n="ui.status.refresh">刷新</button>
     <button class="ghost" id="btn-qr" data-i18n="ui.status.refresh_qr">刷新二维码</button>
     <a class="btn" href="index.html" style="text-decoration:none" data-i18n="ui.status.back">返回</a>
-  </header>
+  </div>
 
   <div id="err"></div>
 
@@ -213,14 +219,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <ul class="list" id="group-list"></ul>
   </div>
 </div>
-
-<!-- 浮动刷新：页面有 6 张卡片，滑到底时顶部那个「刷新」够不着（见 <style> 里的说明）。
-     图标是内联 SVG，插件要离线可用；文字复用已有的 i18n 键，不新增语言包条目。
-     必须放在 <script> 之前，下面的接线才找得到它。 -->
-<button id="btn-refresh-fab">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
-    <span data-i18n="ui.status.refresh">刷新</span>
-</button>
 
 <script src="i18n.js?v=2"></script>
 <script src="ui-sse.js?v=2"></script>
@@ -473,18 +471,6 @@ function setAuto(on) {
 
 document.getElementById('auto').addEventListener('change', e => setAuto(e.target.checked));
 document.getElementById('btn-refresh').addEventListener('click', load);
-
-/* 浮动刷新：滚过顶部那排按钮之后就出现，滑到底也能直接刷（同一个 load）。
-   页面短到不滚动时 scrollY 恒为 0 → 不显示，那时顶部的按钮本来就看得见。 */
-(function () {
-  const fab = document.getElementById('btn-refresh-fab');
-  if (!fab) return;
-  fab.addEventListener('click', load);
-  const syncFab = () => fab.classList.toggle('show', window.scrollY > 140);
-  window.addEventListener('scroll', syncFab, { passive: true });
-  window.addEventListener('resize', syncFab);
-  syncFab();
-})();
 document.getElementById('btn-qr').addEventListener('click', async () => {
   busy('btn-qr', true);
   try { await call('deploy', {action:'qrcode_sync'}); await load(); }

@@ -1,11 +1,11 @@
-"""fail-to-pass 证据：逐个把浮动刷新的必要条件拆掉，确认 `test_qq_status_refresh_reachable.py` 会红。
+"""fail-to-pass 证据：把操作条的必要条件逐个拆掉，确认 `test_qq_status_refresh_reachable.py` 会红。
 
-拆的四种情况，每一种都对应一个"看似能用其实不能用"的假修复：
+拆的四种情况，每一种都对应一个"看着改了其实没解决"的假修复：
 
-1. 按钮整个删掉         → 问题原样存在（刷新又只在顶部）
-2. `fixed` 换成 `absolute` → 它跟着内容滚走，滚到底照样够不着
-3. 去掉 scroll 监听       → 按钮永不出现，等于没加
-4. 去掉 `.wrap` 的底部留白 → 它压住最后一张卡片的操作区
+1. 刷新按回标题栏里       → 使用者抱怨的"挤在标题旁边"原样回来
+2. `sticky` 换成 `static` → 滚到底又点不到刷新了（只是搬了个位置）
+3. 去掉 `top:0`            → 贴不住视口顶部，等于没生效
+4. 返回 从操作条里拿掉     → 控件不全
 
 铁律（沿用 verify_page_structure_fail_to_pass.py）：替换前确认替换真的发生；
 恢复放 `finally` 并逐字节核对；每个用例起新进程（`pytest.main` 同进程不会重新导入
@@ -26,27 +26,31 @@ PLUGIN = Path(__file__).resolve().parents[1]
 PAGE = PLUGIN / "static" / "status.html"
 TEST_FILE = Path(__file__).resolve().parent / "test_qq_status_refresh_reachable.py"
 
+REFRESH_BTN = '<button class="ghost" id="btn-refresh" data-i18n="ui.status.refresh">刷新</button>'
+BACK_LINK = '<a class="btn" href="index.html" style="text-decoration:none" data-i18n="ui.status.back">返回</a>'
+
 #: (说明, 原文, 替换成)
 MUTATIONS: list[tuple[str, str, str]] = [
     (
-        "按钮整个删掉（刷新又只剩顶部那个）",
-        '<button id="btn-refresh-fab">',
-        "<!-- 删掉了 --><button id=\"refresh-fab-removed\">",
+        '把「刷新」按回标题栏（使用者抱怨的那个样子）',
+        "    <h1 id=\"title\" data-i18n=\"ui.status.title\">QQ 一键部署</h1>\n  </header>",
+        f"    <h1 id=\"title\" data-i18n=\"ui.status.title\">QQ 一键部署</h1>\n"
+        f"    {REFRESH_BTN}\n  </header>",
     ),
     (
-        "fixed 换成 absolute（按钮跟着内容滚走）",
-        "position:fixed; right:20px; bottom:20px; z-index:40;",
-        "position:absolute; right:20px; bottom:20px; z-index:40;",
+        "sticky 换成 static（滚到底又点不到）",
+        "position:sticky; top:0; z-index:40;",
+        "position:static; top:0; z-index:40;",
     ),
     (
-        "去掉 scroll 监听（按钮永不出现）",
-        "window.addEventListener('scroll', syncFab, { passive: true });",
-        "/* 监听被去掉 */",
+        "去掉 top:0（贴不住视口顶部）",
+        "position:sticky; top:0; z-index:40;",
+        "position:sticky; z-index:40;",
     ),
     (
-        "去掉 .wrap 的底部留白（压住最后一张卡片）",
-        ".wrap { max-width:760px; margin:0 auto; padding-bottom:76px; }",
-        ".wrap { max-width:760px; margin:0 auto; }",
+        "把「返回」从操作条里拿掉（控件不全）",
+        BACK_LINK,
+        "<!-- 返回被拿掉了 -->",
     ),
 ]
 
@@ -66,12 +70,12 @@ def main() -> int:
 
     for label, old, new in MUTATIONS:
         if source.count(old) != 1:
-            print(f"[MISS] 锚点出现 {source.count(old)} 次（期望 1 次），本项结论无效: {old[:50]!r}")
+            print(f"[MISS] 锚点出现 {source.count(old)} 次（期望 1 次），本项结论无效: {old[:60]!r}")
             results.append((label, False))
             continue
         mutated = source.replace(old, new, 1)
         if mutated == source:
-            print(f"[MISS] 替换没有实际发生: {old[:50]!r}")
+            print(f"[MISS] 替换没有实际发生: {old[:60]!r}")
             results.append((label, False))
             continue
 
@@ -97,7 +101,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 浮动刷新的四个必要条件都真的被钉住了")
+    print(f"[PASS] {len(results)}/{len(results)} —— 操作条的四个必要条件都真的被钉住了")
     return 0
 
 
