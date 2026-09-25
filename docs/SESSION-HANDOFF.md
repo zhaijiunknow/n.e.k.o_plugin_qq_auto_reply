@@ -2,7 +2,7 @@
 
 > 写入时间：本会话接近上下文上限时；**后续各轮持续追加，§4.0c 以后是最新的**
 > 用途：让新会话（或你自己）不用重读全部历史就能接手
-> **插件内改动 29 个文件 + 27 个新增文件；插件外套接证据见 §5**
+> 改动清单以 git 历史为准（本会话的提交都是主题化的，见 `git log --oneline`）；插件外套接证据见 §5
 
 ---
 
@@ -12,7 +12,7 @@
 见草案决策 D）；`<emoji>` 反应、`<mark/>`+`<forward>` 合并转发、`<record>`+文字
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
-**测试基线：650 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
+**测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
 
 | 主题 | 状态 |
 |---|---|
@@ -25,6 +25,10 @@
 | 设置保存链路（前端 ⇄ dashboard ⇄ schema）看门狗 | ✅ 落地 |
 | 界面结构：9 个页面跑到滚动容器外（滚不动） | ✅ 落地 |
 | 界面文案缺口（`data-hint` 缺键 → tooltip 静默消失） | ✅ 落地 |
+| 界面配色：四页统一到 `theme.css`，**色板取自本体**（见 §4.0n） | ✅ 落地 |
+| 行内硬编码色收敛（79 → 29 处，余下为 SVG 属性/白字/情绪身份色） | ✅ 落地 |
+| 深色模式 | ⏸ **做不了**：宿主没给静态插件页传主题的通道（见 §4.0n） |
+| WCAG AA（淡底文字仍 3.0–3.9、实心按钮白字 2.24–2.90） | ⏸ 未达标，需使用者定是否偏离本体色板 |
 | **"沉默时不让位"** | ⏸ **未做**：实测数据不支持存在该问题（见 §4.0c 第七节的说明），要先量化 |
 | 引导页两个残留键（`show_onboarding` / `guide_step_config_done`） | ⏸ 未做：接回还是删掉是产品决定 |
 | 焦点发送门控的界面量程（填了必被后端钳到焦点线） | ⏸ 未做：UX 提示问题，收益低 |
@@ -751,6 +755,68 @@ backlog 落盘的键是 **`sender_name`**（已用真实 `backlog_state.json` �
 
 **未做（需使用者定）**：给 `status.html` 加一根真正的下载进度条（现在只有文字日志）；
 或让引导页那根条在部署期间反映下载进度。
+
+---
+
+### 4.0n 界面配色改成**从本体取**（使用者要求"参考本体"，取代上一轮自创的玫瑰奶油）
+
+**背景**：上一轮我自创了一套"玫瑰粉 + 奶油白 + 梅子紫"（`theme.css` v1），使用者看过之后
+明确要求改为**参考本体（N.E.K.O 主程序）自带的界面语言**。上一轮那套是凭判断做的，作废。
+
+**色板来源（全部逐条对齐，都在本体的前端插件管理器里）**：
+
+| 本体文件 | 取到什么 |
+|---|---|
+| `frontend/plugin-manager/src/components/plugin/hosted/ui-kit/styles.css` | token 原样照抄：`--bg:#f7f9fc`、`--surface`、`--text:#1f2937`、`--muted:#667085`、`--border:rgba(148,163,184,.36)`、`--primary:#409eff`、`--success:#67c23a`、`--warning:#e6a23c`、`--danger:#f56c6c`、`--info:#14b8a6`、`--radius-sm/md/lg/xl = 8/12/16/20`、`--shadow-soft` |
+| 同上（组件规则） | 扁平卡片（`box-shadow:none` + 1px 描边）、`.neko-table`（separate + 圆角 + 表头 `rgba(148,163,184,.08)`）、`.neko-input`（focus `rgba(64,158,255,.58)` + `0 0 0 3px .12`）、`.neko-button`、`.neko-badge` 药丸+圆点 |
+| 同上 `.neko-log-viewer` | **日志面板是浅色**：`rgba(15,23,42,.08)` 底 + `--text` + 1px 描边（不是深色终端） |
+| 同上 `.neko-tooltip-content` | 提示气泡是**浅色** surface + 描边 + `--shadow-soft`，**而且没有箭头** |
+| `components/layout/Sidebar.vue` | 导航项：`border-radius:12px`、hover `primary 6%` + `translateX(2px)`、active `primary 12%` + `inset 3px 0 0 primary` + `font-weight:600` |
+| `components/layout/AppLayout.vue` | 外壳是**毛玻璃**：`.app-sidebar` `rgba(255,255,255,.72)` + `blur(32px) saturate(160%)`；`.app-header` `rgba(255,255,255,.65)` 同款 + `inset 0 -.5px 0 rgba(255,255,255,.15)`；`.app-main` 底色 `--el-bg-color-page` |
+| `assets/base.css` | 字体栈 `Inter, ui-sans-serif, system-ui, …, 'Segoe UI', …` |
+| `assets/styles/common.css` | 滚动条 8px / 圆角 4px |
+
+**落地**：`static/theme.css` 重写为 v2（65 个 token，本体 token 名保持原样 + 给四页历史
+用过的名字留别名）。四页接入；`napcat.html` / `open_platform.html` 的**深色侧栏+深色顶栏
+换成毛玻璃浅色**（这是最大的观感变化）、卡片改扁平、表格/输入框对齐 kit、**日志面板由
+`#1a1a2e` 深色终端改成 kit 的浅色**、提示气泡改浅色且去掉箭头。
+
+**行内硬编码色一并收敛**（上一轮我只数了 `<style>` 块，报"30/25 处"，**低估了**：
+真实分布是 `<style>` 里只剩几个，大头在行内 `style=` 与 JS 字符串里）。
+四页硬编码色 **79 → 29 处**。剩下 29 处都是**故意保留**的：
+
+* SVG 表现属性（`fill=` / `stroke=`）——**`var()` 在表现属性里不解析**，必须写字面量；
+  值已换成本体色号（`#67c23a` / `#94a3b8` / `#667085`）。
+* 白字压在实心语义色上（`color:#fff`）与二维码白底（`background:#fff`，要保证扫码对比度）。
+* 注意力页的**情绪识别色**（10 情绪各一色）——这是"身份色板"，和群的配色一样属于数据，不是主题色。
+
+**深色模式：没做，而且是有原因的**。本体 ui-kit 用 `prefers-color-scheme`，但插件管理器是把
+`data-theme="dark"` 加在**自己的** `<html>` 上（`composables/useDarkMode.ts`，存
+`localStorage['neko-dark-mode']`），而静态插件页跑在**另一个 origin 的 iframe** 里
+（`components/plugin/PluginUIFrame.vue`）——宿主只通过 `?locale=` 传语言
+（`components/plugin/staticUiUrl.ts`），**没有任何主题通道**。管理器切深色时插件页无从得知。
+所以 `theme.css` 固定浅色并显式声明 `color-scheme: light`，免得操作系统深色时浏览器把
+表单控件单独涂黑。**这是宿主侧的缺口，按约定只报告不改。**
+
+**可验证性**：这轮视觉改动**不看截图**（模型读不了图），改用宿主已装的 Playwright 读**计算样式**
+（`.dsh-artifacts/verify-visual.py`）：
+`body` 底 = `rgb(247,249,252)`、侧栏 = `rgba(255,255,255,.72)` + `blur(32px) saturate(1.6)`、
+active 导航 = `#409eff` 压 `rgba(64,158,255,.12)` + `inset 3px 0 0 #409eff`、卡片 `shadow:none`、
+日志面板 `rgba(15,23,42,.08)` —— 逐条命中本体期望值；另检查无 JS 报错、无横向溢出。
+
+**对比度：诚实结论**（`.dsh-artifacts/contrast-check.py` 算了新旧两套）：
+
+* **不是我引入的**：白字压语义实心色 primary/success/danger = 2.78 / 2.24 / 2.90，
+  而旧的玫瑰主题是 2.69 / 1.92 / 2.77 —— **三项都比旧的好**。淡底上的同色字 2.36，
+  旧玫瑰是 2.39 / 2.08 —— 持平。这些比例是**本体 kit 自带的**。
+* **是我引入的**：ghost 按钮从旧的 7.56（深灰字压白卡）掉到 2.36，因为我照抄了 kit 的
+  "同色字压同色淡底"。已用 Element Plus 官方 `dark-2` 一档做**淡底上的文字色**拉回：
+  `#337ecc` / `#529b2e` / `#b88230` / `#c45656`，实测 2.36→3.57、1.95→3.00、2.44→3.68。
+* **残留**：实心按钮白字仍 2.24–2.90，淡底文字 3.0–3.9，都低于 WCAG AA 4.5。
+  要真正达标必须离开本体的色板（比如换成 `#1f5fa8` 这类深蓝），这会明显不像本体 ——
+  **留给使用者定**：严格对齐本体，还是以可读性优先做偏离。
+
+**测试基线：681 passed / 0 failed**（四页结构与 i18n 看门狗全绿）。
 
 ---
 
