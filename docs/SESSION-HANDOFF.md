@@ -1384,7 +1384,7 @@ delete_sticker(id=46) → total 45，探针文件无残留
 |---|---|
 | emoji 目录 80 → 40 条（`MAX_EMOJI_CATALOG_ENTRIES`；`<emoji>ID</emoji>` 本身不受限） | −435 |
 | 表情包目录加**防御性上限 60**（`MAX_STICKER_CATALOG_ENTRIES`，本机 45 条不触发；超了留日志） | 0（防爆） |
-| 删掉 `FORMAT_PROMPT_SECTION_NEKO_DYNAMIC` 里的 `<!-- rps/dice/contact/music/mface/file -->` 块 —— **它一直在被发出去**，模型会当成可用标签 | −304 |
+| 删掉 `FORMAT_PROMPT_SECTION_NEKO_DYNAMIC` 里的 `<!-- rps/dice/contact/music/mface/file -->` 块 —— 模板字符串整个进 system prompt，所以**默认安装下这个注释块是随请求发出去的**（本机因有 override 而没发），注释里的标签清单可能被模型当成可用标签 | −304 |
 | `细节约束` / `输出要求` 里与 Format、Attention 逐字重复的条目（6 条 → 3 条 / 6 条 → 3 条） | −168 |
 | Kira 场景里与「回复频率控制」重复的一条 | −43 |
 
@@ -1408,7 +1408,7 @@ prompt override（`business_config.json` → `prompt_overrides["zh-CN"]
 
 * 缺 `bored`（"没兴趣→让出焦点"那个情绪，注意力机制的一环）→ 模型用不出这个情绪
 * 把 `<rps/>` `<dice/>` `<contact>` `<music>` `<mface>` `<file>` 列成可用标签 ——
-  后端没实现，写出来会被静默丢弃（代码模板里这几条一直是**注释掉的**，是 override
+  后端没实现，写出来会被静默丢弃（代码模板里这几条**一直在 HTML 注释里**，是 override
   生成时把注释围栏丢了）
 * `<record>` / `<forward>` 的语义与代码模板**相互矛盾**（override 说 record 可与
   `<text>` 组合、forward 要自己写 `[发送者]: 内容`；实际是 record 必须单独成块、
