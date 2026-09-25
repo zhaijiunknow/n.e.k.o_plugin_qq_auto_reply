@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：849 passed**（见 §4.0p…§4.0aa）。
+**最新：853 passed**（见 §4.0p…§4.0ab）。
 
 | 主题 | 状态 |
 |---|---|
@@ -108,7 +108,6 @@
 - `test_qq_p1_p2_regressions.py` — P1/P2 修复
 - `test_qq_reply_does_not_force_fall.py` — 回复不触发 fall
 - `test_qq_frequency_scaled_rise.py` — 频率缩放
-- `test_qq_reply_chain_prompt.py` — 引用链进 prompt
 - `test_qq_log_panel_scroll.py` — 日志面板滚动契约
 - `test_qq_source_kind_sets.py` — **source_kind 看门狗**（防"判据集合与真实生产者漂移"）
 - `test_qq_session_eviction_and_group_id_guard.py` — 会话回收 + 空 group_id 守卫
@@ -116,6 +115,9 @@
   「我在听」/ 缓冲总结；必须带本体人设、只对免费线带、标志句不许硬编码）——见 §4.0t
 - `verify_free_route_persona_fail_to_pass.py` — 同上，8 种注入全红 + 对照绿
 - `test_qq_noqa_hygiene.py` — 禁止裸 noqa 指令（CI 的 `--ignore-noqa` gate 见 §4.0aa）
+- `test_qq_reply_chain_prompt.py`（14 条）— 引用链进 prompt + **时间头口径**：断言按本机
+  本地时间算、monkeypatch 成 UTC 时钟再断言一次、源码级钉 `fromtimestamp`；
+  引用链与**转发链**两处时间头都要覆盖（见 §4.0ab）
 
 ---
 
@@ -1822,6 +1824,52 @@ import sys / ROOT = 'x' / sys.path.insert(0, ROOT) / import os  → 报 E402
 * 唯一留下的小看门狗是 `tests/test_qq_noqa_hygiene.py`（2 条）：禁止**裸 noqa 指令**
   （不写代号的 `# noqa`）—— 它会把所有规则一起关掉，本地与 CI 都看不出问题；这条约束
   与 ruff 版本无关，两边结论一致。
+
+---
+
+### 4.0ab CI 跑在 UTC：写死日期的时间断言会在那里红（本地却是绿的）
+
+**现象**：本机 `853 passed` 全绿，CI 上一条红：
+
+```
+tests/test_qq_reply_chain_prompt.py::test_header_still_carries_the_timestamp
+assert "2023-11-15" in out
+```
+
+**根因**：`ts=1700000000` 在 **UTC+8** 渲染成 `2023-11-15 06:13:20`，在 **UTC** 渲染成
+`2023-11-14 22:13:20`。断言里写死了**本机所在时区**才成立的那一天。代码没问题
+（`_dt.fromtimestamp` 走本地时间，与插件其它时间提示同口径），**是测试把时区焊死了**。
+
+**修法**（不是把日期改成 UTC —— 那只是把坑挪到另一半时区）：
+
+1. `_expected_ts(ts)` = 按本机本地时间算出期望串，断言不再出现常量日期；
+2. `test_the_timestamp_assertion_holds_in_any_timezone`：monkeypatch
+   `enrichment._dt` 成固定 UTC 时钟 —— **在本机复现 CI 的时区**，以后同类错误本地就红；
+3. `test_the_header_uses_local_time_not_utc`：源码级断言 `fromtimestamp` 存在、
+   `utcfromtimestamp`/`timezone.utc` 不存在（钉的是"口径"，不是某次输出）；
+4. `test_forward_chain_header_carries_local_time` +
+   `test_forward_chain_timestamp_holds_in_any_timezone`：转发链
+   （`_fetch_forward_content` 的 `[转发] [时间] 发送者: 内容`）是**另一条独立分支**，
+   不单独测就没钉住。
+
+**第 4 条是变异测试逼出来的、不是想出来的**：`.dsh-artifacts/verify_tz_test_fail_to_pass.py`
+先把两处时间头分别改成 `utcfromtimestamp`。只有前三条时，**转发链那处变异全绿**
+（"测试是摆设"）—— 行为级断言只走 `_format_reply_chains`，源码级断言只截了那一段。
+补上第 4 条后两处变异各红 3 条，还原逐字节一致，对照绿。
+
+**教训**：CI 与本地**时区不同**这件事，只有在测试里显式造一次 UTC 才能自证；
+"我本机绿了"对时间相关断言没有任何证明力。
+
+**另外：CI 上 1 skipped 是设计如此**，不是失败。
+`test_qq_connector_seam.py::test_vendored_matches_host_protocol_surface` 在
+`pytest.skip("宿主未提供 utils.connection.onebot，漂移守卫本轮无标的")` 上跳过 ——
+CI 的打包树里没有宿主的 OneBot 连接器，这个"漂移守卫"没有标的物；
+本机（宿主在）应当 **0 skipped**。看到 CI 报 skipped 别去"修"。
+
+**顺带**：本地复现 CI 那条 ruff gate 时，`--exclude vendor plugin-repo` 里的
+`plugin-repo` 在本机**不存在**，会被当成路径参数 → `E902 系统找不到指定的文件`。
+本机要写成 `--exclude vendor --exclude plugin-repo`（或干脆省掉不存在的目录），
+两边都 `All checks passed!` 才算对齐。
 
 ---
 

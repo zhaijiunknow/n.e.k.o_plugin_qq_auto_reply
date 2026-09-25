@@ -10,6 +10,10 @@
 """
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from types import SimpleNamespace
+
 from plugin.plugins.qq_auto_reply.enrichment import QQMessageEnricher
 from plugin.plugins.qq_auto_reply.message_chain import (
     At,
@@ -17,6 +21,11 @@ from plugin.plugins.qq_auto_reply.message_chain import (
     Reply,
     Text,
 )
+
+
+def _expected_ts(timestamp: int) -> str:
+    """按本机本地时间算出期望的头（与生产同一口径，不写死日期）。"""
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _chain(sender_name="小明", sender_id="10001", ts=1700000000, elements=None):
@@ -35,8 +44,133 @@ def test_header_carries_the_sender_qq_not_just_the_nickname():
 
 
 def test_header_still_carries_the_timestamp():
+    """头里要带时间戳，且按**本机本地时间**渲染（与插件里"当前时间"那段同口径）。
+
+    ⚠️ 断言**不许写死日期**：`1700000000` 在 UTC+8 是 `2023-11-15 06:13:20`，
+    在 CI 的 UTC 上是 `2023-11-14 22:13:20`。这条测试原本写的是
+    `assert "2023-11-15" in out` —— 于是同一份代码在本机绿、在 CI 红（真红过一次）。
+    """
     out = QQMessageEnricher._format_reply_chains([_chain(ts=1700000000)])
-    assert "2023-11-15" in out, f"时间戳丢了: {out!r}"
+
+    assert _expected_ts(1700000000) in out, f"时间戳丢了或格式变了: {out!r}"
+    assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", out), f"时间戳形态不对: {out!r}"
+
+
+def test_the_timestamp_assertion_holds_in_any_timezone(monkeypatch):
+    """把渲染时钟换成 UTC 再断言一次 —— 等于在本机复现 CI 的时区。
+
+    没有这条，"断言是否依赖本机时区"只能靠人肉推理；有了它，写死日期那种错会在
+    本机就红，而不是等 CI。
+    """
+    import plugin.plugins.qq_auto_reply.enrichment as enrichment
+
+    utc_now = datetime(2023, 11, 14, 22, 13, 20)
+    monkeypatch.setattr(
+        enrichment, "_dt",
+        SimpleNamespace(fromtimestamp=lambda _ts: utc_now),
+    )
+
+    out = QQMessageEnricher._format_reply_chains([_chain(ts=1700000000)])
+
+    assert "2023-11-14 22:13:20" in out, f"UTC 下渲染不对: {out!r}"
+
+
+def test_the_header_uses_local_time_not_utc():
+    """源码级：头里的时间用 `fromtimestamp`（本地）而不是 `utcfromtimestamp`。
+
+    这条钉的是"口径"本身 —— 插件其它地方（`_format_current_time`、时间提示段）
+    都用本地时间，引用链的头不能自己换一套。
+
+    覆盖**两处**时间头：引用链（`_format_reply_chains`）与转发链
+    （`_fetch_forward_content`）。只钉一处的话，另一处偷偷换成 UTC 不会被发现。
+    """
+    import pathlib
+
+    import plugin.plugins.qq_auto_reply.enrichment as enrichment
+
+    source = pathlib.Path(enrichment.__file__).read_text(encoding="utf-8")
+
+    reply_body = source[source.index("def _format_reply_chains"):]
+    reply_body = reply_body[: reply_body.index("def _resolve_reply_sender")]
+    assert "_dt.fromtimestamp(" in reply_body, "引用链头里的时间戳没有用 fromtimestamp"
+    assert "utcfromtimestamp" not in reply_body, "引用链头里的时间戳换成了 UTC，与插件其它地方不一致"
+    assert "timezone.utc" not in reply_body
+
+    forward_body = source[source.index("async def _fetch_forward_content"):]
+    forward_body = forward_body[: forward_body.index("async def _build_message_chain")]
+    assert "_dt.fromtimestamp(" in forward_body, "转发链头里的时间戳没有用 fromtimestamp"
+    assert "utcfromtimestamp" not in forward_body, "转发链头里的时间戳换成了 UTC，与插件其它地方不一致"
+    assert "timezone.utc" not in forward_body
+
+
+def test_forward_chain_header_carries_local_time():
+    """转发链的头 `[转发] [时间] 发送者: 内容` 也要按本机本地时间渲染。
+
+    行为级的那条（`test_the_timestamp_assertion_holds_in_any_timezone`）只走
+    `_format_reply_chains`；转发链是另一条独立分支，不测就等于没钉住
+    —— 实测把这里的 `fromtimestamp` 换成 `utcfromtimestamp`，只有源码级那条会红。
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from plugin.plugins.qq_auto_reply.connector_seam import OneBotClient
+
+    client = OneBotClient(onebot_url="ws://127.0.0.1:3001", direction="forward")
+    client._self_id = "10001"
+    enricher = QQMessageEnricher(client)
+
+    ts = 1700000000
+    forward_payload = {
+        "messages": [{
+            "user_id": "20002",
+            "message_id": "F-sub-1",
+            "time": ts,
+            "sender": {"nickname": "小红"},
+            "message": [{"type": "text", "data": {"text": "合并转发的内容"}}],
+        }],
+    }
+    message = {"content": "[CQ:forward,id=F123]", "raw": ""}
+    with patch.object(client, "get_forward_msg", AsyncMock(return_value=forward_payload)):
+        asyncio.run(enricher._fetch_forward_content(message, ["F123"]))
+
+    out = str(message.get("raw_message") or "")
+    assert "合并转发的内容" in out, f"转发内容没展开: {out!r}"
+    assert _expected_ts(ts) in out, f"转发链头的时间戳丢了或用了 UTC: {out!r}"
+
+
+def test_forward_chain_timestamp_holds_in_any_timezone(monkeypatch):
+    """把渲染时钟换成 UTC 再断言一次转发链的头 —— 在本机复现 CI 的时区。"""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    import plugin.plugins.qq_auto_reply.enrichment as enrichment
+    from plugin.plugins.qq_auto_reply.connector_seam import OneBotClient
+
+    monkeypatch.setattr(
+        enrichment, "_dt",
+        SimpleNamespace(fromtimestamp=lambda _ts: datetime(2023, 11, 14, 22, 13, 20)),
+    )
+
+    client = OneBotClient(onebot_url="ws://127.0.0.1:3001", direction="forward")
+    client._self_id = "10001"
+    enricher = QQMessageEnricher(client)
+
+    forward_payload = {
+        "messages": [{
+            "user_id": "20002",
+            "message_id": "F-sub-1",
+            "time": 1700000000,
+            "sender": {"nickname": "小红"},
+            "message": [{"type": "text", "data": {"text": "合并转发的内容"}}],
+        }],
+    }
+    message = {"content": "[CQ:forward,id=F123]", "raw": ""}
+    with patch.object(client, "get_forward_msg", AsyncMock(return_value=forward_payload)):
+        asyncio.run(enricher._fetch_forward_content(message, ["F123"]))
+
+    out = str(message.get("raw_message") or "")
+    assert "2023-11-14 22:13:20" in out, f"UTC 下转发链渲染不对: {out!r}"
+    assert "2023-11-15" not in out, "转发链的头写死了本地日期口径"
 
 
 def test_nested_reply_pointer_is_preserved():
