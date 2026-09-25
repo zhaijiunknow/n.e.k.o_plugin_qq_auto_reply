@@ -118,6 +118,8 @@
 - `test_qq_reply_chain_prompt.py`（14 条）— 引用链进 prompt + **时间头口径**：断言按本机
   本地时间算、monkeypatch 成 UTC 时钟再断言一次、源码级钉 `fromtimestamp`；
   引用链与**转发链**两处时间头都要覆盖（见 §4.0ab）
+- `verify_reply_chain_tz_fail_to_pass.py` — 同上，两处时间头各换成 UTC → 各红 3 条，
+  还原逐字节一致，对照绿（只钉引用链时转发链那处变异**全绿**，见 §4.0ab）
 
 ---
 
@@ -1870,6 +1872,24 @@ CI 的打包树里没有宿主的 OneBot 连接器，这个"漂移守卫"没有�
 `plugin-repo` 在本机**不存在**，会被当成路径参数 → `E902 系统找不到指定的文件`。
 本机要写成 `--exclude vendor --exclude plugin-repo`（或干脆省掉不存在的目录），
 两边都 `All checks passed!` 才算对齐。
+
+**CI 到底怎么跑测试**（读宿主 `.github/workflows/plugin-market-verify.yml@main` +
+`plugin/neko_plugin_cli/commands/release_cmd.py:_run_tests` 得到，**别猜**）：
+
+```
+cp -R plugin-repo neko/plugin/plugins/qq_auto_reply
+cd neko && uv run python -m plugin.neko_plugin_cli.cli check -r qq_auto_reply
+   └─ 内部: python -m pytest <plugin_dir>/tests   （cwd = <plugin_dir>）
+```
+
+即：**测试跑在插件目录里**，但 rootdir 仍会向上找到宿主根的 `pytest.ini`
+（`--randomly-seed=20260731` 那套），与本机 `cd 插件目录 && pytest tests` 等价。
+
+**「CI 少收集了几条」先怀疑自己没提交，别怀疑 CI 丢测试**：那次 CI 报
+`collected 849 items` 而本机 851。核账：`902b478` 里 `test_qq_reply_chain_prompt.py`
+有 10 条、当时未提交的工作副本有 12 条 —— 差额正是**还没提交的那 2 条**；
+`849 + 4（后来提交的总新增）= 853`，与本机一致。**没有测试在 CI 里静默消失**
+（真有的话 pytest 会报 collection error，不会安静地少算）。
 
 ---
 
