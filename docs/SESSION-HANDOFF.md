@@ -1,0 +1,863 @@
+# 会话交接：注意力重构前的状态存档
+
+> 写入时间：本会话接近上下文上限时；**后续各轮持续追加，§4.0c 以后是最新的**
+> 用途：让新会话（或你自己）不用重读全部历史就能接手
+> **插件内改动 29 个文件 + 27 个新增文件；插件外套接证据见 §5**
+
+---
+
+## 0. 现状速览（每轮更新，先看这里）
+
+**一句话**：注意力重构的**步 0/1/2/3/6/7 已落地并有测试**（步 4/5 已由使用者否决，
+见草案决策 D）；`<emoji>` 反应、`<mark/>`+`<forward>` 合并转发、`<record>`+文字
+三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
+
+**测试基线：650 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
+
+| 主题 | 状态 |
+|---|---|
+| 注意力：减性消耗 / 去掉焦点线封顶 / `steady_since` / 频率缩放 | ✅ 落地 |
+| 注意力：锁（`@`/唤醒词独占焦点，默认 90s） | ✅ 落地 |
+| 情绪：`bored`（"没兴趣"→让出焦点）+ 四份词表一致性看门狗 | ✅ 落地 |
+| 合并转发：`<mark/>` 落盘起点 → `<forward>` 附标记之后的多人多句 | ✅ 落地 |
+| 表情反应：`<emoji>` → `set_msg_emoji_like` 贴到触发消息上 | ✅ 落地 |
+| `<record>` + `<text>` 同块 → 两者都发（连带记忆/提及/未投递三处） | ✅ 落地 |
+| 设置保存链路（前端 ⇄ dashboard ⇄ schema）看门狗 | ✅ 落地 |
+| 界面结构：9 个页面跑到滚动容器外（滚不动） | ✅ 落地 |
+| 界面文案缺口（`data-hint` 缺键 → tooltip 静默消失） | ✅ 落地 |
+| **"沉默时不让位"** | ⏸ **未做**：实测数据不支持存在该问题（见 §4.0c 第七节的说明），要先量化 |
+| 引导页两个残留键（`show_onboarding` / `guide_step_config_done`） | ⏸ 未做：接回还是删掉是产品决定 |
+| 焦点发送门控的界面量程（填了必被后端钳到焦点线） | ⏸ 未做：UX 提示问题，收益低 |
+| 插件外 BM25 阈值补丁 | ⏸ 未应用（不在本插件内，见 §5） |
+
+---
+
+
+## 2. 已完成的修复（按主题）
+
+### 2.1 注意力
+
+| 修复 | 文件 | 说明 |
+|---|---|---|
+| 回复不再强制进入 `fall` | `attention_service.py` | 原 `update_on_reply` 无条件 `phase="fall"` 并覆盖 `phase_started_at`，导致每次回复都把群打入 240s（后调 30s）回落且分数被抽干。这是"发一句就没后文"的根因 |
+| 频率缩放自然增长 | `attention_service.py`（新增 `_frequency_scale`） | rise 速率按「距上一条消息的间隔」缩放：热群快、冷群慢（下限不为 0，否则冷群卡死在 fall 出不来） |
+| 参数回归默认 + 有意偏离 | `business_config.json` | `attention_fall_seconds` 240→30、`attention_consume_ratio` 0.3→0.1 回归默认；`attention_base_rise_rate` 0.02→0.08 是**有意偏离**（实测夺冠 180s→75s） |
+
+### 2.2 记忆
+
+| 修复 | 文件 | 说明 |
+|---|---|---|
+| 注意力落盘竞态 | `backlog_store.py`（新增 `update_group_attention_state`）、`attention_service.py` | 原 `_persist` 自己 load→save，与 `append_message` 互相覆盖。改为把读改写整体交给 store 的**已有那把锁** |
+| 回溯补回丢老消息 | `backlog_store.py`、`backlog_service.py`、`attention_gate_service.py` | `mark_group_reviewed` 新增 `message_ids`，标记边界收窄到"真喂给模型的那批" |
+| LLM 异常/超时不兜底 | `reply_generation_service.py` | 两条失败路径置 `allow_fallback=True`，否则供应商故障时静默不回 |
+| 空 group_id 静默丢数据 | `session_memory_service.py` | `_settle_group_digest_batches` 原来空 group_id 时**静默 `return True`**（伪成功）→ 会话被 pop、群 digest 整个丢失且无日志。改为显式拒绝 + error |
+| 读取侧空 group_id 纵深防御 | `memory_tool_service.py` | `resolve_group_recall_subjects` 现在自己拒空（此前只靠两个调用方各挡一次） |
+| `proactive_group` 归因错误（**隐私护栏**） | `pipeline_models.py`、`reply_pipeline.py` | `SYNTHETIC_SOURCE_KINDS` 漏了 `proactive_private`/`proactive_group`，导致管理员在**本群成员域**的画像被注入 bot 的公开发言。同时含零生产者的 `buffer_delayed` |
+| 会话容量回收 | `session_runtime_service.py`（新增 `reap_stale_sessions`） | `memory_enabled=False` 的会话此前**没有任何周期性回收**（唯一 idle 扫描第一句就 continue）。现在有「容量 + 空闲」双闸 |
+
+### 2.3 其他
+
+| 修复 | 文件 |
+|---|---|
+| `shutdown` 逃逸吃掉隐私关键收尾 | `napcat_service.py` |
+| 两个驱动循环无异常兜底（一次异常永久停摆） | `attention_service.py`、`session_runtime_service.py` |
+| 引用链：结构化信息进 prompt（发言人 QQ + 嵌套引用指针） | `enrichment.py` |
+| 死代码 `chain_from_onebot_message` 删除 | `message_chain.py` |
+| CQ 码清洗正则假设 ID 是纯数字（非数字 ID 泄漏裸 CQ 码） | `enrichment.py`、`__init__.py` |
+| 运行日志无法滚动（`#log-content` 无高度约束 + 无条件贴底拽回） | `static/napcat.html`、`static/open_platform.html` |
+
+---
+
+## 3. 新增的验证产物（**这是本会话最值钱的部分**）
+
+### 3.1 可复跑的手工验证脚本（打真实 memory server）
+
+| 脚本 | 验证什么 |
+|---|---|
+| `tests/verify_memory_isolation.py` | 服务端作用域隔离，**含阴性对照**（同关键词写多域、只授权其一必须只回一条）——这是唯一能区分"过滤器真在过滤"和"关键词恰好唯一"的测试 |
+| `tests/verify_plugin_subject_contract.py` | 插件 subject/speaker_id 与本体权威构造逐字节一致；端到端写读；读取侧组装与 member 门控；空 group_id 缺口 |
+| `tests/verify_write_path_subjects.py` | 用真实落库 fact 反查「群号 → 域」映射（自述群号 6/6 与所属域一致） |
+| `tests/simulate_group_memory_lifecycle.py` | 虚拟群全生命周期 13 步：写入 → 跨群隔离 → 成员级隔离 → 撤权，结束自清理 |
+
+### 3.2 pytest 测试（本会话新增约 40 个）
+
+- `test_qq_p1_p2_regressions.py` — P1/P2 修复
+- `test_qq_reply_does_not_force_fall.py` — 回复不触发 fall
+- `test_qq_frequency_scaled_rise.py` — 频率缩放
+- `test_qq_reply_chain_prompt.py` — 引用链进 prompt
+- `test_qq_log_panel_scroll.py` — 日志面板滚动契约
+- `test_qq_source_kind_sets.py` — **source_kind 看门狗**（防"判据集合与真实生产者漂移"）
+- `test_qq_session_eviction_and_group_id_guard.py` — 会话回收 + 空 group_id 守卫
+
+---
+
+## 4. 注意力的结论与方案（**下次继续的入口**）
+
+### 4.0 本轮已落地的注意力修复（草案 §7 的步 1–2 已完成）
+
+行为基线测试 `tests/test_qq_attention_behavior.py` 先写（4 条意图），跑出 3 红 1 绿，
+定位到三个**结构性**病根，全部已修：
+
+| 病根 | 修法 | 位置 |
+|---|---|---|
+| 自然增长被 `min(focus_threshold, …)` **封顶在焦点线** → 夺冠即零余量，任何一次回复都打到线下 | 上限改为 `max_attention`（焦点线恢复「夺冠资格线」语义） | `_advance_phase` |
+| 回复消耗是**乘性**（`score *= 1-ratio`）→ 4.0 扣 0.4、8.0 扣 0.8，**热群罚得更重** | 改为**减性绝对量** `max_score × consume_ratio`，与当前分数解耦 | `update_on_reply` |
+| `fall` 相位消息加成被乘 0.3 → 30 秒衰减 0.45 vs 群友一条补 0.045，**净增速恒为负，进 fall 就必然跌到底** | 去掉该衰减（`attention_fall_boost_attenuation` 不再被消费）；退潮压力交给时间衰减 | `update_on_message` |
+
+**另修一处连带问题**：`focus_acquired_at` 兼作夺冠身份与蜜月起点，导致从 0 涨到焦点线的群
+「刚到线就开始倒计时蜜月」，还没积累余量就转 fall。新增独立字段 **`steady_since`**
+（稳线时刻）专做蜜月计时；`focus_acquired_at` 保留夺冠身份语义。
+
+- 该字段需持久化：`to_dict`/`from_dict` 已加；
+- **旧存档迁移**在 `load_cached_state` 里做（分数已在线上者把稳线时刻定义为重启时刻），
+  否则老状态永远不进 fall。
+
+**测试基线：547 passed / 0 failed**（本会话开始 501）。
+
+三条受影响的既有断言已按新语义更新（消耗额、蜜月起点、封顶），并在注释里写明
+「为什么改」。全部改动**在插件内**。
+
+### 4.0b 本轮追加：锁（草案步 3）
+
+新增 **锁** 机制，实现「`@猫娘` / 唤醒词 → 该群独占焦点一段时间」：
+
+| 元素 | 说明 |
+|---|---|
+| `QQGroupAttentionState.lock_until` | 锁到期时刻，随状态持久化 |
+| `attention_lock_seconds` 配置键 | 默认 90 秒，`0` = 不锁（回到纯分数仲裁） |
+| `lock_group()` / `release_lock()` / `locked_group_id()` | 上锁 / 提前解锁 / 查询 |
+| `_choose_focus_state` 优先级 1 | 锁内直接返回该群，其余群不参与竞争；**锁先于分数判定** |
+| `attention_gate_service` 第 2 步 | 被 @ 时调 `lock_group()`（`mark_focus`/`wake_boost` 保留） |
+
+**关键设计**：锁与分数是**两个独立信号** —— 分数表达「没人叫我时我自己看哪」，
+锁表达「有人点名，我必须回头应对」。合成一个数会互相污染参数（这正是本模块此前
+调不明白的根因）。而「看一眼新群、没兴趣就回旧群」**不需要额外机制**：无锁时归属
+每 tick 由 `_choose_focus_state` 按分数重算，旧群只要还是最有意思的就自动回来。
+
+测试：新增 5 条锁语义断言（锁胜过高分群 / 锁过期恢复仲裁 / 重复上锁重置计时 /
+`0` 禁用 / 持久化）。**失败转通过已验证**：撤掉锁检查后 3 条报红。
+
+### 4.0c 本轮追加：`bored` 情绪（草案决策 B 的落地）
+
+决策 B 问的是「**没兴趣**这个信号从哪来」。结论：**不新造系统**，复用已有的
+`<feeling>` → `set_emotion` → 焦点通道，加一个情绪 `bored`。链路是现成的：
+
+```
+LLM 回复里的 <feeling>bored</feeling>
+  → reply_postprocess_node 解析 outcome.feeling
+  → reply_pipeline 调 attention_service.set_emotion()
+  → _EMOTION_DROP_FOCUS 命中：分数压到焦点线 + 相位转 fall
+  → 下一个 tick _choose_focus_state 按分数把焦点交给别的活跃群
+```
+
+| 改动 | 说明 |
+|---|---|
+| `_EMOTION_MULTIPLIER["bored"] = -0.7` | 比 `sad`(-0.4) 更想走，比 `sulking`(-0.9) 温和——没兴趣只是走开，赌气才清零 |
+| `_EMOTION_DROP_FOCUS` 加 `bored` | 立刻让出焦点 |
+| `_EMOTION_DECAY_ORDER` 加 `bored` | 降温路径 `bored → embarrassed → sad → calm` |
+| 三条提示词路径 + `i18n/{zh-CN,en}.json` | 告诉 LLM 有这个词，以及什么时候用 |
+| 前端 `emoColor` | 补 `bored` / `calm` 配色，否则新情绪静默显示成灰色默认值 |
+
+#### 「看一眼就走」：不出声也要能走
+
+使用者的场景是「看一眼新焦点群，没兴趣就走」—— 如果 `bored` 必须**先回一句话**
+才能表达，猫娘在没兴趣的群里还得先发言一次，体验是反的。查证下来代码侧本来就支持，
+只是**模型不知道可以这样用**：
+
+- 解析侧：`reply_postprocess_node` 在 `llm_skip`（不回复）的 outcome 里**同样带着
+  `feeling`**；
+- 上报侧：`reply_pipeline` 的情绪上报**先于**缓冲/冷却/交付（源码注释就写着
+  「内部状态，先于缓冲/冷却/交付更新」）。
+
+所以「**只输出** `<feeling>bored</feeling>`、不带任何 `<msg>`」是一条真实可走的路径：
+群里什么都看不到，但注意力已经交给别的群了。三条提示词路径已补上这条指令，
+并由 `test_prompt_documents_yielding_without_speaking` 钉住（删掉即报红，已验证）。
+
+`reply_pipeline` 里那段上报**顺序**另有一条 AST 顺序断言盯着：一旦有人把
+`set_emotion` 挪到缓冲判定之后，不发消息的情绪信号就会整类丢失。
+
+#### 顺手修掉的两个**静默失效**（都不是我引入的，是这次做 `bored` 才暴露）
+
+1. **升级陷阱：新情绪对老配置彻底失效。**
+   情绪倍率表是用户配置的一部分，老配置是旧版本存的快照，**没有新情绪的键**。
+   原实现「配置表里没有 → 倍率 0」，于是 `set_emotion` 在 `if emotion not in
+   self._emotion_multipliers(): return` 处**直接返回，连日志都没有**。
+   使用者真实的 `business_config.json` 就是那张 9 键表 —— 不做这个修复，
+   `bored` 对他是死的。
+   **改法**：把配置表定义为**覆盖表**（`_emotion_multipliers` 以内置表为基准，
+   用户写到的键才覆盖）。想关掉某个情绪就显式写 `0.0`，删键 = 跟随默认。
+   LLM 自造的情绪（`happy` 之类）仍然被拒 —— 关键集没变。
+
+2. **降温阶梯的第三份名单。**
+   `_decay_emotion` 里另抄了一份硬编码的上升侧名单
+   `("arguing", "annoyed", "playful", "curious")`，且 `_EMOTION_DECAY_ORDER`
+   里**漏了 `proud`**。后果：`proud` 被当表外情绪一步归零到 `calm`；而任何新加的
+   正倍率情绪会走**回落侧**分支，**越降温越激动**。
+   **改法**：升降侧由 `_EMOTION_MULTIPLIER` 的**符号**推导，阶梯按倍率单调递减排列，
+   三条不变量由 `tests/test_qq_emotion_vocabulary.py` 看门狗强制。
+
+**测试基线：611 passed / 0 failed**（本轮 579 → 611，本会话 501 → 611）。另外提醒：
+全量套件**没有任何 skip/xfail**（`-rsxX` 验证过），所以绿就是真绿。
+
+新增：
+
+- `tests/test_qq_emotion_vocabulary.py`（20 条）—— 四份情绪名单的一致性看门狗：
+  倍率表 ⇄ 配置默认表逐键一致；每个情绪必须落在「抢焦点 / 让焦点 / 中性」三档之一
+  （新增情绪时**逼作者显式选择**）；降温阶梯按倍率单调递减且两侧被 `calm` 切开；
+  三条提示词路径 + i18n 副本 + 前端色表都覆盖全部情绪；「只发 feeling 不出声」的
+  指令存在。
+- `tests/test_qq_bored_emotion.py`（12 条）—— 行为契约：`bored` 把焦点交给另一个
+  活跃群；压到焦点线并转 `fall`；比 `sulking` 温和；**老配置（无 `bored` 键）下仍然生效**；
+  用户显式 `0.0` 不被默认值覆盖；LLM 自造情绪仍被拒；降温朝 `calm` 单调收敛；
+  只发 `<feeling>` 不带 `<msg>` 时判为 `llm_skip` 且情绪照旧解析出来。
+- `tests/verify_bored_fail_to_pass.py`（手动脚本）—— 把三处旧行为重新注入，
+  确认对应断言确实会红。**结论：3/3 复现**（`bored` 无反应 / `proud` 一步归零 /
+  `bored` 时焦点留在没兴趣的群），即这些测试不是空测。
+
+### 4.0d 本轮追加：`<msg></msg>` 误判 + 两处内容泄漏 + 两份只读审计
+
+#### 一、真实行为 bug：`<msg></msg>` 被当成"回复了"（有实测日志证据）
+
+    2026-09-23 17:18:12 - [RetroReview] 回溯回复已发送: <msg></msg>
+
+投递层**正确**跳过了空块（什么都不发），但 `outcome.reply_text` 仍是 `"<msg></msg>"`
+这个真值字符串，于是所有拿 `action == "reply" and reply_text` 当判据的调用点全部误判
+（`message_dispatcher.py` 947/953/959/966）：
+
+| 调用点 | 误判后果 |
+|---|---|
+| `mark_message_reviewed` | 用户那条消息被标成已读 —— 再也不会被回溯补回 |
+| `on_reply_sent()` | **注意力被当成"已回复"扣一次**、回复频率计数 +1（其实什么都没发） |
+| `[LLM自判]` 日志 | 报"决定回复" |
+| 回溯/破冰 | 记成"成功"，破冰不再重试 |
+
+**修在解析层**（`reply_postprocess_node.finalize`）：全空块 ⇒ `blocks=[]` + `reply_text=""`
+⇒ 自然落到 `llm_skip` 分支。一处修好，四个调用点全部自动正确 —— 各自打补丁才是会漂移的写法。
+新增 `block_has_content()` 作为**唯一**的"这个块有东西发吗"判据，并与投递层
+`_compose_text` 做交叉断言，防止两处判据再次分家。
+
+#### 二、`<ark>` 原始 XML 泄漏给用户（不是丢弃，是泄漏）
+
+Ark 卡片没有投递实现（`reply_delivery_node` 的 `if block.ark:` 只记一条 warning），
+而 `_compose_text` 的兜底清洗白名单里**没有 `ark`** —— 于是模型按开放平台格式段写出
+块外的 `<ark title="…" desc="…">正文</ark>` 时，**整段 XML 原样发到群里**。
+已把 `ark` 加进白名单（剥标签壳、留正文）。
+
+#### 三、开放平台 + `neko_scene`：解析整段被跳过，标签退化成裸文本
+
+格式段按**平台**选（`session_instruction_service.py:388`，`is_open_plat` 优先），
+解析却只按 `strategy_mode == "neko_dynamic"` 开门。该组合下提示词完整教了
+`<at>/<reply>/<sticker>/<keyboard>`，解析器一个都不认：`<at>123456</at>` 变成裸数字
+`123456`（不是 @）、`<reply>114514</reply>` 变成裸 ID。两个开关在界面上都能选且互不联动。
+
+**修法**：解析门控**镜像提示词那一处的条件**（`is_open_plat or neko_dynamic`），
+这样两边以后不会再各自漂移。NapCat + `neko_scene` 行为完全不变。
+
+#### 四、提示词契约矛盾（会静默丢内容/丢情绪）
+
+| 位置 | 问题 | 改法 |
+|---|---|---|
+| `prompt_fragment_templates.py:150` | 标题写「消息块内支持的标签」，列表里 4 个标签**自己写着必须在块外**；放错就被静默丢弃，`<feeling>` 丢了还会静默影响焦点 | 标题改为「块外的必须放在 `<msg>` 之外」，每条标注**块内/块外** |
+| `:158` `<sticker>` | XML 路径下文字+表情包**同块会丢掉文字** | 改成「要搭配就写成两个 `<msg>` 块」 |
+| `:161` `<record>` | 写「或和 `<text>` 组合」，实际投递层 record 先 `continue`，文字发不出去 | 改成「必须单独成块」 |
+| `:132` | 「`<sticker>` 和 `<ark>` 不能与文字混用」与 `:121`/`:133` 直接冲突（开放平台旧式解析会把 sticker 拆成独立块，文字照发） | 改成只限制 `<ark>` |
+| `:162` `<keyboard>` | 承诺「消息下方按钮」，NapCat 侧只把文案并进正文 | 标注「仅开放平台渲染成按钮」 |
+
+#### 五、顺手修掉一处默认值漂移
+
+`attention_frequency_max_multiplier` 读取端兜底 3.0，真源默认 1.8（早先降到 1.8 时只改了真源）。
+生产里键恒在所以线上看不出，但**任何只塞部分 settings 的调用方（测试、debug 脚本）拿到 3.0**
+—— 有个测试正因它而"在验证产品不用的行为"。已对齐为 1.8。
+
+#### 六、新增测试与验证脚本
+
+| 文件 | 内容 |
+|---|---|
+| `tests/test_qq_empty_reply_not_a_reply.py`（22） | 空块不算回复；有内容的 10 种块不受影响；`block_has_content` 与投递层 `_compose_text` 交叉一致 |
+| `tests/test_qq_settings_save_chain.py`（5） | 前端提交键 ⊆ dashboard 签名 ⊆ schema 声明，三向不变量 |
+| `tests/test_qq_tag_contract_delivery.py`（5） | `<ark>` 不泄漏；开放平台两种策略都解析；NapCat+neko_scene 不解析 |
+| `tests/verify_empty_reply_fail_to_pass.py` | 注入旧行为 → 红；对照 → 绿 |
+| `tests/verify_save_chain_fail_to_pass.py` | 注入 2026-09-23 的生产 TypeError → 红；对照 → 绿 |
+| `tests/verify_tag_contract_fail_to_pass.py` | 逐条还原两处修复 → 红；对照 → 绿 |
+
+**看门狗为什么要有**：2026-09-23 04:21 真实炸过一次
+`TypeError: QQDashboardService.save_settings() got an unexpected keyword argument
+'reply_burst_window_seconds'`（前端提交、后端签名没有 → **整次保存失败**），当时靠人工
+"补回 17 个具名参数"修好。这类断裂在测试里零成本、在生产里用户点一次保存就报错。
+
+#### 七、两份只读审计的**未修**项（需要你决定，不要当已修）
+
+### 4.0e 续修：配置链路的四条（审计 C 组）
+
+| 发现 | 用户可见后果 | 改法 |
+|---|---|---|
+| **F1** 情绪倍率表 JSON 打错一个逗号 | `JSON.parse` 失败被吞成 `undefined` → `JSON.stringify` 整个省略该属性 → 后端 `is not None` 跳过不写 → **却弹「设置已保存」**并把文本框回填旧值 | 提交前解析并校验；不合法就报错 + **中止整次保存**（否则"部分保存 + 假成功"依旧成立） |
+| **F3** `locale` 三条链全断 | 语言只在浏览器 localStorage 生效，换浏览器/清缓存回到默认 | 在真源声明 `locale`（`saveable=True, handler="locale"`）+ dashboard 参数；白名单、写盘、快照回显一次接通 |
+| **F4** 未知键纯静默丢弃 | 调用方以为保存成功，整键消失且无痕迹（`proactive_topics` 走通用 `save` 就会这样） | 丢弃时记一条 WARNING 并列出键名；全未知时的错误信息也带上键名 |
+| **F6** `reply_mode`/`strategy_mode` 的枚举是**手工镜像** | 往真源 `enum` 加新取值会被静默改回旧默认（能配置但无效，且无日志） | 两个集合改为从 `settings_schema.BY_KEY[...].enum` 派生（`qq_connection_mode` 早就是这么做的） |
+| **F5** `_EXEMPT` 里有两条**不成立的理由** | 死键被"纯前端开关"的说法长期豁免 | 理由改成事实（残留键、无消费方），并新增 `test_every_exempt_key_is_actually_referenced_somewhere` 做可机械验证的那一半 |
+
+**F5 已亲自复核**：`show_onboarding` / `guide_step_config_done` 在前端各只出现 **2 次**
+（初始化 + 赋值），**从未被读取**；后者连提交都没有（对比 `guide_step_napcat_done` 有提交）。
+**保留键不删**（配置兼容 + 将来接回引导页），但不要再当成"已接通的开关"。
+**要不要真的接回引导页是产品决定，未做。**
+
+**F7（`group_attention_focus_send_threshold` 界面 max=10 而后端静默钳到焦点线）未修** ——
+它是 UX 提示问题，改动要动前端的动态 max，收益低于上述四条，留待需要时再做。
+
+**测试基线：617 passed / 0 failed**（本轮 501 → 617）。
+**A. 三个被重点宣传的标签目前没有任何消费方**（已亲自复核）：
+
+```
+forward_mark / emoji_reaction_id / forward_content / forward_target
+    → 只出现在 pipeline_models.py（声明）与 reply_postprocess_node.py（赋值）
+    → 全仓无任何读取点；_send_ark 只有定义、从无调用；
+      send_group_forward_msg 只在 _vendor 里、插件侧无调用
+```
+
+也就是说提示词里的「用 `<mark/>` 标记起点」「赢了用 `<forward to="管理员QQ">` 炫耀」
+**整条行为链的链尾是空的**，模型照做也零效果。两条路选一条：**接上消费方**，或
+**从提示词里删掉这些承诺**（否则模型每轮都在产出被丢弃的标签）。
+
+附带一个独立 bug：`_msg_ranges` 在**删除前**的坐标上算一次，而后续每步提取都就地删片段
+使位置左移 → 排在 `<msg>` **之后**的标签会被误判成"在块内"而静默丢弃。因为消费方本就不存在，
+这一处**暂未改**（改了也没有可观察效果）；接消费方时必须一起修，否则 `<forward>`/`<mark/>`
+会按输出顺序随机失效。
+
+**B. `<record>`/`<sticker>` 与文字同块会丢文字**：投递层对 record/sticker 都是"发完 `continue`"。
+提示词侧已按实际行为改对，但**投递层语义没动** —— 要不要让"文字+表情包"真的都发出去
+（用户原话是「文字和表情包搭配使用效果更好」，看意图是想要的）是个产品决定。
+注意 `reply_pipeline._primary_row_superseded` 现在**依赖**这个丢弃行为来标记未投递，
+改投递层要连带审它。
+
+**C. 配置链路审计的其余发现**（`tests/` 里已有对应缺口，未修）：
+
+- **F1 中**：`attention_emotion_multipliers` 前端 JSON 打错一个逗号 → `JSON.parse` 失败返回
+  `undefined` → 被 `JSON.stringify` 省略 → 后端 `is not None` 跳过不写 → **却弹「设置已保存」**
+  并回填旧值。用户得不到任何语法错提示。
+- **F3 中**：`locale` 前端以 `action:'save'` 提交，但不在真源 → 被入口白名单丢弃（返回 Err 被
+  前端 `catch(e){}` 吞掉）；`settings_service.py:1104-1106` 的写盘块**不可达**；快照也不返回它，
+  但前端在读 `s.locale`。→ 语言只在浏览器 localStorage 里生效，清缓存即回到默认。
+- **F4 中低**：`proactive_topics` 被真实读取、有专用 action 写入，但**完全不在真源里** →
+  走通用 `save` 会被**静默丢弃**（静默丢弃本身值得修：未知键至少该记一条日志）。
+- **F5 低（死键）**：`show_onboarding` / `guide_step_config_done` 没有任何界面能提交、也没有
+  消费方，却被 `_EXEMPT` 以**不成立的理由**（"纯前端开关"）豁免掉了。
+- **F6 潜伏**：`reply_mode`/`strategy_mode` 的枚举在 `config_store.py:16-17` 是**手工镜像** +
+  「不在表里就静默改默认」；而 `qq_connection_mode` 却是从真源派生的（反证这是漏改）。
+  往真源 enum 加新值会被静默改回旧默认。
+- **F7 低**：`group_attention_focus_send_threshold` 的 `ceiling_key` 无人读，界面 `max=10`
+  而后端按焦点线静默钳制 → 用户填 8、保存成功、刷新变回 4。
+
+**D. 另外两条已核实但**没做的**：`<ark>` 在 `neko_dynamic` 路径解析器支持、提示词从未提及
+（死分支）；`_send_ark` 第一行读一个不存在的字段 `outcome.parsed_ark`，接上即 `AttributeError`。
+
+---
+
+### 4.0f 续修：`<record>` 两者都发 + `<emoji>` 反应接线（使用者已拍板）
+
+使用者的决定（原话）：
+
+> 表情回复不能直接发，需要用贴纸的形式发送。改投递层让两者都发…现在`<sticker>`看起来还好，先不改
+
+后续追问确认：**「贴表情到对方消息上是对的」** —— 即 `<emoji>` 块外标签的语义就是
+**反应**（`set_msg_emoji_like`），不是把表情当消息发出去。
+
+#### 一、`<record>` 与 `<text>` 同块 ⇒ **两者都发**
+
+提示词一直写着 `<record>` 可以「和 `<text>` 组合」，而投递层在 record 分支直接
+`continue` —— 那段文字永远发不出去：用户听到语音、看不到文字，**历史行里存的却是文字**。
+现在先发文字、再发语音（顺序与 `<sticker>` 那条一致）。
+
+**三个连带点必须一起改**（代码自己的注释就写着它们依赖旧的丢弃行为）：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `reply_delivery_node` record 分支 | 直接 `continue`，文字不发 | 先发文字（`keyboard` 仍不传，按钮在语音块里没意义）再发语音 |
+| `pipeline_models.delivered_blocks_text` | `record or text`（只记一段，因为另一段发不出去） | 两段都记（都真的送到用户面前了） |
+| `reply_pipeline._primary_row_superseded` | 「文字+语音同块」算一种 superseded 形状 | 删除该形状 —— 留着会把**已正常送达**的轮次误标成未投递，让它从 digest 里消失 |
+
+#### 二、`<emoji>` 反应接上消费方
+
+以前 `emoji_reaction_id` 解析出来**没有任何消费方**（`_vendor` 里有
+`set_msg_emoji_like`，插件侧从没调用过），模型照提示词做零效果。现在：
+
+- `reply_delivery_node.send_emoji_reaction(message_id, emoji_id)` —— 贴到**触发本轮的那条消息**上
+  （`current_message_id or quoted_message_id`）；合成轮（回溯补回/破冰）没有具体消息可贴，跳过并记日志；
+- 目标是 NapCat（开放平台客户端里 `set_msg_emoji_like` 是返回 `{}` 的空桩，而 `{}` 是假值 →
+  天然判成「未确认」，不会误报成功）；
+- **失败只降级成日志**：反应是装饰，不该让整轮回复失败；
+- 在 `_run_delivery` 里与情绪上报并列（一次性副作用，不参与块投递、不受缓冲/冷却影响）；
+- `finalize` 的「算不算回复」判据加上 `emoji_reaction_id` —— 否则**只贴一个表情、不发文字**
+  会被判成 `llm_skip`，反应永远发不出去（而提示词把 `<emoji>` 描述成独立的块外标签，
+  这种输出完全合理）。
+
+#### 三、发现并补回一处**丢失的修复**（需要留意）
+
+`static/napcat.html` 里本会话早先的**日志面板修复丢了**：`#log-content` 没有高度约束、
+`loadLogs` 无条件贴底 —— 而 `open_platform.html` 里那份还在。是
+`test_qq_log_panel_scroll.py`（同时检查两个页面）抓住的。
+
+- 文件在 21:53 被写过一次，内容**保留**了我 20 点的改动、却**没有** 17:25 那一批；
+  丢失的确切原因**没查出来**（不是整文件回退，也没有外部进程在持续改写：mtime 稳定）。
+- 已按 `open_platform.html` 那份补回，并**保留 napcat 特有**的
+  `账号信息: QQ=` → `loadDashboard()` 行为。
+- ⚠️ 若你在编辑器里开着这个仓库的文件，注意旧 buffer 覆盖未提交改动。
+
+**测试基线：628 passed / 0 failed**（本轮 501 → 628）。新增测试：
+
+- `test_qq_tag_contract_delivery.py` 扩到 16 条：record+text 两者都发 / 纯语音块不变 /
+  record 块不泄漏 keyboard 文案 / `delivered_blocks_text` 记两段 /
+  「文字+语音」不再算未投递 / 反应打在触发消息上 / 无目标消息时跳过 / 反应失败只记日志 /
+  空桩不算成功 / 只发反应不算沉默 / 接线取的是触发消息。
+- `verify_tag_contract_fail_to_pass.py` 扩到 5 个注入 + 对照：**全部符合预期**
+  （旧行为必红、修复在位必绿）。
+
+**仍未做、等你确认**：`<mark/>` + `<forward>` 的合并转发（见 §7 的 A 项）。
+
+---
+
+### 4.0g 续修：`<mark/>` + `<forward>` 合并转发接上（使用者已拍板）
+
+使用者选择「就按文档原意接：**标记之后的多人多句原文** + 模型那句总结，合并转发出去」。
+
+#### 实现
+
+| 环节 | 做法 |
+|---|---|
+| `<mark/>` | 把起点**落盘**到 `backlog_store`：`{message_id, timestamp}`。标记与转发往往隔几十条消息，只放内存会丢 |
+| `<forward to="X">一句总结</forward>` | 取标记之后的**全部**群消息（多人多句、按时间序），**排除标记那一条本身**；模型那句总结作为**第一个节点**（用机器人的身份发） |
+| 节点格式 | OneBot v11 的 `node`（`name`/`uin`/`content`），`_vendor` 里 `send_group_forward_msg` / `send_private_forward_msg` 都在 |
+| `to` 的解析 | 空 = 当前群；命中已知群号 = 发到那个群；否则当作 QQ 号**私聊**转发（提示词里的例子正是「赢了用 `<forward to="管理员QQ">` 炫耀」） |
+| 成功后 | **清掉标记** —— 同一个标记不能复用，否则下次转发会把早就发过的对话再抛一遍 |
+| 失败后 | **不清标记** —— 起点还在就能重试，清掉就永远补不上 |
+| 没有标记 | **跳过并在 WARNING 里说明原因**。宁可什么都不发，也不要把整个 backlog 抛出去 |
+| 安全阀 | `FORWARD_MAX_NODES = 50`，超出只取**最近**一段。这是防炸用的（一个群 backlog 能留 200 条，几小时闲聊整段抛出去既刷屏也没人看），**不是产品上限**，一个常量就能改 |
+
+#### 顺带修掉一处同类静默失败
+
+`set_forward_mark` 初版在「群还没有 backlog 记录」时直接 `return state` —— 于是
+**「标记成功」和「标记被吃掉」从外面看一模一样**，提示词承诺的转发会莫名其妙永远不触发。
+改成缺记录时**建一条**（与 `ensure_group_placeholder` 同形）。
+
+#### 提示词已与实现对齐
+
+原文档让模型自己写「每行 `[发送者]: 内容`」，而实现是**系统附上原文**：
+`<forward>` 那条改成「你只写一句总结，系统自动附上标记之后的对话原文」，并明确
+「必须**先**打过 `<mark/>`，否则不会发出任何东西」。
+
+#### fail-to-pass 验证抓出了**我自己测试的覆盖漏洞**
+
+第一次跑注入验证时，「拆掉接线」那一项**没有让测试变红** —— 因为我只测了
+`_handle_forward_marks` 本身，没测它的**调用点**：把 `_run_delivery` 里的调用删掉，
+所有断言照样全绿。这正是这个功能修复前的状态（实现正确但没人调用）。
+已补 `test_run_delivery_wires_the_forward_handler`（结构断言），重跑后 2 个注入 + 对照全部符合预期。
+
+**测试基线：640 passed / 0 failed**（本轮 501 → 640）。
+
+---
+
+### 4.0h 界面（napcat.html）排查 + 文案看门狗
+
+使用者反馈「napcat 的页面有问题」。做了四类机械诊断，**只有一类是真问题**：
+
+| 检查 | 结果 |
+|---|---|
+| 内联 JS 语法（node --check） | ✓ 干净 |
+| JS 引用的元素 id 是否都存在于标记 | ✓ 干净（`att-delta-`/`prompt-textarea-` 是**动态拼前缀**，`page-prompts-*` 由 `renderPromptPages()` 运行时创建 —— 都是假阳性，已逐条核实） |
+| 重复 id | ✓ 干净（`guide-napcat-url` ×2 是**反向/正向两套引导模板**，各自在独立容器里；JS 只把其中一份注入 `#modal-body`，再用 `querySelector("#modal-body #guide-napcat-url")` 在范围内取 —— 设计如此，假阳性） |
+| 导航目标 id | ✓ 干净（`config`/`review`/`status` 走子页 `page-status-overview` 等，由 `switchSub` 落到子页 id，假阳性） |
+| **用户可见的 i18n 缺口** | ✗ **4 个**：我新加的注意力参数 `freq_target_gap` / `freq_min_multiplier` / `freq_max_multiplier` / `lock_seconds` 的 `data-hint` 键没写进 i18n 包 |
+
+**为什么缺 hint 键会"静默消失"**：`applyAttentionHints()` 是
+
+```js
+var txt = t(k, '');
+if (txt) el.setAttribute('data-title', txt);
+else el.removeAttribute('data-title')      // ← 缺键就把 tooltip 删掉
+```
+
+那 4 个「?」悬停没有任何内容，而且没有任何测试会红。已补齐 4 个标签 + 4 个 hint
+（中英两套，措辞按参数真实语义写），并顺手删掉 `doSave` 载荷里重复的 `local_stt_url`。
+
+**新增看门狗 `tests/test_qq_ui_i18n_coverage.py`**（7 条）：只钉**用户可见**的三类缺口 ——
+缺键的 `data-hint`（tooltip 被删）、**无 fallback** 的 `t('键')`（页面直接印键名）、
+缺键且元素无文本的 `data-i18n`（显示空白）。另含两语种键集合一致、JSON 无重复键，
+以及"扫描器真的扫到东西""注入不存在的键必须报出来"两条自检。
+
+**测试基线：647 passed / 0 failed**（本会话 501 → 647）。
+
+---
+
+### 4.0i **根因**：多余的 `</div>` 把滚动容器 `#content` 提前关掉了
+
+使用者补充现象：**表情包页、审阅页「没有置顶，而且无法滚动」**，并自己猜「应该是标签的问题」——**猜对了**。
+
+#### 根因
+
+`napcat.html` 在 `page-config-params`（第 359 行正常闭合）之后**多了一个 `</div>`**：
+
+```
+359:     </div>        ← 关 page-config-params
+360: </div>            ← 多余的！把 #content（唯一滚动容器）关掉了
+361: <div class="page" id="page-config-keywords">
+```
+
+后果：**它后面的 9 个页面** —— config-keywords / replymode / accounts / groups、
+**sticker**、review-overview / memory / profiles、**logs** —— 全变成 `#main` 的子节点，
+跑到滚动容器**外面**：
+
+* 这些页面**无法滚动**（滚动条属于 `#content`）；
+* 也不再受 `#content` 的高度/内边距约束，看起来就像「没置顶」。
+
+**这是既有缺陷，不是本会话改出来的**：把同一个检查跑在 `git show HEAD:static/napcat.html`
+（= 已发布的 v0.9.3）上，`#content` 同样在第 359 行闭合、同样那 9 个页面在外面。
+另外说明：**上一轮我给日志面板加的 `max-height` 只是治了症状** —— 「无法滚动」的真正
+原因是这一层结构错误。
+
+#### 为什么之前的检查都没发现
+
+正则数 `<div>` 开合个数是**平衡的**（错误只是位置错了），所以"标签配对粗查"看不出问题；
+必须在解析器里维护标签栈、并检查每个 `.page` 的**祖先链**才行。
+
+#### 修法
+
+删掉那个多余的 `</div>`，并在原处留一条注释警告不要补回来（文件末尾的
+`</div></div>` 已经是「关 `#content` + 关 `#main`」）。修完结构检查：
+
+```
+div#content 闭合于第 431 行
+在 #content 之外的 .page: 无
+```
+
+#### 新增回归看门狗 `tests/test_qq_page_structure.py`（3 条）
+
+1. **每个 `.page` 都必须是 `#content` 的后代**（这条直接钉住"滚不动"）；
+2. 解析到文件末尾时标签栈必须为空（多一个 `</div>` 必然在配对处露头）；
+3. 自检：解析器至少看到 10 个 `.page`（解析失配会让前两条空过）。
+
+`verify_page_structure_fail_to_pass.py`：把多余的 `</div>` 注入回去 → 测试必红；
+对照（修复在位）→ 必绿。**已验证 2/2。**
+
+**测试基线：650 passed / 0 failed**（本会话 501 → 650）。
+
+---
+
+### 4.0j 记忆系统：真实服务器复跑（宿主开着时做的）
+
+使用者把宿主起来后，对**真实的 memory server（48912）**复跑了验证。结论：
+
+#### 一、隔离与授权是健康的
+
+用 **DF=1** 的干净设计（每个域写**互不相同**的哨兵词，避免 BM25 干扰）重测：
+
+| 检查 | 结果 |
+|---|---|
+| 单域查自己（含 `participant` 类） | 5/5 精确命中自己 |
+| **合并授权 5 个域**（2 群 + 2 成员 + 1 私聊） | 查第 i 个域的哨兵 → **精确命中第 i 个**（含私聊域） |
+| **跨域隔离**（只授权 j、查 i 的哨兵） | 20 组交叉 → **零泄漏** |
+| legacy 私有语料是否会漏进群域 | 省略 subjects 查群哨兵 → **群域命中=无** |
+| 测试残留 | 0（清理前后一致） |
+
+#### 二、`subjects=[]` 的真实语义（**更正**）
+
+之前文档写「服务端 fail-closed 零条」**不准确**。实测：
+
+```
+subjects=[] -> 422 {"detail":"subjects must be omitted (legacy private) or contain 1..8 items"}
+```
+
+**真正 fail-closed 的是插件侧**：`memory_bridge.query_relevant_memory` 在 HTTP **之前**
+就对 `subjects == []` 返回空结果，所以插件永远不会发出空列表（服务器那道 422 是第二层护栏）。
+这一区分有意义：如果哪天有人把 bridge 那行早退删掉，行为会从"零条"变成"422 异常"。
+
+#### 三、唯一的真问题：BM25 IDF 塌陷（已知，补丁仍未应用）
+
+查询词在候选池里的 DF 接近 100% 时，该侧分数整体跌破阈值 0.10 → **召回 0 条**：
+
+```
+n=4 → 0.1054（刚好过线）／n=5 → 0.0870（全灭）／n=8 → 0.0572
+服务日志实证：pool bm25=5 | scored bm25=5 (passed 0) | fused=0
+```
+
+`verify_memory_isolation.py` 里唯一那条 **FAILED 就是这个**（它的阴性对照必须把同一个
+关键词写进所有域，DF 因此=100%），**不是隔离失效** —— 换成 DF=1 全绿。
+补丁 `bm25-threshold-floor.patch` 正是为它准备的（阈值照旧挡噪声，但某侧只要有打分结果
+就至少保住前 2 条），**仍未应用**（改的是插件外的 `memory/hybrid_recall.py`）。
+
+#### 四、⚠️ 本轮我自己犯的一个方法论错误（记下来防复发）
+
+我先用「**同一个哨兵写进所有域**」的探针得出"授权 5 个域就返回空"，并一度判定
+**"最活跃群的记忆召回一直是空"** —— **这个结论是错的**。
+决定性检查（每个域写不同事实、使查询词 DF=1）推翻了它：**6 个域也正常返回**。
+
+真正变量是 **DF**，不是域的数量；我的探针把两个变量混在了一起，而"同一哨兵写进所有域"
+恰恰是隔离脚本阴性对照的必备设计 —— 也就是说，**DF=100% 是那个探针的构造特征，不是现场特征**。
+
+**教训**：探针要一次只动一个变量；下"生产已坏"的结论前，必须先构造一个能证伪它的检查。
+
+---
+
+### 4.0k 记忆写入侧：猫娘自己的行带着内部标记进去了（已修）
+
+使用者问「猫娘自己的发言会进记忆吗，还有转发的聊天记录」。查证结果：
+
+#### 一、会进 —— 但之前进的是**带内部标记的原文**
+
+`ai` 行会被转成 `role: "assistant"` 投给记忆服务（`conversation_slice_to_memory_messages`），
+而它是**模型原始输出**（宿主把模型文本原样 append 进历史），例如：
+
+```
+<feeling>playful</feeling><msg><text>怎么啦，宅久？</text></msg>
+<msg><feeling>playful</feeling>嘿嘿，被发现啦，谁让我是你的专属小话痨呢~</msg>
+```
+
+用户看到的是「怎么啦，宅久？」，记忆里存的却是上面那串。实测落盘分布：
+
+| 文件 | 内部标记 |
+|---|---|
+| `recent.json` | 19 处 |
+| `outbox.ndjson` | 173 处 |
+| `facts.json` / `facts_archive.json` | **0** |
+| `reflections.json` / `persona.json` | **0** |
+
+所以持久语义层是干净的 —— 但那是**提取器会重写文本**的功劳，不是写入侧的保证；
+近窗/续接文本确实带着内部控件标记（可能被喂回 prompt、也会污染任何直接渲染记忆的界面）。
+
+**修法**（`_strip_internal_markup`）：分类方式**按真实数据定**（从 145 条落盘 ai 行里
+枚举出的全部标签：`msg`/`text`/`feeling`/`sticker`/`emoji`/`reply`，均无属性）：
+
+* **连内容一起丢**：`<feeling>`（只剥壳会留下 "playful" 这种内部状态词）、`<sticker>`、
+  `<emoji>`、`<reply>`（模型写的还是字面占位符「回复的消息ID」）、`<at>`/`<poke>`、
+  `<think>`（实测 0 条，留作防推理外泄的护栏）、`<mark/>`
+* **只剥壳保内文**：`<msg>`、`<text>`、`<record>`（语音念的就是它）、`<keyboard>`、`<forward>`、`<ark>`
+* **只清 `ai` 行**：真人可以自己打 `<msg>`，他的话逐字保留
+
+用**真实 145 条 ai 行**验证：39 条被清洗，**0 条残留尖括号、0 条残留独立情绪词、0 条被清空**。
+新增 `tests/test_qq_memory_write_hygiene.py`（7 条，含从落盘抓出的三条真实原文）。
+
+#### 二、转发的聊天记录：**不会**被记成猫娘说的
+
+* 被转发的那些话是**别人的消息**，它们在**收到时**就已经作为 `human` 行进了群域记忆 ——
+  转发不会新增、也不会重复
+* `send_forward` 是直接 API 调用，**不写任何会话历史/记忆** → **不存在「把别人的话记成
+  猫娘说的」这个风险**
+* 唯一的空白：转发那句总结（「我赢了」）**不进记忆** —— 只输出 `<forward>` 的轮次被判成
+  `llm_skip`（实测：`reason=llm_skip, reply_text=None, fwd=True`），该 ai 行因此按「未投递」排除。
+  留着反而会把 `<forward …>` 原始标记写进记忆，所以**保持现状**；
+  但日志措辞会误导（说「决定不回复」而其实发了转发），待定要不要改。
+
+**测试基线：657 passed / 0 failed**（本会话 501 → 657）。
+
+---
+
+### 4.0l 转发的"事后无知"问题（使用者拍板：1、2、3 都做）
+
+使用者的现场：**猫娘把某个群的聊天记录转发给了他，他随后问记录里的内容，猫娘反问「是什么东西呀」。**
+
+#### 根因（三条，都核实过）
+
+1. `send_forward` **只调 API**，不写任何会话历史/记忆 → 接收方会话不知道收到过转发。
+2. 源群那条 ai 行只含 `<forward …>` 标记，被判 `llm_skip` → 按「未投递」排除 → 连「我转发过」都没记进群域。
+3. 私聊的**回忆域不含群域**：对管理员只读「主人私有语料」(`/cache`)、对好友只读对方 `participant` 域 → 群内容在私聊里一律读不到（隔离设计，不是 bug）。
+
+**所以「是什么东西呀」不是模型笨，是她手里确实没有那段对话。**
+
+#### 落地（三条都做了）
+
+**① 转发成功后写进接收方的回忆域**
+（`reply_pipeline._record_forward_in_memory`，跟着既有 opt-in 门控走、判据与读路径同源）：
+
+| 接收方 | 写到哪 |
+|---|---|
+| 群 | `group_chat` 域（需 `group_memory_enabled`） |
+| 私聊**管理员** | legacy `/cache` —— 与他和猫娘的私聊记忆**同一个域**，所以他一问就能召回 |
+| 私聊好友 | 对方 `participant` 域（需 `private_participant_memory_enabled`） |
+| 其余 | 不写 |
+
+* 内容 = 摘要 + **被转发的原文**（截断：20 行 / 1200 字，超出注明「其余 N 条未记入」）
+* **明确标注是转发来的**（使用者的要求）：写死一段
+  「**——以下原文来自群 X，是群友说的话，不是我说的，我只是把它转发了出去——**」，
+  逐行带 `昵称(QQ): 内容`。不标注的话提取器会把群友的话当成猫娘自己说的。
+* 记的是 **assistant 行**（猫娘发出去的话）——**不伪造 human 行**：合成的用户发言会被
+  提取器抽成「用户说过」，那正是 `SYNTHETIC_SOURCE_KINDS` 那套护栏一直在防的。
+
+**② 只输出 `<forward>` 的轮次不再算「不说话」**：`finalize` 的判据加上 `forward_content`
+（与 `emoji_reaction_id` 同等）。以前日志会说「决定不回复」而其实发了一个合并转发。
+
+**③ 源群留一句动作记录**（不附原文：那些话本来就是那里的 human 行）。⚠️
+**目标标签不写私聊对象的 QQ 号** —— 源群记忆会被群聊回复召回，把管理员的 QQ 存进群域
+是一种披露；所以群目标写群号、私聊目标只写「私聊里的某人」。
+
+#### 顺带修掉一个**三处读点都读错键名**的 bug
+
+backlog 落盘的键是 **`sender_name`**（已用真实 `backlog_state.json` 核对），而三处读点
+硬编码的是 `sender_nickname`（那是另一条路径的键）→ 对 backlog 记录**永远取不到**，
+于是全部回落到 QQ 号：
+
+| 位置 | 影响 |
+|---|---|
+| `reply_delivery_node.build_forward_nodes` | **转发卡片里显示的是 QQ 号而不是昵称**（本次我写的） |
+| `reply_pipeline._forward_memory_text` | 记忆记录同样（本次我写的） |
+| `attention_gate_service._build_ignored_summary` | **回溯补回的摘要里全是 QQ 号**（既有缺陷） |
+
+收口成一个 helper `pipeline_models.backlog_sender_label()`（优先 `sender_name`，
+兼容 `sender_nickname`，最后回落 `sender_id`），三处都改走它。
+
+**测试基线：675 passed / 0 failed**（本会话 501 → 675）。新增
+`tests/test_qq_forward_memory.py`（16 条）+ `test_qq_forward_mark.py` 两条端到端
+（转发成功必留记录 / 失败不留假记忆）。`verify_forward_fail_to_pass.py` 扩到 3 个注入 + 对照，**4/4 验证通过**。
+
+---
+
+### 4.0m 「一键部署卡在下载」的排查与两条兜底
+
+使用者现场：**一键部署会卡在下载、进度条走不动。**
+
+#### 先证伪了两件事
+
+1. **后端下载本身是好的**：本机实测 2.5 秒下完 `NapCat.Shell.zip`
+   （29,482,717 字节，与 `PINNED_ASSETS` 钉死的字节数一致），**451 次进度回调**、
+   `total` 正确 —— 镜像 `gh-proxy.com` 通、`_fetch` 的进度计算正确。
+2. **`status.html`（一键部署那页）根本没有进度条元素**（`bar` 命中 0），部署反馈是
+   `deployLog` **文字日志**；带 `#guide-progress-bar` 的只有 `napcat.html` /
+   `open_platform.html`，而那根条由**9 个引导步骤的完成度**驱动（`updateGuide()`，
+   其中 5 步恒为完成），**与下载进度无关**，下载期间本来就不会动。
+
+#### 真正的两条缺口（已修）
+
+**① 停滞无法检测：`httpx.Timeout(300)` 是"全超时"**
+（连接/读/写/池都是 300 秒）。镜像**连上之后不再发数据**（第三方中转的常见故障）
+时，会一声不响地挂满 **5 分钟**，界面上就是「进度停在最后一行不动」——
+而且 300 秒是「整次下载」的预算，它替代不了停滞检测。
+
+**修法**：`STALL_TIMEOUT_SECONDS = 30`（两次收到数据之间的上限）+ 裸 `asyncio.wait_for`
+包住字节流迭代，超时即抛「下载停滞：30 秒没有收到新数据（已收到 X MB）」→
+`download_asset` 立刻换下一个候选源，`.part` 保留、续传接着下。
+另加 `CONNECT_TIMEOUT_SECONDS = 15`（连不上就该马上换源，不该耗完预算）。
+
+**② 换源/续传完全静默**
+镜像循环在 `download_asset` 内部，界面上看不出它在试第几个源、也看不出在续传。
+
+**修法**：新增 `on_attempt(index, total, url, resume_from)` 回调，`deploy_service` 据此
+逐源上报：`尝试下载源 1/2: gh-proxy.com（从 12.3 MB 续传）`。
+
+#### 新增看门狗
+
+`tests/test_qq_napcat_download_stall.py`（6 条）：停滞流必须**快速**失败（不用真等 30 秒，
+把窗口压到 0.5 秒测"有没有这个闸"）、正常流式下载不被误杀、建连超时足够短、
+每个候选源都上报且续传字节数正确、`deploy_service` 真的把 `on_attempt` 传下去并生成文案。
+
+**测试基线：681 passed / 0 failed**（本会话 501 → 681）。
+
+**未做（需使用者定）**：给 `status.html` 加一根真正的下载进度条（现在只有文字日志）；
+或让引导页那根条在部署期间反映下载进度。
+
+---
+
+### 4.1 关键认知修正
+
+1. **注意力不是频率控制**。频率闸实际是 `reply_burst_*`（60s/3 条）和缓冲延迟；注意力管的是**多个群里选哪个**。
+2. **相位机不是设计跑偏**，是用户为防"冷群饿死"刻意加的。**不要改成"每群独立令牌桶"**——那会让热群恒热、冷群恒冷，恰好毁掉相位。
+3. **"注意力"这套跨群机制是插件原创的，不在 Kira 里**。KiraAI 里 `attention` 只出现在 prompt 标题，`affinity`/`fatigue`/`mood` 全仓计数为 0；AstrBot 和 KiraAI **都不做跨群仲裁**；只有 MaiBot 做（配额上限表 + 停最久不活跃）。
+
+### 4.2 缺的机制
+
+用户原话："我看一眼这个新的焦点群，如果没有我感兴趣的话题我就会回到旧焦点。但是猫娘不会这样。"
+
+**结构上做不到**：夺冠后被蜜月硬锁 60s，且回旧群要从当前分数重新爬到焦点线（可能几分钟）。人只要几秒。**系统里没有任何东西判断"夺冠之后这话题其实没意思，快撤"。**
+
+### 4.3 用户给的方案（草案以此为准）
+
+> 相位完全交给情绪、兴趣、发言频率；`@猫娘` 和唤醒词触发保持锁，让猫娘维持在一个群一段时间。
+
+去掉相位后，"看一眼就回来"变成**免费**的：归属每 tick 用 `argmax(attention_score)` 重算，旧群只要还是最有意思的，下一个 tick 自动回去——不需要"fall→rise→重新爬线"。
+
+### 4.4 实测支持数据
+
+```
+53.3% 的群消息发生在「同时有 2 个群活跃」时（105 个时点，单次会话样本）
+群 1048307485: 98 条 / 110 分钟    群 985066274: 7 条 / 76 分钟
+```
+
+### 4.5 待决策（**动手前必须定，见草案 §6**）
+
+- **A** 锁过期后回"分数最高的"还是"上一个非锁群"
+- **B** "没兴趣"的信号从哪来（纯频率 / 模型信号 / 两者结合）——**决定性**：只有模型信号能做到"看一眼就回来"
+  → **已定并已实现**：模型信号，复用情绪通道加 `bored`（见 §4.0c）。
+- **C** 锁的时长、唤醒词是否同等、锁内再来 `@` 怎么办、锁内其他群是否完全静默
+- **D** 相位机删除还是只保留 `fall` 作衰减方向
+- **E** 两个硬编码情绪集合（`_EMOTION_FORCE_FOCUS` / `_EMOTION_DROP_FOCUS`）是否映射成锁
+  → **部分落地**：`bored` 已加入让焦点集合；集合与倍率表的一致性现在由看门狗测试强制
+    （`tests/test_qq_emotion_vocabulary.py`，新增情绪必须显式归类）。
+
+---
+
+## 5. 插件外：只有一处，**未落地**
+
+`memory/hybrid_recall.py` 的 **BM25 绝对阈值 bug**：
+
+- 现象：查询词在候选池里高频出现时 IDF 塌陷，**整侧命中一起跌破阈值 0.10，召回彻底为 0**（不是降级——embedding 不可用时 `_cosine_rank` 直接返回 `[]`）
+- 实测：`n=4 → 0.1054`（刚好过线）／`n=5 → 0.0870`（全灭）／`n=8 → 0.0572`
+- 服务日志实证：`pool bm25=5 | scored bm25=5 (passed 0) | fused=0`
+- 真实现场影响**比合成场景窄**：真实群 521 条候选下查询仍正常；只在"查询词几乎出现在池内每条"时触发
+
+**补丁保存在 `.dsh-artifacts/bm25-threshold-floor.patch`**（10924 字节），内容：新增 `_threshold_with_floor()`（阈值照旧挡噪声，但某侧只要有打分结果就至少保住前 2 条）+ 3 个回归测试。
+
+**本会话约定：插件外不可改，故该补丁未应用。** 应用方式：
+
+```
+git apply .dsh-artifacts/bm25-threshold-floor.patch
+```
+
+改的是 `memory/hybrid_recall.py` 与 `tests/unit/test_hybrid_recall.py`（后者在父仓库、受跟踪）。
+
+---
+
+## 6. 已知未修 / 未验证
+
+| 项 | 状态 |
+|---|---|
+| BM25 阈值 | 补丁已备，未应用（插件外） |
+| 插件 subject 转义缺口 | `:`/`%` 在 ID 里时插件手工拼串与本体 `_encode_component` 分歧；QQ 场景不可达。已写成显式断言 |
+| `proactive_group` 不在 `skip_buffer` | **已修**（收口到 `BUFFER_INTERNAL_SOURCE_KINDS`） |
+| 成员域「发言人 → 域」映射 | `verify_write_path_subjects.py` 第 3 节**没测到**（成员 fact 文本无可提取 QQ 自述），不是通过 |
+| 多群共现长期统计 | 单次会话样本，长期是否出现 3+ 群竞争未验证 |
+| MaiBot 1.0.0 的 `focus_*` / `attention_drift` | **只有配置文档、无源码**，行为语义未确认 |
+| 注意力重构 | **步 0/1/2/3/6/7 已落地**（见 §0 与 §4.0a–i）；步 4/5 已由使用者否决 |
+
+---
+
+## 7. 下一会话的建议起点
+
+**已经做完的**：草案步 0（行为测试）、1（减性消耗）、2（去掉封顶）、3（锁）、
+6（`bored` 情绪）、7（保存链路看门狗）。**步 4/5 作废** —— 使用者明确要求保留相位机
+（防"冷群饿死"），见草案决策 D。
+
+**还没做、按价值排序**：
+
+1. **量化"模型是否常常拒绝回复"**（决定要不要让"沉默"影响注意力）。
+   现在 `postprocess_reason="llm_skip"` 被设置后**没有任何代码消费**，所以
+   "猫娘在一个群里很少说话"这件事系统完全不知道。做法：给每个群记
+   `replies / declines` 计数并显示到面板，**先看真实比例再决定**。
+   注意：**沉默本身不能当"没兴趣"** —— 群聊的默认正确行为就是沉默。
+   实测参考（§4.0c）：回溯补回 14 次里模型回复了 14 次，没有拒绝。
+2. **引导页两个残留键**（`show_onboarding` / `guide_step_config_done`）：
+   要么接回引导流程，要么从真源里删掉。现在它们能存能回显但没人用。
+3. 低风险 UX：焦点发送门控的界面 `max` 跟当前焦点线联动（否则用户填 8 保存后变回 4，无提示）。
+4. 插件外的 BM25 阈值补丁（见 §5）——**需要你确认后才动**。
+
+如果要别的方向：`docs/attention-redesign-draft.md` §8 列了未验证边界，§1.4 是可直接复算的数据。
+
+
+---
+
+## 8. 本轮（注意力步 1–2）的三条教训
+
+1. **行为测试先行是对的**。三条病根里只有一条（乘性消耗）能从读代码看出来；
+   另两条（封顶、fall 衰减的算术）都是**跑出数值才暴露**的。
+2. **不要在断言里硬编码手算值**。我在消耗额上连续猜错三次（0.6→1.0→3.0），
+   根因是忘了读桩里的 `consume_ratio`。改成**从真实常量推导**
+   （`service._max_attention() * service._consume_ratio()`）后一次通过。
+3. **中文引号不要嵌进 f-string**（`"...「x」..."` 会提前终止字符串）。本会话犯过两次，
+   都是 `SyntaxError`。改用别的引号或提前赋值。
+
