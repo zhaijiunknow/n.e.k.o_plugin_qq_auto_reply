@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：720 passed**（见 §4.0p / §4.0q / §4.0r）。
+**最新：721 passed**（见 §4.0p / §4.0q / §4.0r）。
 
 | 主题 | 状态 |
 |---|---|
@@ -29,7 +29,7 @@
 | 界面配色：四页统一到 `theme.css`，**色板取自本体**（见 §4.0n） | ✅ 落地 |
 | 界面素材：本体品牌图 `neko-logo.png` / `paw.png`（见 §4.0n） | ✅ 落地 |
 | status 页拖入表情包（同一个后端契约）+ 操作条（见 §4.0p / §4.0q） | ✅ 落地 |
-| 表情包删除：后端新增 `delete_sticker` + 三页入口（见 §4.0r） | ✅ 落地 |
+| 表情包删除：后端新增 `delete_sticker`；入口只在**表情包管理页**（status 页只上传，见 §4.0r） | ✅ 落地 |
 | `status.html` 三个 `data-i18n-ph` 从来没被翻译（属性名 i18n.js 不认 + 键不存在） | ✅ 已修 + 第 4 类 i18n 检查 |
 | `open_platform` 的表情包描述永远是文件名（两个缺陷叠加，静默） | ✅ 已修 + 跨页看门狗 |
 | 界面背景：**分页面配图** —— status 用森林插画 `.30`，其余用蓝白图形 `.45`（见 §4.0o-2 / §4.0o-3） | ✅ 落地 |
@@ -1101,12 +1101,18 @@ dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会�
 
 顺带清 `_sticker_catalog_cache`：表情包目录是进 system prompt 的，有缓存。
 
-**前端**：三页都加了入口。
+**前端**：**只在表情包管理页给入口**。
 
-* `napcat` / `open_platform`：已注册表情包的表格加「操作」列，每行一个删除按钮；
-* `status.html`：新增「已注册表情包」卡片（列表 + 刷新列表 + 删除）。它这页的列表用
-  `ul.list` / `.del` 的既有样式，**删除按钮走事件委托读 `data-id`** —— 因为本页没有
-  `escapeOnclick()`，为个按钮再引一个本页没有的函数是这类页面最典型的静默失效。
+* `napcat` / `open_platform`：已注册表情包的表格加「操作」列，每行一个删除按钮。
+
+  > **使用者明确要求："已注册表情包的删除别放 status 页"。** 我第一版给
+  > `status.html` 也加了「已注册表情包」列表 + 删除，已按要求撤掉 ——
+  > **`status.html` 只负责上传**（拖入表情包），列表和删除都在表情包管理页。
+  > 这样"上传"和"管理"不混在一起，也少一个误删的地方。
+  > `test_qq_sticker_delete_ui.py` 里有一条专门的用例把这个边界钉住
+  > （status.html 不许出现 `sticker-list` / `btn-refresh-stickers` /
+  > `deleteSticker` / `ui.shared.btn.delete` / `list_stickers`），
+  > 同时确认**上传那张卡片还在**（去掉的是管理，不是上传）。
 
 删除前一律 `confirm()`（这个仓库的破坏性操作都这么做），文案键
 `ui.shared.sticker.delete_confirm` 新加到两个语言包。
@@ -1134,13 +1140,14 @@ dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会�
 
 **验证**：`tests/test_qq_sticker_delete.py`（7 条，行为：摘登记 / 删文件 / 缓存 /
 共享文件守卫 / `../` 逃逸 / id 校验 / schema 契约）、
-`tests/test_qq_sticker_delete_ui.py`（8 条，界面接线 + 确认在前 + 删完刷新）。
-`tests/verify_sticker_delete_fail_to_pass.py` 4 种注入全红 + 对照组绿。
-端到端（`window.call` + `window.confirm` 双桩）：
-`.dsh-artifacts/verify-sticker-delete.py` —— 三页各测"确认删除"和"点取消"两条路，
-实测参数是 `asset` / `{action:'delete_sticker', id:'1'}`、取消时**不发请求**。
+`tests/test_qq_sticker_delete_ui.py`（9 条，管理页接线 + 确认在前 + 删完刷新 +
+**status 页不许有删除入口**）。`tests/verify_sticker_delete_fail_to_pass.py`
+4 种注入全红 + 对照组绿。端到端（`window.call` + `window.confirm` 双桩）：
+`.dsh-artifacts/verify-sticker-delete.py` —— 两个管理页各测"确认删除"和"点取消"
+两条路，实测参数是 `asset` / `{action:'delete_sticker', id:'1'}`、取消时**不发请求**；
+另测 status 页确认它只有上传、没有管理。
 
-**测试基线：720 passed**（703 + 7 + 8 + 2）。
+**测试基线：721 passed**（703 + 7 + 9 + 2）。
 
 ---
 

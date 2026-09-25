@@ -1,8 +1,12 @@
-"""表情包删除按钮：三个页面都必须在列表里给出删除入口，而且接的是同一个后端动作。
+"""表情包删除按钮：**表情包管理页**必须给出删除入口，而且接的是同一个后端动作。
 
 **为什么要有这条**：`asset` 入口的 schema 是 `additionalProperties: False` ——
 前端把参数名写错（比如 `sticker_id` 而不是 `id`）、或者忘了带 `id`，**调用会被参数
 校验直接拦掉**，界面上表现为"点了没反应"。所以这里把"发出去的参数名"也钉住。
+
+**为什么只盯 napcat / open_platform**：使用者明确要求"已注册表情包的删除别放 status 页"——
+`status.html` 只负责**上传**（拖入表情包），管理和删除都在表情包管理页。
+下面有一条专门的用例把这个边界钉住，免得以后又被加回去。
 
 后端那边删东西是真的删磁盘文件，`test_qq_sticker_delete.py` 负责行为；
 这条只管"界面上有没有入口、接得对不对"。
@@ -14,22 +18,35 @@ import re
 
 from _ui_source import code_of, fn_body, read
 
-PAGES = ("napcat.html", "open_platform.html", "status.html")
+#: 有表情包管理页的两页（status.html 只上传，不管理）
+PAGES = ("napcat.html", "open_platform.html")
 
 
 def test_code_of_does_not_swallow_markup():
     """先钉住工具本身：`accept="image/*"` 会被误当成注释开头。
 
-    naive 的实现会把它和后面很远的 `*/` 配成一对、静默吞掉几 KB ——
-    `status.html` 实测被吞 5.2 KB，其中正好有 `id="sticker-list"`。
-    换个断言方向，这种吞法会让测试"看着通过、其实没查"。
+    naive 的实现会把它和后面很远的 `*/` 配成一对、静默吞掉几 KB（`status.html`
+    实测被吞 5.2 KB）。换个断言方向，这种吞法会让测试"看着通过、其实没查"。
+
+    这里不写死"哪个标记该在"（文件一改就失效），而是比 `id=` 集合：
+    **天真实现必须真的丢元素**（否则这条自检的前提就变了），
+    **修复后的实现一个都不许丢**。
     """
-    text = code_of("status.html")
-    assert 'id="sticker-list"' in text, "剥注释把 markup 吞掉了 —— 检查用的工具本身有 bug"
-    assert 'id="sk-file"' in text, "剥注释把 markup 吞掉了"
-    assert 'accept="image/*"' in text, "挡位符没有还原回去"
-    # 注释确实被剥掉了（否则这条工具就没意义）
-    assert "落区/输入框的样式与 napcat" not in text, "注释没有被剥掉"
+    raw = read("status.html")
+    naive = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+    good = code_of("status.html")
+
+    ids_raw = set(re.findall(r'id="([^"]+)"', raw))
+    ids_naive = set(re.findall(r'id="([^"]+)"', naive))
+    ids_good = set(re.findall(r'id="([^"]+)"', good))
+
+    assert ids_naive < ids_raw, (
+        "天真实现居然没吞掉任何 markup？那这条自检的前提变了，得重新看 —— "
+        "它本该把 image/* 当成注释开头"
+    )
+    assert not (ids_raw - ids_good), f"剥注释把元素吞掉了: {sorted(ids_raw - ids_good)}"
+    assert 'accept="image/*"' in good, "挡位符没有还原回去"
+    assert "落区/输入框的样式与 napcat" not in good, "注释没有被剥掉"
 
 
 def test_the_body_extractor_actually_works():
@@ -92,13 +109,26 @@ def test_the_delete_button_refreshes_the_list_afterwards():
         assert "loadStickers(" in (body or ""), f"{name}: 删除后没有刷新列表"
 
 
-def test_status_page_has_the_list_and_its_refresh_button():
+def test_status_page_does_not_carry_the_delete_ui():
+    """使用者要求："已注册表情包的删除别放 status 页"。
+
+    `status.html` 只负责**上传**。列表和删除都在表情包管理页 ——
+    这里把边界钉住，免得以后又被加回去。
+    """
     text = code_of("status.html")
-    assert 'id="sticker-list"' in text, "status.html 没有已注册表情包的列表容器"
-    assert 'id="btn-refresh-stickers"' in text, "status.html 没有刷新列表按钮"
-    assert re.search(r"getElementById\('btn-refresh-stickers'\)\.addEventListener", text), (
-        "status.html 的刷新列表按钮没有接线"
-    )
-    assert "sticker-table" not in text, (
-        "status.html 不该去动别的页面才有的 #sticker-table"
-    )
+    for needle, why in (
+        ('id="sticker-list"', "status.html 不该有已注册表情包的列表"),
+        ('id="btn-refresh-stickers"', "status.html 不该有表情包列表的刷新按钮"),
+        ("deleteSticker", "status.html 不该有删除入口"),
+        ("ui.shared.btn.delete", "status.html 不该出现删除按钮的文案键"),
+        ('action: \'list_stickers\'', "status.html 不该自己去拉表情包列表"),
+    ):
+        assert needle not in text, f"{why}（{needle}）—— 管理入口请在表情包管理页"
+
+
+def test_status_page_still_has_the_upload_card():
+    """去掉的是"管理"，不是"上传" —— 拖入表情包那张卡片必须还在。"""
+    text = code_of("status.html")
+    assert 'id="sk-drop"' in text, "status.html 的拖入落区不该被一起删掉"
+    assert 'id="btn-upload-sticker"' in text, "status.html 的上传按钮不该被一起删掉"
+    assert "function uploadStickers" in text or "function doUploadSticker" in text

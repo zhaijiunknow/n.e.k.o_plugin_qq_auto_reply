@@ -247,16 +247,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
     <div id="sk-desc-list"></div>
     <button id="btn-upload-sticker" data-i18n="ui.shared.btn.upload_sticker">上传并注册</button>
   </div>
-
-  <!-- 已注册表情包：列表 + 删除。删除走后端 asset(delete_sticker)，登记和图片文件
-       一起删，所以先 confirm（和本仓库其它破坏性操作一致）。 -->
-  <div class="card">
-    <h2 data-i18n="ui.shared.card.sticker_registered">已注册表情包</h2>
-    <div style="margin-bottom:10px">
-      <button class="ghost" id="btn-refresh-stickers" data-i18n="ui.shared.btn.refresh_list">刷新列表</button>
-    </div>
-    <ul class="list" id="sticker-list"></ul>
-  </div>
 </div>
 
 <script src="i18n.js?v=2"></script>
@@ -782,51 +772,14 @@ async function uploadStickers() {
 
 document.getElementById('btn-upload-sticker').addEventListener('click', uploadStickers);
 
-/* ── 已注册表情包：列表 + 删除 ───────────────────────────────────────
-   删除走后端 asset(delete_sticker)：**登记和图片文件一起删**，所以先 confirm。
-   这页没有 escapeOnclick()，所以不用内联 onclick —— 用事件委托读 data-id，
-   免得为了个按钮再引一个本页没有的辅助函数（那种错会静默失效）。 */
-async function loadStickers() {
-  const list = document.getElementById('sticker-list');
-  if (!list) return;
-  try {
-    const d = await call('asset', { action: 'list_stickers' });
-    const items = (d && d.stickers) || [];
-    if (!items.length) {
-      list.innerHTML = '<li class="empty">' + esc(t('ui.shared.render.no_stickers', '暂无注册的表情包')) + '</li>';
-      return;
-    }
-    list.innerHTML = items.map(s =>
-      '<li><span class="id">' + esc(s.id) + '</span>' +
-      '<span>' + esc(s.desc) + '</span>' +
-      '<span class="lv">' + esc(s.path) + '</span>' +
-      '<button class="del" data-id="' + esc(s.id) + '">' + esc(t('ui.shared.btn.delete', '删除')) + '</button></li>'
-    ).join('');
-  } catch (e) {
-    list.innerHTML = '<li class="empty">' + esc(t('ui.shared.render.load_failed', '加载失败')) + '</li>';
-  }
-}
-
-async function deleteSticker(sid) {
-  if (!confirm(t('ui.shared.sticker.delete_confirm', '确定删除这张表情包吗？图片文件会一起删掉，无法恢复。'))) return;
-  try {
-    await call('asset', { action: 'delete_sticker', id: String(sid) });
-    await loadStickers();
-  } catch (e) {
-    showErr(t('ui.shared.toast.remove_failed_prefix', '移除失败: ') + ((e && e.message) ? e.message : e));
-  }
-}
-
-document.getElementById('btn-refresh-stickers').addEventListener('click', loadStickers);
-document.getElementById('sticker-list').addEventListener('click', e => {
-  const btn = e.target.closest('.del');
-  if (btn && btn.dataset.id) deleteSticker(btn.dataset.id);
-});
+/* 这页**只负责上传**：已注册表情包的列表和删除按钮在表情包管理页
+   （napcat.html / open_platform.html 的「表情包」页）。使用者明确要求别把删除放这页 ——
+   这里放列表会让"上传"和"管理"两件事混在一起，也容易误删。
+   要改已注册的表情包，去那边。 */
 
 (async () => {
   await load();
   setAuto(true);
-  await loadStickers();
   /* 开页补一次二维码同步。`load()` 只读静态缓存里的那张码，而 NapCat 可能已经
      换过码 —— 不补这一下，刚打开看到的可能是过期的二维码，得手动点「刷新二维码」。
      开放平台那套没有登录码，跳过。 */
