@@ -4,8 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-i18n="ui.status.title">QQ 一键部署</title>
-<link rel="stylesheet" href="theme.css?v=5">
+<link rel="stylesheet" href="theme.css?v=6">
 <style>
+/* 本页用**森林插画**当底图（使用者指定），其余三页用默认的蓝白图形。
+ * 这张比默认那张暗（暗部 25%）且细节多（边缘密度 2.3 倍），所以本页要两处让步：
+ *   ① 纱 .30 —— 图看得清；再往上加纱只会把插画洗白，而换不回多少可读性；
+ *   ② 卡片做实到 --surface-strong —— .84 的半透明白压在深色插画上会跟着变暗，
+ *      卡片里的次要文字会掉到 4.2 左右。 */
+:root {
+    --page-bg-image: url('assets/page-bg-forest.webp?v=1');
+    --page-scrim-color: rgba(255, 255, 255, .30);
+    --card-bg: var(--surface-strong);
+}
 * { margin:0; padding:0; box-sizing:border-box; }
 body { color:var(--text-primary); padding:20px; }
 .wrap { max-width:760px; margin:0 auto; }
