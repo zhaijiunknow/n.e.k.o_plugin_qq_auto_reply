@@ -213,12 +213,25 @@ class QQReplyGenerationService:
                 if kept is not None:
                     kept["pending_identity_discard"] = True
             stage_trace.status = "timeout"
-            return QQModelResult(reply_text=None, source="session", timed_out=True, traces=[stage_trace])
+            # 超时必须**允许**直连兜底：主会话已被强制取消，这一轮不可能再产出
+            # 回复，而下游 reply_model_node 只在 allow_fallback 为真时才跑兜底。
+            # 此前这里返回的 allow_fallback 留在默认 False，于是"供应商超时"
+            # 等于静默不回——用户看到猫娘彻底没反应，日志里也只有一条 warning。
+            return QQModelResult(
+                reply_text=None, source="session", timed_out=True,
+                allow_fallback=True, fallback_reason="session_timeout",
+                traces=[stage_trace],
+            )
         except Exception as e:
             self.plugin.logger.exception(f"AI 生成回复失败: {e}")
             stage_trace.status = "error"
             stage_trace.detail = str(e)
-            return QQModelResult(reply_text=None, source="none", traces=[stage_trace])
+            # 同上：供应商报错/网络失败同样要走兜底，否则整轮静默。
+            return QQModelResult(
+                reply_text=None, source="none",
+                allow_fallback=True, fallback_reason="session_error",
+                traces=[stage_trace],
+            )
         finally:
             if context.ephemeral_session:
                 await self.plugin.session_runtime_service.discard_session(session_key, reason="ephemeral_cleanup")

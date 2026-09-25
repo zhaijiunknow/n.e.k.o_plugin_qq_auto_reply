@@ -432,12 +432,24 @@ class QQNapcatService:
                 process.kill()
             except ProcessLookupError:
                 pass
+        # 收尸阶段整体兜底：``wait_for`` 除 TimeoutError 外还可能抛
+        # ChildProcessError（handle 已失效）或事件循环正在关闭时的
+        # RuntimeError。此前这一句在 try 之外、只捕 TimeoutError，异常会
+        # 一路穿出 stop_managed_napcat → runtime_ops_service（无 try）→
+        # plugin.shutdown() 的 ``_stop_auto_reply_runtime(stop_napcat=True)``
+        # （同样无 try），把 shutdown 后面**隐私关键的记忆结算 join 与
+        # flush_all_memory_sessions 整段吃掉**。停机清理是尽力而为，
+        # 任何失败都只该降级成日志。
         try:
-            await asyncio.wait_for(process.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
-            # SIGTERM 没送走（POSIX 上 NapCat 带着子进程时常见）：补一发 SIGKILL。
-            if not napcat_platform.is_windows() and napcat_platform.signal_terminate(pid, force=True):
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=3.0)
-                except asyncio.TimeoutError:
-                    pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                # SIGTERM 没送走（POSIX 上 NapCat 带着子进程时常见）：补一发 SIGKILL。
+                if not napcat_platform.is_windows() and napcat_platform.signal_terminate(pid, force=True):
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        pass
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"等待 NapCat 进程退出失败 (PID={pid}): {e}")

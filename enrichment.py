@@ -368,7 +368,6 @@ class QQMessageEnricher:
         """Recursively expand the quote chain: build nested MessageChains via the get_msg API."""
         seen: set[str] = set()
         chains: list[MessageChain] = []
-        first_sender_id = ""
         for rid in reply_ids:
             if rid in seen:
                 continue
@@ -378,33 +377,83 @@ class QQMessageEnricher:
                 chain = await self._build_message_chain(data, depth=0, seen=seen)
                 if chain.elements:
                     chains.append(chain)
-                    if not first_sender_id and chain.sender_id:
-                        first_sender_id = chain.sender_id
             except Exception:
                 if self.logger:
                     self.logger.exception(f"Failed to fetch reply msg {rid}")
-        if first_sender_id:
-            message["_cached_reply_sender_id"] = first_sender_id
         if chains:
-            lines: list[str] = []
-            for chain in chains:
-                sender = chain.sender_name or chain.sender_id or "未知用户"
-                ts = chain.timestamp
-                time_str = ""
-                if ts:
-                    time_str = _dt.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-                header = f"[↑ {sender}"
-                if time_str:
-                    header += f" {time_str}"
-                header += f": {chain.repr}]"
-                lines.append(header)
             raw = str(message.get("raw_message") or "").strip()
-            raw = re.sub(r"\[CQ:reply,\s*id=\d+[^\]]*\]", "", raw).strip()
+            # id 用 [^\]]* 而不是 \d+：消息 ID 不保证是纯数字。实测既有
+            # ``poke_<群>_<人>_<时间戳>`` 这类，开放平台/Lagrange 更甚。用 \d+
+            # 时这些 CQ 码清不掉，会原样漏进 prompt 与会话历史。
+            raw = re.sub(r"\[CQ:reply,\s*id=[^\]]*\]", "", raw).strip()
             message["raw_message"] = raw if raw else str(message.get("raw_message") or "")
             if not message.get("content"):
                 message["content"] = message["raw_message"]
-            message["_reply_context"] = "\n".join(lines)
-            message["_reply_chains"] = chains
+            # 只产出**被消费**的键：prompt 侧读 ``_reply_context``
+            # （message_dispatcher → reply_context_node → 拼进 prompt）。
+            #
+            # 这里曾经还写 ``_cached_reply_sender_id`` 与 ``_reply_chains``，全库
+            # 无人读 —— 结构化信息现在都烘进 ``_reply_context`` 的渲染里
+            # （见 ``_format_reply_chains``：发言人的 QQ 与嵌套引用指针），
+            # 留着只写不读的键会让人误以为有消费者。
+            message["_reply_context"] = self._format_reply_chains(chains)
+            nested = self._nested_replied_message_ids(chains)
+            if nested:
+                message["_replied_message_ids"] = nested
+
+    @staticmethod
+    def _nested_replied_message_ids(chains: list[MessageChain]) -> list[str]:
+        """被引用消息**自身**引用的消息 ID（不含入站那条直接引用的）。
+
+        例如 A 引用了 B、B 引用了 C：``_reply_context`` 里能看到 B 的内容，
+        但"C 的存在"只有这里能告诉模型。顺序去重，深度优先。
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+
+        def walk(chain: MessageChain) -> None:
+            for element in chain.elements:
+                if isinstance(element, Reply) and element.message_id:
+                    if element.message_id not in seen:
+                        seen.add(element.message_id)
+                        out.append(element.message_id)
+                    if element.chain is not None:
+                        walk(element.chain)
+
+        for chain in chains:
+            walk(chain)
+        return out
+
+    @staticmethod
+    def _format_reply_chains(chains: list[MessageChain]) -> str:
+        """把被引用消息链渲染成注入 prompt 的文本。
+
+        比裸 ``chain.repr`` 多两样东西，两者都已在链里、此前被丢掉：
+
+        - **发言人 QQ**：`repr` 只有昵称，群里重名昵称会让模型分不清"谁在跟谁说话"。
+        - **嵌套引用指针**：B 引用了 C 时，把 C 的 ID 标出来，模型才知道被引用的
+          那条消息本身也是在回应别人（而不是凭空一句）。
+        """
+        lines: list[str] = []
+        for chain in chains:
+            sender = chain.sender_name or chain.sender_id or "未知用户"
+            header = "[↑ "
+            if chain.sender_id:
+                header += f"{sender}(QQ:{chain.sender_id})"
+            else:
+                header += sender
+            if chain.timestamp:
+                header += " " + _dt.fromtimestamp(chain.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            inner = " ".join(
+                f"[它引用了 {el.message_id}]"
+                for el in chain.elements
+                if isinstance(el, Reply) and el.message_id
+            )
+            header += f": {chain.repr}"
+            if inner:
+                header += f" {inner}"
+            lines.append(header + "]")
+        return "\n".join(lines)
 
     @staticmethod
     def _resolve_reply_sender(msg_data: dict[str, Any]) -> str:
