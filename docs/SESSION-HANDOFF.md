@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：853 passed**（见 §4.0p…§4.0ab）。
+**最新：899 passed**（见 §4.0p…§4.0ad）。
 
 | 主题 | 状态 |
 |---|---|
@@ -45,6 +45,9 @@
 | 引用链里的图（`_build_message_chain` 的 image 分支） | ✅ 助手已通 + 留痕 + 9 条看门狗（§4.0w）；**但整条链此前从未执行** |
 | **入站段读错键 → 引用/转发/语音/文件四条增强路径生产里全死** | ✅ 已修（§4.0x）+ 9 条用**真连接器**产夹具的看门狗；**未做现场复测**（宿主已关） |
 | 会话空闲 5 分钟被回收 → 隔一会儿再聊会「割裂」（私聊/群聊同样） | ✅ 落地「接续摘要」（§4.0y）：26 条测试 + 6 种注入全红；**未做现场复测**（要隔 5 分钟再说一句） |
+| 开放平台：**私聊发图**（单聊富媒体上传 + `msg_type=7`） | ✅ 落地（§4.0ad）：两条上传协议都试、scope 隔离、失败降级；**未真机验证**（无开放平台凭据） |
+| 开放平台：`supports_voice=False` 时**不再白烧一次 TTS** | ✅ 落地（§4.0ad）：合成前先问能力；回退判据与原有一致 |
+| 开放平台：入站**非图片附件**此前掉在地上 | ✅ 落地（§4.0ad）：接到同一文件渲染链路 + 黑名单复核 + 接线测试 |
 | 记忆段封顶（可省最多 ~4.4k 字符/轮） | ⏸ 未做（使用者：「这个先不管」），实测值记在 §4.0u |
 | 群聊场景段（i18n 副本）与代码模板已漂移；改 Python 模板对线上无效 | ⏸ 已知，待定 |
 | 深色模式 | ⏸ **做不了**：宿主没给静态插件页传主题的通道（见 §4.0n） |
@@ -120,6 +123,17 @@
   引用链与**转发链**两处时间头都要覆盖（见 §4.0ab）
 - `verify_reply_chain_tz_fail_to_pass.py` — 同上，两处时间头各换成 UTC → 各红 3 条，
   还原逐字节一致，对照绿（只钉引用链时转发链那处变异**全绿**，见 §4.0ab）
+- `test_qq_open_platform_media.py`（11 条）— 开放平台富媒体：URL 上传 / 旧式直传 /
+  分片上传三条的形状与顺序、scope 隔离（单聊 vs 群聊不能跨用）、失败与超限一律降级、
+  缺片不许合并；外加**连接成员漂移守卫**（见 §4.0ad）
+- `verify_open_platform_media_fail_to_pass.py` — 同上 9 种注入全红 + 对照绿
+- `test_qq_private_image_delivery.py`（9 条）— 私聊表情包的两条通道分流
+  （开放平台走富媒体自由函数 / OneBot 走 image 段），以及群聊那条的回归守卫
+- `test_qq_voice_channel_gate.py`（8 条）— `supports_voice=False` 时**一次都不许合成**、
+  回退判据与原有一致、无该属性的连接按支持处理（§4.0ad）
+- `test_qq_attachment_files.py`（18 条）— 开放平台入站非图片附件：取用规则
+  （名字/URL 尾部/百分号解码）、真的走 `_fetch_file_content`、黑名单复核，
+  以及**接线**（`handle_message` 真走到那一段）（§4.0ad）
 
 ---
 
@@ -1926,6 +1940,100 @@ cookie 约 1 天有效。
 技术上唯一不需要新东西的部分是群相册（NapCat 已有动作），且客户端有泛用
 `call_action(action, params)`（`utils/connection/onebot/onebot_client.py`），
 真要做也不用改连接器 —— 但**风险结论不因此改变**。
+
+---
+
+### 4.0ad 开放平台三个缺口：私聊发图 / 白烧 TTS / 入站文件附件
+
+使用者看完能力矩阵后拍板「3 个都做」。
+
+#### (1) 私聊发图
+
+**以前**：`_send_sticker` 第一行 `if plan.target_type != "group": return False` ——
+表情包在私聊里**静默消失**。不是协议不支持：官方 v2 有「单聊富媒体上传」
+（`POST /v2/users/{user_openid}/files` → `file_info` → `msg_type=7` + `media`），
+只是这条路本仓库没写。
+
+**两条协议并存**（这是实现里最需要说清的一点）：
+
+| 流程 | 请求形状 | 状态 |
+|---|---|---|
+| **旧式直传** | `{file_type, file_name, file_size, mime_type}` → 响应给 `upload_url` → 客户端 `PUT` 字节 → `file_info` | 仓库里群聊**一直在用**；**当前官方 wiki 里查不到**这些字段 |
+| **URL 上传** | `{file_type, url, srv_send_msg: false}`，平台自己去下载 | 文档在册；**只吃 http(s) 地址**，本地文件走不了 |
+| **分片上传** | `upload_prepare`（要 `file_size`/`md5`/`sha1`/`md5_10m`）→ 逐片 `PUT` 预签名 URL → 每片 `upload_part_finish` → 带 `upload_id` 调 `files` 合并 | 文档在册；本地文件唯一的正路 |
+
+来源：[单聊富媒体上传](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_files.post.html)、
+[群聊富媒体上传](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_files.post.html)、
+[群聊富媒体预上传](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_id_upload_prepare.post.html)、
+[群聊分片上传完成](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_id_upload_part_finish.post.html)（文档页脚：2026-07/08 更新）
+
+**策略 = 两条都试**：本地文件先旧式直传（与既有群聊行为完全一致，不会比今天更差），
+拿不到 `file_info` 再走分片；http 地址直接走 URL 上传。**哪条成功都写日志**
+（`图片上传成功(直传/分片/url)`）—— 没有开放平台凭据时，真机日志是唯一能回答
+"旧式直传还算不算数"的东西。
+
+**⚠️ 顺带发现（未验证）**：群聊那条旧式直传**不在当前文档里**。若它其实已经失效，
+那今天群聊发图本来就是坏的 —— 现在多了分片兜底，两种情况下都更可能成。
+**这条我没有真机验证过（没有开放平台凭据）**。
+
+**平台语义隔离**：文档原话"用单聊接口上传的文件仅能发送到单聊"。
+所以 `upload_image(scope=...)` 必须传对（`users` vs `groups`），有测试钉这条 ——
+传错的症状是发送被拒，而日志里只有一句"上传未拿到 file_info"。
+
+**宿主副本问题**（这轮最绕的一处）：运行时优先用宿主那份连接器，而插件**改不了宿主的
+文件**；新流程写成**自由函数**（`qq_open_platform_media.py`，连接对象当第一参数），
+插件侧对任何一份连接都能用，副本里的方法只是薄转发。`connector_seam` 新增
+`open_platform_media` 解析（宿主有就用宿主的），但它**不进 `_REQUIRED_ATTRS`** ——
+那是"宿主算不算提供了连接器"的判据，把新能力算进去会让"有连接器但还没这个模块"的
+宿主整体退回副本。漂移守卫：
+`test_the_media_helpers_members_exist_on_the_resolved_connector`（连实例一起查，
+`_http` 是实例属性）。
+
+#### (2) 不再白烧一次 TTS
+
+`supports_voice` 这个能力标志**此前全仓只有定义、没有任何消费方**。开放平台是 False，
+于是 `voice` 模式下每次都：真跑一次 TTS → 落一个音频文件 → `send_*_record` 在那边是空桩
+返回 None → 判成"未确认" → 再回退文本。功能没坏，但每次白烧一次合成。
+
+现在合成前先问 `_client_supports_voice()`。**回退判据保持原样**：
+`fallback_to_text_on_voice_failure=False` 的调用方（转达 / 主动发言）要的是
+"语音没发出去就是没发出去"，不许擅自补一条文字；`both` 模式下文字本来就是回复的一部分，
+照发。拿不到这个属性的连接**按支持处理**（不许因为一次 `getattr` 失败把语音关掉）。
+
+#### (3) 入站非图片附件
+
+图片那半有去处（`prompting._queue_attachment_images` 把 URL 下载成多模态图），
+文件那半**没有任何消费方**（`_collect_image_attachments` 只认 `image`/`image_url`）——
+对方发文件，她只看到空气，而且**不报错**。
+
+现在 `message_dispatcher` 在"非注意力通道"分支里把附件交给 `enrichment._attachment_files`
+→ **同一个** `_fetch_file_content`（文本解码 / 二进制标记 / 按扩展名走 VLM），
+与 NapCat 的文件段同口径。名字优先用平台给的（`filename`/`file_name`/`name`），
+没有就从 URL 尾部取（去 query、解百分号编码）。渲染后的内容**照旧过黑名单**——
+附件不是绕过滤器的旁路。
+
+#### 证据
+
+`tests/verify_open_platform_media_fail_to_pass.py` **9 种注入全红** + 对照绿（逐字节还原）：
+私聊表情包退回静默不发 / 拆掉两处语音闸 / 派发层不再处理附件 / 附件取用返回空 /
+分片缺片也合并 / 单聊误用群聊上传入口 / 上传顺序反转。
+
+**「派发层不再处理附件」那一项最初是全绿的** —— 因为当时的测试都直接调
+`enrich_open_platform_attachments`，**接线本身没被钉住**（删掉 `handle_message` 里那个
+`elif` 分支，附件又变回掉在地上，正是同一类静默失效的复发）。补了
+`test_handle_message_reaches_the_attachment_rendering_branch`（走真实入口，靠
+"渲染后命中黑名单"让它在附件那一段之后立刻 return，不必把整条管线搭出来）才钉住。
+
+#### 未验证 / 已改行为
+
+* **开放平台那两条上传协议都没真机跑过**（没有开放平台凭据）。真机接上后看日志里
+  `图片上传成功(直传|分片|url)` 哪条出现即可确认。
+* **NapCat 私聊表情包这条路没真发过**（会往真实 QQ 私聊里发一张表情包，没擅自做）。
+  代码路径与群聊那条同形（`send_private_msg` + image 段，`record_sent=False`）。
+* **行为变化（NapCat 也受影响）**：以前私聊表情包静默不发，现在会发。若使用者不要
+  这个行为，把 `_send_sticker` 私聊那半关掉即可（群聊那半没动）。
+* 入站附件的**文件内容大小上限**沿用 `_FILE_TEXT_MAX_BYTES`（与 NapCat 同口径），
+  没有为开放平台单独设限。
 
 ---
 

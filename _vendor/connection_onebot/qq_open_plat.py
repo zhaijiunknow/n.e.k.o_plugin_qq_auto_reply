@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 import websockets
 
+from . import qq_open_platform_media
 from .onebot_connection import OneBotConnectionBase
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
@@ -725,8 +726,17 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
         content = "".join(content_parts).strip()
         if not content and not image_url:
             return None
-        if image_url and not content:
-            content = "[图片]"
+
+        if image_url:
+            # 单聊也能发图：官方 v2 有「单聊富媒体上传」（/v2/users/{openid}/files）+
+            # msg_type=7。以前这里只把图当成 `[图片]` 三个字发出去 —— 而同一份代码里
+            # 群聊是能发的，两边能力不该差这么多。上传失败才退回文字。
+            image_message_id = await qq_open_platform_media.send_private_image(
+                self, user_id, image_url, content=content, record_sent=record_sent,
+            )
+            if image_message_id:
+                return image_message_id
+            content = f"{content}\n[图片]".strip() if content else "[图片]"
 
         await self._ensure_token()
         try:
@@ -793,6 +803,21 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
             if self.logger:
                 self.logger.warning(f"[QQOpenPlatform] 发送群 Ark 卡片失败: {e}")
             return False
+
+    async def send_private_image(
+        self, user_id: str, image_source: str, *, content: str = "",
+        reply_message_id: str = "", record_sent: bool = True,
+    ) -> Optional[str]:
+        """给单聊发一张图（``msg_type=7`` + ``media.file_info``）。
+
+        薄转发到 ``qq_open_platform_media.send_private_image``：上传流程写在那里，
+        因为它同时要给**宿主那份**连接器用 —— 插件改不了宿主的文件，而运行时优先
+        用宿主，所以流程必须是"对任何一份连接对象都能跑"的自由函数。
+        """
+        return await qq_open_platform_media.send_private_image(
+            self, user_id, image_source,
+            content=content, reply_message_id=reply_message_id, record_sent=record_sent,
+        )
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:
@@ -878,56 +903,16 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
             await self._refresh_token()
 
     async def _upload_group_image(self, group_id: str, image_url: str) -> str:
-        """Upload a group image to the Open Platform; returns file_info or empty."""
-        import mimetypes
-        import os
-        image_url = str(image_url or "").strip()
-        if not image_url:
-            return ""
-        # Get local file path (file:// or a raw path).
-        file_path = image_url
-        if file_path.startswith("file://"):
-            file_path = file_path[7:]
-        if not os.path.isfile(file_path):
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片文件不存在: {file_path}")
-            return ""
-        try:
-            mime_type = mimetypes.guess_type(file_path)[0] or "image/png"
-            file_size = os.path.getsize(file_path)
-            # Step 1: request upload
-            resp = await self._http.post(
-                f"{self._API_BASE}/v2/groups/{group_id}/files",
-                json={"file_type": 1, "file_name": os.path.basename(file_path),
-                      "file_size": file_size, "mime_type": mime_type},
-                headers=self._auth_headers(),
-            )
-            data = resp.json()
-            upload_url = str(data.get("upload_url") or "")
-            if not upload_url:
-                if self.logger:
-                    self.logger.warning(f"[QQOpenPlatform] 申请上传URL失败: {data}")
-                return ""
-            # Step 2: upload file
-            with open(file_path, "rb") as f:
-                upload_resp = await self._http.put(
-                    upload_url,
-                    content=f.read(),
-                    headers={"Content-Type": mime_type},
-                )
-            upload_data = upload_resp.json() if upload_resp.text else {}
-            file_info = str(upload_data.get("file_info") or data.get("file_info") or "")
-            if file_info:
-                if self.logger:
-                    self.logger.info(f"[QQOpenPlatform] 图片上传成功: {file_info}")
-                return file_info
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片上传失败: {upload_data}")
-            return ""
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 图片上传异常: {e}")
-            return ""
+        """Upload a group image to the Open Platform; returns file_info or empty.
+
+        Delegates to ``qq_open_platform_media``: the legacy direct-upload shape
+        this method used to hand-roll is still tried first (so nothing changes
+        for a deployment where it works), with the documented URL/chunked flows
+        as fallback -- see that module's header for why both exist.
+        """
+        return await qq_open_platform_media.upload_image(
+            self, scope="groups", owner_id=str(group_id or ""), source=str(image_url or ""),
+        )
 
     async def _get_gateway_url(self) -> str:
         await self._ensure_token()
@@ -1039,7 +1024,16 @@ class QQOpenPlatformConnection(OneBotConnectionBase):
                 content_type = str(att.get("content_type") or "")
                 if url:
                     att_type = "image" if content_type.startswith("image/") else "file"
-                    attachments.append({"type": att_type, "url": url})
+                    # Keep the platform's own file name when it sends one (the exact
+                    # key has not been observed on a live event, so read every
+                    # spelling we know and let the consumer fall back to the URL tail).
+                    name = str(
+                        att.get("filename") or att.get("file_name") or att.get("name") or ""
+                    ).strip()
+                    entry = {"type": att_type, "url": url}
+                    if name:
+                        entry["name"] = name
+                    attachments.append(entry)
         return attachments
 
     # ==========================================

@@ -81,6 +81,25 @@ OneBotConnector = _provider.OneBotConnector
 QQOpenPlatformConnection = _provider.QQOpenPlatformConnection
 create_onebot_connection = _provider.create_onebot_connection
 
+
+def _resolve_open_platform_media() -> ModuleType:
+    """QQ 开放平台的富媒体（图片上传/单聊发图）流程。
+
+    单独解析，**不放进** ``_REQUIRED_ATTRS``：那是"宿主算不算提供了连接器"的判据，
+    而富媒体是插件这轮才加的能力 —— 把它算进去会让"有连接器但还没这个模块"的宿主
+    整体判成不可用，退回副本，等于把宿主的第一方实现丢掉。
+
+    反过来，宿主哪天自己带上了同名模块，这里自然会用宿主那份：流程只是几个
+    以连接对象为第一参数的自由函数，谁实现都能跑。
+    """
+    try:
+        return importlib.import_module(f"{CONNECTOR_MODULE}.qq_open_platform_media")
+    except (ImportError, ModuleNotFoundError):
+        return importlib.import_module(f"{VENDORED_PACKAGE}.qq_open_platform_media")
+
+
+open_platform_media = _resolve_open_platform_media()
+
 __all__ = [
     "CONNECTOR_MODULE",
     "CONNECTOR_SOURCE",
@@ -94,5 +113,6 @@ __all__ = [
     "factory",
     "onebot_client",
     "onebot_connection",
+    "open_platform_media",
     "qq_open_plat",
 ]

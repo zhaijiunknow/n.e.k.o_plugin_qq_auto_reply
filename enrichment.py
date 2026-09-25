@@ -16,6 +16,7 @@ import re
 from datetime import datetime as _dt
 from pathlib import Path as _Path
 from typing import Any, Dict
+from urllib.parse import unquote
 
 import httpx
 
@@ -182,6 +183,38 @@ class QQMessageEnricher:
                     "url": "",
                     "busid": int(busid.group(1)) if busid else 0,
                 })
+        return files
+
+    @staticmethod
+    def _attachment_files(message: Dict[str, Any]) -> list[dict]:
+        """把**开放平台**事件里的非图片附件转成 ``_fetch_file_content`` 要的形状。
+
+        开放平台的入站附件走 ``message["attachments"]``（``[{type, url, name?}]``）：没有
+        OneBot 的 ``file`` 段，也没有 ``file_id`` / ``busid`` —— URL 是现成的，所以渲染
+        那条链路拿到就能直接下载，不用再走"先换 URL"那一步。
+
+        只取 ``type == "file"``：图片归多模态附件那条路（``prompting``），两边各管一段，
+        免得同一张图既进 prompt 文本又被塞进图片队列。
+
+        名字优先用平台给的，没有就从 URL 尾部取；名字只影响提示词里那行标签，
+        取不到也不该让整条附件消失。
+        """
+        files: list[dict] = []
+        for attachment in message.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            if str(attachment.get("type") or "").strip() != "file":
+                continue
+            url = str(attachment.get("url") or "").strip()
+            if not url:
+                continue
+            name = str(
+                attachment.get("name") or attachment.get("filename") or attachment.get("file_name") or ""
+            ).strip()
+            if not name:
+                tail = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+                name = unquote(tail)
+            files.append({"file_id": "", "name": name or "文件", "url": url, "busid": 0})
         return files
 
     def _expand_forward_segments(self, message: Dict[str, Any]) -> list[str]:

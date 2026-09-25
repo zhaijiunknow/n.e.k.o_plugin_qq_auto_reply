@@ -359,6 +359,58 @@ class QQVoiceReplyService:
         await asyncio.to_thread(output_path.write_bytes, audio_bytes)
         return output_path.resolve().as_uri(), mime_type
 
+    def _client_supports_voice(self) -> bool:
+        """当前通道能不能收语音。
+
+        开放平台的 `supports_voice` 是 False，而这里以前**从不问它**：`voice` 模式下
+        每次都先 `synthesize_reply_voice_file()`（真跑一次 TTS、落一个音频文件），
+        然后 `send_*_record` 在那边是空桩、返回 None，于是判成"未确认"再回退文本 ——
+        功能上没错，但每次白烧一次语音合成。
+
+        宁可少发一句也不肯多烧一次 TTS，所以合成之前就问。
+        拿不到这个属性的连接**按支持处理**（保持旧行为：只有明确说不支持才跳过）。
+        """
+        client = getattr(self.plugin, "qq_client", None)
+        if client is None:
+            return False
+        return bool(getattr(client, "supports_voice", True))
+
+    async def _private_text_fallback(
+        self, target_qq: str, normalized_text: str, *, mode: str, fallback: bool,
+    ) -> bool:
+        """通道发不出语音时，私聊这条该怎么收场。
+
+        * ``both``：文字本来就是这条回复的一部分（今天也是"先发文字、语音失败保留文字"），
+          照发；
+        * ``voice``：只有 ``fallback`` 允许时才拿文字顶上；不允许的调用方（转达 / 主动发言）
+          要的是"语音没发出去就是没发出去"，这里返回 False 让它如实报未确认，
+          而不是擅自补一条那几位调用方明确不要的文字。
+        """
+        if mode != "both" and not fallback:
+            self.plugin.logger.info("当前通道不支持语音，且未允许回退文本，跳过私聊回复")
+            return False
+        if not normalized_text:
+            return False
+        return self._confirm_send(
+            await self.plugin.qq_client.send_message(target_qq, normalized_text)
+        )
+
+    async def _group_text_fallback(
+        self, group_id: str, text_segments: list[dict[str, Any]], normalized_text: str, *,
+        mode: str, fallback: bool, keyboard: str = "",
+    ) -> bool:
+        """群聊版的同上（判据一致，只是发送接口不同：segments + keyboard）。"""
+        if mode != "both" and not fallback:
+            self.plugin.logger.info("当前通道不支持语音，且未允许回退文本，跳过群聊回复")
+            return False
+        if not normalized_text:
+            return False
+        return self._confirm_send(
+            await self.plugin.qq_client.send_group_message_segments(
+                group_id, text_segments, keyboard=keyboard,
+            ),
+        )
+
     @staticmethod
     def _confirm_send(result) -> bool:
         """Falsy result == the send was never confirmed.
@@ -375,6 +427,11 @@ class QQVoiceReplyService:
         if mode == "text":
             return self._confirm_send(
                 await self.plugin.qq_client.send_message(target_qq, normalized_text)
+            )
+        if not self._client_supports_voice():
+            # 这个通道发不出语音：直接按上面那套判据落文字，不做那次注定要丢的合成。
+            return await self._private_text_fallback(
+                target_qq, normalized_text, mode=mode, fallback=fallback_to_text_on_voice_failure,
             )
         # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":
@@ -437,6 +494,12 @@ class QQVoiceReplyService:
         if mode == "text":
             return self._confirm_send(
                 await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard),
+            )
+        if not self._client_supports_voice():
+            # 与私聊那条同源：通道发不出语音时，别先合成一遍再判失败。
+            return await self._group_text_fallback(
+                group_id, text_segments, normalized_text,
+                mode=mode, fallback=fallback_to_text_on_voice_failure, keyboard=keyboard,
             )
         # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":

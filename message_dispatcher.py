@@ -334,6 +334,44 @@ class QQMessageDispatcher:
             # 观测绝不允许把消息管线带下去。
             pass
 
+    async def enrich_open_platform_attachments(
+        self, message: dict[str, Any], *, label_defs: list, raw_content: str,
+    ) -> bool:
+        """开放平台入站附件里的**非图片**：接到文件渲染链路上。返回 True = 命中黑名单。
+
+        为什么非做不可：图片那半有去处（``prompting._queue_attachment_images`` 会把 URL
+        下载成多模态图喂给模型），文件那半以前直接掉在地上（``_collect_image_attachments``
+        只认 ``image``/``image_url``）。表现是"对方发了个文件，她只看到空气" ——
+        而且**不报错**，所以只能靠读代码发现。
+
+        路由到**同一个** ``_fetch_file_content``（文本解码 / 二进制标记 / 按扩展名走 VLM），
+        与 NapCat 的文件段同口径，不另写一套解析。
+        """
+        enricher = getattr(self.plugin, "enricher", None)
+        if enricher is None or not hasattr(enricher, "_attachment_files"):
+            return False
+        attachment_files = enricher._attachment_files(message)
+        if not attachment_files:
+            return False
+        try:
+            await enricher._fetch_file_content(message, attachment_files)
+        except Exception:
+            # 附件解析失败不该让整条消息消失：留痕，然后照原样往下走。
+            logger = getattr(self.plugin, "logger", None)
+            if logger is not None:
+                logger.warning("QQ 附件文件解析失败", exc_info=True)
+            return False
+        enriched_content = str(message.get("content") or "").strip()
+        if enriched_content == raw_content:
+            # 渲染没改动内容（比如 URL 取不到）——不谎报"已解析"。
+            return False
+        emit_log = getattr(self.plugin, "_emit_log", None)
+        if callable(emit_log):
+            emit_log("INFO", f"[附件] 解析 {len(attachment_files)} 个文件附件")
+        return bool(
+            enriched_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs)
+        )
+
     def _resolve_poke_nickname(self, user_id: str, raw_msg: dict[str, Any]) -> str:
         """从戳一戳事件中获取用户昵称"""
         uid = str(user_id or "").strip()
@@ -614,6 +652,17 @@ class QQMessageDispatcher:
             enriched_content = str(message.get("content") or "").strip()
             if enriched_content != raw_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs):
                 self.plugin._emit_log("INFO", f"黑名单过滤(转录后): text={enriched_content[:40]}")
+                return
+        elif self.plugin.qq_client and self.plugin.enricher:
+            # 开放平台：只收 @ 消息，附件里的非图片在别处没有消费方 —— 见
+            # `enrich_open_platform_attachments` 的说明。命中黑名单同样不再继续。
+            if await self.enrich_open_platform_attachments(
+                message, label_defs=label_defs, raw_content=raw_content,
+            ):
+                self.plugin._emit_log(
+                    "INFO",
+                    f"黑名单过滤(附件解析后): text={str(message.get('content') or '')[:40]}",
+                )
                 return
         await self.plugin.backlog_service.record_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
