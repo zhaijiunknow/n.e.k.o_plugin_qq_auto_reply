@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>QQ 控制台 - NapCat</title>
-<link rel="stylesheet" href="theme.css?v=3">
+<link rel="stylesheet" href="theme.css?v=4">
 <style>
 :root{--sidebar-w:180px;--topbar-h:44px;}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg-main);display:flex;height:100vh;overflow:hidden}
+body{display:flex;height:100vh;overflow:hidden}
 #sidebar{width:var(--sidebar-w);background:var(--bg-sidebar);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;user-select:none}
 #sidebar .logo{display:flex;align-items:center;gap:10px;padding:14px 12px;border-bottom:1px solid var(--border-subtle)}
 #sidebar .logo img{width:28px;height:28px;border-radius:8px;object-fit:contain;flex-shrink:0}
@@ -108,7 +108,7 @@ body{background:var(--bg-main);display:flex;height:100vh;overflow:hidden}
     <img src="assets/paw.png?v=1" alt="" class="tb-paw" draggable="false" onerror="this.style.display='none'">
     <div id="topbar-tabs"></div>
     <div class="tb-spacer"></div>
-    <span class="tb-switch" onclick="location.href='open_platform.html?v=7'" data-i18n="ui.napcat.topbar.switch" title="切换到 QQ 开放平台">切换到 QQ 开放平台</span>
+    <span class="tb-switch" onclick="location.href='open_platform.html?v=8'" data-i18n="ui.napcat.topbar.switch" title="切换到 QQ 开放平台">切换到 QQ 开放平台</span>
     <span class="tb-status" style="margin-left:10px"><span class="dot" id="conn-dot" style="background:var(--danger)"></span><span id="conn-text" data-i18n="ui.shared.topbar.disconnected">未连接</span></span>
 </div>
 <div id="content">

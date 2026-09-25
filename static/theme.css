@@ -86,6 +86,27 @@
 
     --table-head-bg: rgba(148, 163, 184, .08);      /* = .neko-table th */
 
+    /* ── 整页背景图 ────────────────────────────────────────────────
+     * 取本体自己的整页背景（`static/icons/model_manager_background.png`，
+     * AppLayout / model_manager.css 里就是 `html,body` 的背景）。本体那张是
+     * 1920x1080 的 395 KB PNG；这里压成 WebP q=88 = 37 KB，按 8x8 区块量过
+     * 保真度，**最差的一块** PSNR 仍有 44.67 dB。压缩脚本与数字见
+     * static/assets/README.md。
+     *
+     * 也正因为底图不是纯色，本体那套半透明 surface（.84 / .72 / .65）才成立，
+     * 所以卡片跟着用 --surface 而不是不透明的白。 */
+    --page-bg-image: url('assets/page-bg.webp?v=1');
+
+    /* 底图上的「纱」。本体自己就是这么干的：character_card_manager.css 里
+     * background-image: linear-gradient(...), url('steam_shop_bg.png') ——
+     * 一层渐变压在图上面保可读性。
+     *
+     * 0.30 是**审美取值，不是为对比度**：实测把它从 0 加到 0.75，压在底图上的
+     * 文字对比度只从 3.39 爬到 3.66，但底图影响度从 55 掉到 8（等于把图盖死）。
+     * 原因是剩下的低对比度主要来自「同色字压同色淡底」的徽标/按钮，与底图无关，
+     * 加纱救不了。所以这里只取到"把偏饱和的天蓝压柔一点"的程度。 */
+    --page-scrim-color: rgba(255, 255, 255, .30);
+
     /* ── 毛玻璃外壳（照抄 AppLayout.vue 的 .app-sidebar / .app-header）── */
     --surface-glass: rgba(255, 255, 255, .72);      /* = .app-sidebar 底色 */
     --surface-glass-header: rgba(255, 255, 255, .65);/* = .app-header 底色 */
@@ -100,9 +121,9 @@
     --primary-light: var(--primary-tint);
 
     --bg-main: var(--bg);
-    --bg-card: var(--surface-strong);
-    --card-bg: var(--surface-strong);
-    --input-bg: var(--surface-strong);
+    --bg-card: var(--surface);
+    --card-bg: var(--surface);
+    --input-bg: var(--surface-strong);      /* 表单控件保持更实的底，保证可读 */
     --bg-subtle: var(--fill-subtle);
 
     --text-main: var(--text);
@@ -122,6 +143,21 @@
     /* 卡片：本体是**扁平**的 —— 描边 + 无投影（.neko-card { box-shadow: none }） */
     --shadow-card: none;
     --shadow-hover: var(--shadow-soft);
+}
+
+/* ── 页面底色：整页背景图是**这里**统一决定的 ──────────────────────
+ * 四个页面各自的 body 规则不要再写 background（写了会盖掉底图，因为页面的
+ * <style> 在 <link> 之后）。要用别的底图，只改 --page-bg-image。
+ * 背景层的顺序：底色 → 底图 → 纱（列表里靠前的画在上面）。 */
+body {
+    background-color: var(--bg);
+    background-image:
+        linear-gradient(var(--page-scrim-color), var(--page-scrim-color)),
+        var(--page-bg-image);
+    background-position: center center;
+    background-size: cover;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
 }
 
 /* ── 细节：选中文字与滚动条（对齐 common.css）───────────────────── */

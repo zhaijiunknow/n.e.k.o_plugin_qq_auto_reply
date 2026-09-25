@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-i18n="ui.index.title">QQ 接入方式</title>
-<link rel="stylesheet" href="theme.css?v=3">
+<link rel="stylesheet" href="theme.css?v=4">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); display:flex; align-items:center; justify-content:center; min-height:100vh; }
+body { color:var(--text); display:flex; align-items:center; justify-content:center; min-height:100vh; }
 .card { background:var(--card-bg); border-radius:var(--radius-lg); padding:30px 24px; text-align:center; cursor:pointer; transition:.22s; border:1px solid var(--border); flex:1 1 0; min-width:200px; text-decoration:none; color:inherit; display:block; box-shadow:var(--shadow-card); }
 .card:hover { border-color:var(--primary); box-shadow:var(--shadow-hover); transform:translateY(-1px); }
 .card .icon { width:56px; height:56px; margin:0 auto 14px; border-radius:var(--radius-lg); display:grid; place-items:center; font-size:26px; font-weight:800; background:var(--primary-tint); color:var(--primary-on-tint); }
@@ -34,7 +34,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
     <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
     <div class="wrap">
-        <a class="card" href="status.html?v=3">
+        <a class="card" href="status.html?v=4">
             <div class="icon">◉</div>
             <h2 data-i18n="ui.index.status.title">一键部署</h2>
             <p>
@@ -43,7 +43,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.status.tag">自动化</span>
         </a>
-        <a class="card" href="napcat.html?v=6" onclick="go('napcat'); return false;">
+        <a class="card" href="napcat.html?v=7" onclick="go('napcat'); return false;">
             <div class="icon">N</div>
             <h2>NapCat</h2>
             <p>
@@ -54,7 +54,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
         </a>
-        <a class="card" href="open_platform.html?v=7" onclick="go('open_platform'); return false;">
+        <a class="card" href="open_platform.html?v=8" onclick="go('open_platform'); return false;">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -88,7 +88,7 @@ function go(mode) {
         return;
     }
     localStorage.setItem('qq_connection_mode', mode);
-    location.href = mode === 'napcat' ? 'napcat.html?v=6' : 'open_platform.html?v=7';
+    location.href = mode === 'napcat' ? 'napcat.html?v=7' : 'open_platform.html?v=8';
 }
 </script>
 </body>
