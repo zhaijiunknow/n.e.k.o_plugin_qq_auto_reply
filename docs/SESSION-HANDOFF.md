@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：733 passed**（见 §4.0p / §4.0q / §4.0r / §4.0s）。
+**最新：737 passed**（见 §4.0p / §4.0q / §4.0r / §4.0s）。
 
 | 主题 | 状态 |
 |---|---|
@@ -31,6 +31,7 @@
 | status 页拖入表情包（同一个后端契约）+ 操作条（见 §4.0p / §4.0q） | ✅ 落地 |
 | 表情包删除：后端新增 `delete_sticker`；入口只在**表情包管理页**（status 页只上传，见 §4.0r） | ✅ 落地 |
 | 表情包上传后**自动用 VLM 解析描述**（复用既有看图路径，失败保留兜底，见 §4.0s） | ✅ 落地 |
+| **看图改用本体的 `vision` 模型槽**（原来走 `conversation` 聊天模型，非多模态就静默失败） | ✅ 已修（含引用图描述） |
 | `status.html` 三个 `data-i18n-ph` 从来没被翻译（属性名 i18n.js 不认 + 键不存在） | ✅ 已修 + 第 4 类 i18n 检查 |
 | `open_platform` 的表情包描述永远是文件名（两个缺陷叠加，静默） | ✅ 已修 + 跨页看门狗 |
 | 界面背景：**分页面配图** —— status 用森林插画 `.30`，其余用蓝白图形 `.45`（见 §4.0o-2 / §4.0o-3） | ✅ 落地 |
@@ -1165,9 +1166,38 @@ dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会�
   max_tokens)`**（本地路径或 http(s) URL 都吃），`_describe_reply_image` 改成委托它。
   **刻意收成一个函数**：以前只有引用回复的图走这条路，表情包再抄一份的话，两处的
   模型配置迟早漂移。看门狗里连"委托关系"一起钉住了。
-* 新增 `asset(describe_sticker)`：对**已注册**的表情包跑 VLM 并把描述写回
-  `sticker.json`（给以前传的、描述还是文件名的那些补描述）。
-* `upload_sticker` 新增 `auto_desc`：为真时用 VLM 生成描述并**覆盖** `desc`。
+
+#### 更正：那条既有路径**用错了模型槽**
+
+使用者问了一句"是走原本就有的图片分析嘛"，我去核实，结果是**不完全**：
+
+| 键 | 本机实际值 |
+|---|---|
+| `conversation` | `free-model` |
+| **`vision`** | **`free-vision-model`** ← 本体给图片分析**专门配的** |
+
+* 本体给图片分析留了**专门的 `vision` 槽**（`VISION_MODEL` / `VISION_MODEL_URL` /
+  `VISION_MODEL_API_KEY`，`utils/config_manager/core_config.py`），而且**它自己的图片
+  分析**（`utils/screenshot_utils.py`）用的就是 `aget_model_api_config('vision')`。
+* 而插件里引用回复的图片描述一直用的是 **`conversation`** —— 那是**聊天模型**，
+  **只有在它恰好多模态时才能看图**。换成不支持看图的聊天模型，这条路径会静默失败
+  （`_describe_reply_image` 把所有异常都吞成 `""`）。这是**既有的**问题，
+  表情包自动描述只是把它继承了过来。
+
+已修：新增 `_pick_vlm_config()` —— **优先 `vision` 槽，两者都空才退回 `conversation`**
+（`get_model_api_config('vision')` 在用户没单独配时会自己回退到辅助 API，所以只要它能
+给出 model + base_url 就用它）。**所以引用回复的图片描述也跟着换了模型** ——
+这是同一处修复的连带影响，属于"本来该用 vision"。
+
+顺带把**静默失败**改掉：`_vlm_describe_locator` 现在会把原因写进日志
+（没有可用配置 / 图片预处理失败 / 调用抛错 / 返回空内容，各自一条，带上槽名和模型名）。
+它服务的是"用户看得到的功能"，静默返回空会让用户以为是自己没点到。
+
+**一次没能给出结论的实测**：我试着把同一张图分别喂给 `conversation` 和 `vision` 看谁
+能描述，结果**两个都在 provider 层被拒**（`Invalid request: you are not using Lanlan.
+STOP ABUSE THE API.`），请求根本没走到"能不能看图"这一步。所以"哪个模型支持看图"
+**我没有实测数据**，上面的结论只基于**配置层面**的证据（本体为图片分析专门留了
+vision 槽、它自己的图片分析用的就是这个槽）。
 
 **两个刻意的设计**：
 
@@ -1185,15 +1215,17 @@ dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会�
 复选框，**默认勾选**；勾了就传 `auto_desc: true`。手填的描述只在"自动解析失败"时
 才起作用（作为兜底）。新键 `ui.shared.sticker.auto_desc` 加进两个语言包。
 
-**验证**：`tests/test_qq_sticker_auto_desc.py`（9 条：覆盖 / 不勾就不调模型 /
+**验证**：`tests/test_qq_sticker_auto_desc.py`（13 条：覆盖 / 不勾就不调模型 /
 **失败保留兜底描述与图** / 用的是表情包提示词 / 委托关系 / describe_sticker 的成功、
-失败、id 与文件校验 / schema 契约）、`tests/test_qq_sticker_desc_wiring.py` 加 3 条
+失败、id 与文件校验 / **优先 vision 槽、没配才退回 conversation、都没有则为 None、
+且要留日志**）、`tests/test_qq_sticker_desc_wiring.py` 加 3 条
 （三个上传页都有开关、默认勾选、都传 `auto_desc` 且读的是那个复选框）。
-`tests/verify_sticker_auto_desc_fail_to_pass.py` 4 种注入全红 + 对照组绿。
+`tests/verify_sticker_auto_desc_fail_to_pass.py` **8 种注入全红** + 对照组绿
+（含"看图退回用聊天模型"和"没有配置时静默返回空"这两种）。
 端到端（`window.call` 桩）：`.dsh-artifacts/verify-sticker.py` 实测勾选时传
 `auto_desc=True`、取消勾选传 `False`；`verify-sticker-others.py` 两页同为 `True`。
 
-**测试基线：733 passed**（721 + 9 + 3）。
+**测试基线：737 passed**（733 + 4）。
 
 ---
 

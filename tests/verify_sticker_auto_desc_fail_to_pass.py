@@ -60,6 +60,26 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "desc: desc, auto_desc: autoDesc });",
         "desc: desc });",
     ),
+    (
+        "__init__.py",
+        "看图退回用聊天模型（不支持看图的模型会静默失败）",
+        'for slot in ("vision", "conversation"):',
+        'for slot in ("conversation", "vision"):',
+    ),
+    (
+        "__init__.py",
+        "去掉 conversation 兜底（只配了聊天模型的机器上直接不工作）",
+        'for slot in ("vision", "conversation"):',
+        'for slot in ("vision",):',
+    ),
+    (
+        "__init__.py",
+        "没有看图模型配置时静默返回空（用户无从判断原因）",
+        """            self.logger.info(
+                "[VLM] 没有可用的看图模型配置（vision / conversation 都没有 model+base_url）")
+            return \"\"""",
+        """            return \"\"""",
+    ),
 ]
 
 
@@ -111,7 +131,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 自动解析描述的四处必要条件都真的被钉住了")
+    print(f"[PASS] {len(results)}/{len(results)} —— 自动解析描述的每处必要条件都真的被钉住了")
     return 0
 
 

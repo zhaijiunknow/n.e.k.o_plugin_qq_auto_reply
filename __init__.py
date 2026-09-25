@@ -465,31 +465,33 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _vlm_describe_locator(self, locator: str, *, prompt: str, max_tokens: int = 60) -> str:
         """对一张图（本地路径或 http(s) URL）跑一次 VLM，返回文本；失败返回 ""。
 
-        **插件里"看图"的地方都走这一条**（conversation 模型配置 → 图片压成 JPEG b64
+        **插件里"看图"的地方都走这一条**（vision 模型配置 → 图片压成 JPEG b64
         → create_chat_llm_async）。刻意收成一个函数：以前只有引用回复的图走这条路，
         表情包自动描述再抄一份的话，两处的模型配置迟早会漂移。
 
-        失败一律返回空串（调用方决定怎么兜底）—— 这里不抛，因为调用点都在
-        "尽力而为"的位置上，抛出去只会被上层吞掉、还多一层噪音。
+        失败一律返回空串（调用方决定怎么兜底），但**会把原因写进日志** —— 这个函数
+        服务的都是"用户看得到的功能"（表情包自动描述、引用图描述），静默返回空会让
+        用户以为是自己没点到，而真实原因可能是"没配看图模型"或"那个模型不支持看图"。
         """
         import asyncio as _asyncio
+        model_config = self._pick_vlm_config()
+        if not model_config:
+            self.logger.info(
+                "[VLM] 没有可用的看图模型配置（vision / conversation 都没有 model+base_url）")
+            return ""
+        slot = str(model_config.get("_slot") or "?")
+        model = str(model_config.get("model") or "").strip()
         try:
-            from utils.config_manager import get_config_manager
             from utils.llm_client import create_chat_llm_async
-
-            model_config = get_config_manager().get_model_api_config("conversation")
-            base_url = str(model_config.get("base_url") or "").strip()
-            model = str(model_config.get("model") or "").strip()
-            api_key = str(model_config.get("api_key") or "").strip()
-            if not base_url or not model:
-                return ""
 
             image_b64 = await self._prepare_attachment_image_b64({"path": locator})
             if not image_b64:
+                self.logger.info(f"[VLM] 图片预处理失败，跳过描述: {locator}")
                 return ""
 
             llm = await create_chat_llm_async(
-                model=model, base_url=base_url, api_key=api_key,
+                model=model, base_url=str(model_config.get("base_url") or ""),
+                api_key=str(model_config.get("api_key") or ""),
                 max_completion_tokens=max_tokens, timeout=15.0,
                 provider_type=model_config.get("provider_type"),
             )
@@ -501,7 +503,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                     ]}]),
                     timeout=15.0,
                 )
-                return str(getattr(response, "content", "") or "").strip()
+                text = str(getattr(response, "content", "") or "").strip()
+                if not text:
+                    self.logger.info(f"[VLM] {slot} 槽（{model}）返回空内容")
+                return text
             finally:
                 aclose = getattr(llm, "aclose", None)
                 if callable(aclose):
@@ -509,8 +514,38 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                         await aclose()
                     except Exception:
                         pass
-        except Exception:
+        except Exception as e:
+            # 不往上抛（调用点都是"尽力而为"），但把原因留下来 —— 否则用户只看到
+            # "描述没出来"，无法判断是模型不支持看图、还是网络/额度问题。
+            self.logger.warning(f"[VLM] {slot} 槽（{model}）看图失败: {type(e).__name__}: {e}")
             return ""
+
+    def _pick_vlm_config(self) -> dict[str, Any] | None:
+        """挑"看图"该用哪套模型配置：**优先本体的 vision 槽**，没配再退回 conversation。
+
+        为什么：本体给图片分析**专门留了 `vision` 槽**（`VISION_MODEL` /
+        `VISION_MODEL_URL` / `VISION_MODEL_API_KEY`），它自己的图片分析
+        （`utils/screenshot_utils.py`）用的就是 `get_model_api_config('vision')`。
+        而插件里引用回复的图片描述一直用的是 `conversation` —— 那是聊天模型，
+        **只有在它恰好多模态时才能看图**；换成不支持看图的聊天模型就会静默失败。
+
+        `get_model_api_config('vision')` 在用户没单独配时**会自己回退到辅助 API**，
+        所以这里拿到 model + base_url 就用它；两者都空才退回 conversation。
+        """
+        try:
+            from utils.config_manager import get_config_manager
+
+            cm = get_config_manager()
+        except Exception:
+            return None
+        for slot in ("vision", "conversation"):
+            try:
+                cfg = cm.get_model_api_config(slot)
+            except Exception:
+                continue
+            if str(cfg.get("base_url") or "").strip() and str(cfg.get("model") or "").strip():
+                return dict(cfg, _slot=slot)
+        return None
 
     async def _describe_reply_image(self, image_url: str) -> str:
         """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""

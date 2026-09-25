@@ -169,3 +169,82 @@ def test_describe_sticker_validates_id_and_file(tmp_path):
     res = _describe(plugin, id="1")
     assert res.is_err, res
     assert "NOT_FOUND" in str(res.error)
+
+
+# ── 用哪套模型配置：「看图」必须优先本体的 vision 槽 ──────────────────
+#
+# 这是这轮真正修掉的东西：插件里引用回复的图片描述一直用 `conversation`
+# （聊天模型），只有在它恰好多模态时才能看图 —— 换了不支持看图的聊天模型就静默失败。
+# 本体给图片分析**专门留了 `vision` 槽**，它自己的图片分析
+# （`utils/screenshot_utils.py`）用的就是 `get_model_api_config('vision')`。
+
+
+class _FakeCM:
+    """假的 config manager：按槽返回预设配置。"""
+
+    def __init__(self, mapping: dict[str, dict]) -> None:
+        self.mapping = mapping
+        self.asked: list[str] = []
+
+    def get_model_api_config(self, slot: str) -> dict:
+        self.asked.append(slot)
+        if slot not in self.mapping:
+            raise KeyError(slot)
+        return self.mapping[slot]
+
+
+def _install_cm(monkeypatch, mapping: dict[str, dict]) -> _FakeCM:
+    cm = _FakeCM(mapping)
+    import utils.config_manager as cm_mod
+
+    monkeypatch.setattr(cm_mod, "get_config_manager", lambda: cm)
+    return cm
+
+
+_VISION = {"model": "free-vision-model", "base_url": "https://x/v1", "api_key": "k"}
+_CONV = {"model": "free-model", "base_url": "https://x/v1", "api_key": "k"}
+
+
+def test_vlm_prefers_the_vision_slot(monkeypatch):
+    cm = _install_cm(monkeypatch, {"vision": _VISION, "conversation": _CONV})
+
+    cfg = QQAutoReplyPlugin._pick_vlm_config(SimpleNamespace())
+
+    assert cfg is not None
+    assert cfg["_slot"] == "vision", f"应当优先 vision 槽，实际用了 {cfg['_slot']}"
+    assert cfg["model"] == "free-vision-model"
+    assert cm.asked[0] == "vision", "应当先问 vision"
+
+
+def test_vlm_falls_back_to_conversation_when_vision_is_unusable(monkeypatch):
+    """只配了聊天模型的机器上不能直接不工作。"""
+    _install_cm(monkeypatch, {"vision": {"model": "", "base_url": ""}, "conversation": _CONV})
+
+    cfg = QQAutoReplyPlugin._pick_vlm_config(SimpleNamespace())
+
+    assert cfg is not None
+    assert cfg["_slot"] == "conversation", "vision 不可用时应退回 conversation"
+    assert cfg["model"] == "free-model"
+
+
+def test_vlm_returns_none_when_nothing_is_configured(monkeypatch):
+    _install_cm(monkeypatch, {"vision": {"model": "", "base_url": ""},
+                              "conversation": {"model": "", "base_url": ""}})
+    assert QQAutoReplyPlugin._pick_vlm_config(SimpleNamespace()) is None
+
+
+def test_a_missing_vlm_config_is_logged_not_silent(monkeypatch, caplog):
+    """静默返回空会让用户以为是自己没点到 —— 实际原因要留在日志里。"""
+    _install_cm(monkeypatch, {})
+
+    plugin = SimpleNamespace(logger=logging.getLogger("qq.test"))
+    # 拿裸 SimpleNamespace 当 self 调未绑定方法，所以要把真方法挂上去
+    plugin._pick_vlm_config = lambda: QQAutoReplyPlugin._pick_vlm_config(plugin)
+    with caplog.at_level(logging.INFO, logger="qq.test"):
+        out = asyncio.run(QQAutoReplyPlugin._vlm_describe_locator(
+            plugin, "/nonexistent.png", prompt="x"))
+
+    assert out == ""
+    assert any("没有可用的看图模型配置" in r.message for r in caplog.records), (
+        "没有配置时应当留下一条日志说明原因"
+    )
