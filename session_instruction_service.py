@@ -285,6 +285,15 @@ class QQSessionInstructionService:
         布局迁移后那里已经没有 data/ 了，会永远读不到存档。"""
         return self.plugin.data_path("sticker.json")
 
+    #: 提示词里的目录条目上限（实测见 docs/SESSION-HANDOFF.md §4.0u：一份真实群聊
+    #: system prompt 是 15k~18.6k 字符，其中"输出格式"段 4.2k，**一半是这两个目录**）。
+    #: 目录进的是每轮都发、且免费线没有 prompt caching 的 system 段，所以它按 token
+    #: 收费；但条目本身是**能力面**（模型只能挑目录里出现过的 id），所以只压
+    #: "绝大多数情况用不到的那部分"，不按使用频率动态筛（那会让同一张表情包
+    #: 时而可选时而不可能选，行为不可解释）。
+    MAX_STICKER_CATALOG_ENTRIES = 60
+    MAX_EMOJI_CATALOG_ENTRIES = 40
+
     def _load_sticker_catalog(self) -> str:
         """加载自定义表情包目录，格式化为 Kira 风格的列表"""
         if self._sticker_catalog_cache:
@@ -294,8 +303,18 @@ class QQSessionInstructionService:
             with open(self._sticker_data_path(), "r", encoding="utf-8") as f:
                 data = json.loads(f.read())
             if isinstance(data, dict) and data:
+                items = list(data.items())
+                if len(items) > self.MAX_STICKER_CATALOG_ENTRIES:
+                    # 截断必须留痕：否则用户"传了却挑不到"只会表现为"模型不选它"，
+                    # 而目录本身在界面上看不出来少了一截。
+                    self.plugin.logger.info(
+                        f"[Prompt] 表情包目录超过 {self.MAX_STICKER_CATALOG_ENTRIES} 条，"
+                        f"提示词里只列前 {self.MAX_STICKER_CATALOG_ENTRIES} 条"
+                        f"（共 {len(items)} 条；后传的仍可用 <sticker>ID</sticker> 直接指定）"
+                    )
+                    items = items[:self.MAX_STICKER_CATALOG_ENTRIES]
                 lines = []
-                for sid, info in data.items():
+                for sid, info in items:
                     desc = info.get("desc", "") if isinstance(info, dict) else str(info)
                     lines.append(f"    [{sid}] {desc}")
                 self._sticker_catalog_cache = "\n".join(lines)
@@ -316,8 +335,13 @@ class QQSessionInstructionService:
                 with open(emoji_path, "r", encoding="utf-8") as f:
                     data = json.loads(f.read())
                 if isinstance(data, dict):
-                    items = [f"    {eid}: {desc}" for eid, desc in list(data.items())[:80]]
-                    self._emoji_catalog_cache = "\n".join(items)
+                    # 只列前 N 条（实测 80 行 = 870 字符，占了"输出格式"段的 21%）。
+                    # emoji.json 按 QQ 表情 id 顺序排列，前 40 条正是最常用的那批；
+                    # `<emoji>ID</emoji>` 本身不受限，模型仍可贴目录外的 id。
+                    items = list(data.items())[:self.MAX_EMOJI_CATALOG_ENTRIES]
+                    self._emoji_catalog_cache = "\n".join(
+                        f"    {eid}: {desc}" for eid, desc in items
+                    )
                     return self._emoji_catalog_cache
         except Exception as e:
             self.plugin.logger.warning(f"加载 emoji.json 失败: {e}")
