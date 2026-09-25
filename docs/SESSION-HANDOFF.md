@@ -40,7 +40,8 @@
 | 备选底图：本体原背景 37KB，改两行即可切换 | ✅ 备用 |
 | 行内硬编码色收敛（79 → 29 处，余下为 SVG 属性/白字/情绪身份色） | ✅ 落地 |
 | 提示词实测与瘦身：每轮都发的那 15k 里是什么、砍掉重复与死块（见 §4.0u） | ✅ Tier 1 落地 + 预算看门狗 |
-| 记忆段封顶（可省 ~4.4k 字符/轮）、线上 Format 的过期 override | ⏸ 未做，等使用者定 |
+| 线上 Format 的过期 override（缺 bored / 宣传未实现标签 / record·forward 语义相反） | ✅ 已按使用者决定清除，改由代码模板接管 |
+| 记忆段封顶（可省最多 ~4.4k 字符/轮） | ⏸ 未做（使用者：「这个先不管」），实测值记在 §4.0u |
 | 深色模式 | ⏸ **做不了**：宿主没给静态插件页传主题的通道（见 §4.0n） |
 | WCAG AA（淡底文字 3.0–3.9、实心按钮白字 2.24–2.90；底图再压 0.1–1.0） | ⏸ 未达标，需使用者定是否偏离本体色板 |
 | **"沉默时不让位"** | ⏸ **未做**：实测数据不支持存在该问题（见 §4.0c 第七节的说明），要先量化 |
@@ -1402,9 +1403,11 @@ delete_sticker(id=46) → total 45，探针文件无残留
 即本机每轮实省 **~600 字符（≈430 tokens）**；代码侧的 −304（Format 死块）要等
 override 同步后才计进去。
 
-**一个必须知道的坑**：本机线上 Format **不是**代码里的模板 —— 使用者在设置里存过
-prompt override（`business_config.json` → `prompt_overrides["zh-CN"]
-["format_prompt_section_neko_dynamic"]`，2,159 字符），线上用的是它。而且它**已经过期**：
+**线上 Format 的过期 override（已按使用者决定清除）**
+
+本机线上 Format 一度**不是**代码里的模板 —— 使用者在设置里存过 prompt override
+（`business_config.json` → `prompt_overrides["zh-CN"]["format_prompt_section_neko_dynamic"]`，
+2,159 字符），线上用的是它。实测它**已经过期**：
 
 * 缺 `bored`（"没兴趣→让出焦点"那个情绪，注意力机制的一环）→ 模型用不出这个情绪
 * 把 `<rps/>` `<dice/>` `<contact>` `<music>` `<mface>` `<file>` 列成可用标签 ——
@@ -1414,8 +1417,25 @@ prompt override（`business_config.json` → `prompt_overrides["zh-CN"]
   `<text>` 组合、forward 要自己写 `[发送者]: 内容`；实际是 record 必须单独成块、
   forward 只写一句总结由系统附原文）
 
-所以代码侧这 −304 在本机看不到效果；要生效得**重新同步 override**（清掉它或写回
-一份修好的）。这一条留给使用者定：它是用户数据，插件不能自己改。
+所以代码侧的裁剪在那之前对线上无效。
+
+**处理**（使用者选"清掉 override，让代码模板接管"）：走**插件自己的动作**清，而不是
+手改 JSON —— `config` 入口 `action=prompt_reset, layer_id=format_neko_dynamic,
+locale=zh-CN`，它会一并 `_discard_all_sessions_for_prompt_change()`（手改 JSON 会漏掉
+这一步）。返回 `{"persisted": true}`，`prompt_overrides` 变成 `{}`。
+
+**清掉后的线上复测**（reload 后抓一份真实群聊提示词，逐条核对）：
+
+```
+整段 10,728 字符 / 7,630 tokens（同口径的改前无记忆轮是 11,118 / 7,855）
+Format 段 4,049 字符（代码模板 2,465 + 两个目录）
+[OK] Format 来自代码模板   [OK] 情绪清单里有 bored   [OK] 只输出 <feeling>bored</feeling> 那条在
+[OK] 不再宣传 <rps/> <dice/> <mface> <file>   [OK] record 是「必须单独成块」
+[OK] forward 是「你只写一句总结」   [OK] 无 HTML 注释块   [OK] emoji 目录 40 行
+```
+
+也就是说：**每个回复都必须带的情绪里，`bored` 现在真的到模型眼前了**（以前被过期
+override 挡掉），而未实现的标签不再被宣传。
 
 **没做的（使用者："这个先不管"）**：记忆段封顶。实测可省最多 4,400 字符
 （≈3,100 tokens/轮）：给注入的记忆加字符上限（建议 2,500）+ 按行去重 + 去掉行内
