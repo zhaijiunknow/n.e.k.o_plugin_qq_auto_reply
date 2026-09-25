@@ -120,6 +120,10 @@ STICKER_VLM_PROMPT = (
     "让人只看这句就知道什么场合适合发它（不超过30字；直接给描述，不要引号、不要解释）"
 )
 
+#: 免费文字端的域名特征：命中它才需要按免费线的规矩发请求
+#: （见 `QQAutoReplyPlugin._vlm_free_route_system_prompt`）。
+FREE_ROUTE_HOST_HINT = "lanlan"
+
 
 @neko_plugin
 class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAutoReplyTargetsMixin, NekoPluginBase):
@@ -462,12 +466,56 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception:
             return ""
 
+    def _vlm_free_route_system_prompt(self, model_config: dict[str, Any]) -> str:
+        """免费线看图请求要带的 system：**本体自己的角色人设**，否则 400。
+
+        免费文字端（`www.lanlan.tech/text/v1`）对"看起来不是 Lanlan 客户端"的请求
+        直接回 400 `Invalid request: you are not using Lanlan. STOP ABUSE THE API.`
+        ——插件这条看图路径一直撞在它上面（`[VLM] … 看图失败: BadRequestError: 400`），
+        而同进程里聊天会话那条路没事。实测的分界线是**请求里带不带本体人设的标志句**
+        （人设文本原样发过去就 200；同一张图、同一个模型、同一个 key，去掉人设就 400）。
+        本体的聊天轮本来就带人设，所以它一直不受影响。
+
+        这里**逐字复用本体的人设文本**（`config_manager.get_character_data()` 的
+        `lanlan_prompt_map[her_name]`，也就是插件建会话时用的那份 `character_prompt`），
+        不硬编码那句英文标志句：人设是本体的资产、随本体升级，标志句变了插件跟着变，
+        不用二次维护，也避免把一句"咒语"抄进插件里看起来像绕过校验。
+
+        只对免费线加：自配 API（付费 provider / 本地端点）没有这道门，多塞 3k 字符
+        人设纯粹是按 token 付费。取不到人设时返回空串 —— 请求照发，
+        `_vlm_describe_locator` 的失败日志仍然会把 400 记下来。
+        """
+        base_url = str(model_config.get("base_url") or "").lower()
+        if FREE_ROUTE_HOST_HINT not in base_url:
+            return ""
+        try:
+            from utils.config_manager import get_config_manager
+
+            data = get_config_manager().get_character_data()
+            master_name = str(data[0] or "")
+            her_name = str(data[1] or "")
+            persona_map = data[5] if len(data) > 5 else None
+            persona = str((persona_map or {}).get(her_name) or "")
+            if not persona:
+                return ""
+            from .session_instruction_service import _apply_role_placeholders
+
+            return _apply_role_placeholders(
+                persona, lanlan_name=her_name, master_name=master_name,
+            ) or ""
+        except Exception as e:
+            self.logger.info(f"[VLM] 免费线人设文本取不到（按无 system 继续）: {type(e).__name__}: {e}")
+            return ""
+
     async def _vlm_describe_locator(self, locator: str, *, prompt: str, max_tokens: int = 60) -> str:
         """对一张图（本地路径或 http(s) URL）跑一次 VLM，返回文本；失败返回 ""。
 
         **插件里"看图"的地方都走这一条**（conversation 模型配置 → 图片压成 JPEG b64
         → create_chat_llm_async）。刻意收成一个函数：以前只有引用回复的图走这条路，
         表情包自动描述再抄一份的话，两处的模型配置迟早会漂移。
+
+        免费线上这条请求要带上本体人设（见 `_vlm_free_route_system_prompt`）：不带的
+        话免费端一律 400，功能会"静默没反应"。
 
         失败一律返回空串（调用方决定怎么兜底），但**会把原因写进日志** —— 这个函数
         服务的都是"用户看得到的功能"（表情包自动描述、引用图描述），静默返回空会让
@@ -489,6 +537,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 self.logger.info(f"[VLM] 图片预处理失败，跳过描述: {locator}")
                 return ""
 
+            system_prompt = self._vlm_free_route_system_prompt(model_config)
+            messages: list[dict[str, Any]] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                {"type": "text", "text": prompt},
+            ]})
+
             llm = await create_chat_llm_async(
                 model=model, base_url=str(model_config.get("base_url") or ""),
                 api_key=str(model_config.get("api_key") or ""),
@@ -497,10 +554,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             )
             try:
                 response = await _asyncio.wait_for(
-                    llm.ainvoke([{"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                        {"type": "text", "text": prompt},
-                    ]}]),
+                    llm.ainvoke(messages),
                     timeout=15.0,
                 )
                 text = str(getattr(response, "content", "") or "").strip()

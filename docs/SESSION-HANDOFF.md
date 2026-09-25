@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：737 passed**（见 §4.0p / §4.0q / §4.0r / §4.0s）。
+**最新：746 passed**（见 §4.0p / §4.0q / §4.0r / §4.0s / §4.0t）。
 
 | 主题 | 状态 |
 |---|---|
@@ -32,6 +32,7 @@
 | 表情包删除：后端新增 `delete_sticker`；入口只在**表情包管理页**（status 页只上传，见 §4.0r） | ✅ 落地 |
 | 表情包上传后**自动用 VLM 解析描述**（复用插件既有的看图函数与预处理，失败保留兜底，见 §4.0s） | ✅ 落地 |
 | 看图用哪个模型槽：**保持 conversation**（一度改成 vision，使用者要求回退；保留失败日志） | ✅ 已回退 + 看门狗 |
+| **免费线看图一直被 400 拦掉**（根因：请求里没带本体人设；看图现在是真能用了，见 §4.0t） | ✅ 已修 + 端到端实测 |
 | `status.html` 三个 `data-i18n-ph` 从来没被翻译（属性名 i18n.js 不认 + 键不存在） | ✅ 已修 + 第 4 类 i18n 检查 |
 | `open_platform` 的表情包描述永远是文件名（两个缺陷叠加，静默） | ✅ 已修 + 跨页看门狗 |
 | 界面背景：**分页面配图** —— status 用森林插画 `.30`，其余用蓝白图形 `.45`（见 §4.0o-2 / §4.0o-3） | ✅ 落地 |
@@ -103,6 +104,9 @@
 - `test_qq_log_panel_scroll.py` — 日志面板滚动契约
 - `test_qq_source_kind_sets.py` — **source_kind 看门狗**（防"判据集合与真实生产者漂移"）
 - `test_qq_session_eviction_and_group_id_guard.py` — 会话回收 + 空 group_id 守卫
+- `test_qq_vlm_free_marker.py` — **免费线看图的请求形态**（必须带本体人设、只对免费线带、
+  标志句不许硬编码）——见 §4.0t
+- `verify_vlm_free_marker_fail_to_pass.py` — 同上，5 种注入全红 + 对照绿
 
 ---
 
@@ -1200,10 +1204,11 @@ fail-to-pass 里有一条注入就是"把槽改成 vision"，会红）。
 它服务的是"用户看得到的功能"，静默返回空会让用户以为是自己没点到。
 所以真出问题时有迹可循，不需要靠换模型来"修"。
 
-**一次没能给出结论的实测**：我试着把同一张图分别喂给 `conversation` 和 `vision` 看谁
-能描述，结果**两个都在 provider 层被拒**（`Invalid request: you are not using Lanlan.
-STOP ABUSE THE API.`），请求根本没走到"能不能看图"这一步。所以"哪个模型支持看图"
-**没有实测数据**。如果哪天自动描述一直不出结果，先看插件日志里那条 `[VLM]` 记录。
+**一次没能给出结论的实测**（**已在 §4.0t 定案，这段保留作历史**）：我试着把同一张图分别喂给
+`conversation` 和 `vision` 看谁能描述，结果**两个都在 provider 层被拒**（`Invalid request:
+you are not using Lanlan. STOP ABUSE THE API.`），请求根本没走到"能不能看图"这一步。所以
+"哪个模型支持看图"**没有实测数据**。如果哪天自动描述一直不出结果，先看插件日志里那条
+`[VLM]` 记录。→ §4.0t 查清了被拒的原因（不是槽、不是模型、不是进程），并修好了。
 
 **两个刻意的设计**：
 
@@ -1231,7 +1236,83 @@ STOP ABUSE THE API.`），请求根本没走到"能不能看图"这一步。所�
 端到端（`window.call` 桩）：`.dsh-artifacts/verify-sticker.py` 实测勾选时传
 `auto_desc=True`、取消勾选传 `False`；`verify-sticker-others.py` 两页同为 `True`。
 
-**测试基线：737 passed**。
+**测试基线：746 passed**（§4.0t 又加了 9 条）。
+
+---
+
+### 4.0t **根因**：免费线看图请求被 400 拦掉 —— 缺的是"请求里带本体人设"
+
+**起点**（使用者）："怎么只说引用解析图片。我直接发送图片好像就能解析啊" —— 对。
+**聊天轮一直能看图**，只有插件这条自己拼消息的 `_vlm_describe_locator` 看不了。
+使用者要的是"走插件现有的分析"，所以这不是"换条路"，而是**把现有这条路修通**。
+
+**现场**（`logs/N.E.K.O_Plugin_20260925.log` + `logs/plugin/…qq_auto_reply…log`）：
+同一个插件进程里，21:04:42 聊天轮 `POST …/chat/completions` **200**；21:04:48 看图
+`POST …/chat/completions` **400**，插件日志一条
+`[VLM] conversation 槽（free-model）看图失败: BadRequestError: 400 … you are not using Lanlan.`
+当天 25×200 / 17×400，**17 条 400 与 18 条 `[VLM]` 失败一一对应**。
+
+**证伪掉的假设**（每条都真跑过，别再回头试）：
+
+| 假设 | 结果 |
+|---|---|
+| 模型槽不对（conversation vs vision） | ✗ 两条路都 400；`free-model` / `free-vision-model` 一样 |
+| 少了 `streaming=True` / `stream_options` / `max_completion_tokens` | ✗ 从插件进程里发也照 400 |
+| UA / API key / SDK / SSL context | ✗ 与聊天轮逐字相同，**同一个 key（`free-access`）聊天能过** |
+| "先有活跃 `wss://…/core` 会话把客户端登记"（testbench 注释里的猜测） | ✗ 独立进程被拒，**但在插件进程里发也照样被拒** —— 不是进程/网络身份 |
+| 连接复用 / 每次新建 client | ✗ 同一个 client 连打 5 次全 400 |
+| 系统代理（`ProxyEnable=0`）/ 区域改写（`aensure_region_resolved()` 不改 URL） | ✗ 都不是 |
+
+**决定性实验**：把本体的角色人设文本（`lanlan_prompt_map[her_name]`，3341 字符）
+当 system 消息发过去：
+
+```
+同一张图、同一个 free-model、同一个 key
+  system = 本体人设        → 200，而且直接给出可用描述
+  去掉 system              → 400
+  只留人设里的一句标志句   → 200
+  标志句少一半 / 换成中文  → 400
+```
+
+再逐行二分：人设 19 个非空行里**只有一行**单独能过，最短通过前缀落在
+`…periodically sends some useful information`（43 字符）。**免费文字端认的就是这个
+prompt 特征**：请求里没有它 → 判成"不是 Lanlan 客户端"→ 400。聊天轮本来就带人设，
+所以本体和插件的聊天一直没事。
+
+**修法**（`__init__.py`）：
+
+* 新增 `_vlm_free_route_system_prompt(model_config)`：base_url 命中 `FREE_ROUTE_HOST_HINT`
+  （`"lanlan"`）时，返回**本体那份人设**（`config_manager.get_character_data()` 的
+  `data[5][data[1]]`），并用 `_apply_role_placeholders` 把 `{LANLAN_NAME}`/`{MASTER_NAME}`
+  换掉；`_vlm_describe_locator` 把它作为**第一条 system 消息**，user 那条仍是"图 + 提示词"。
+* **不硬编码那句英文标志句**。抄一句"咒语"过校验会腐化：本体一改人设、插件就开始 400，
+  而且没人会想到来看这里。复用本体人设则跟着本体走（有看门狗禁掉硬编码）。
+* **只对免费线加**。自配 API（付费 provider / 本地端点）没有这道门，白塞 3k 字符是按
+  token 付费。
+* 人设取不到时**照发请求**（只是没有 system），失败仍由既有 `[VLM]` 日志说话；
+  取不到人设这件事本身也记一条 `[INFO]`。
+
+**顺带修好的**：引用回复/入站图片的描述走的是同一个函数（`enrichment.py` 的
+`image_describer`），所以那一路也一起活了 —— 以前每张图都在静默地拿不到描述。
+
+**端到端实测**（宿主运行中，`plugin/qq_auto_reply` reload 后）：
+
+```
+upload_sticker(auto_desc=true, desc="探针：这条是手填的兜底描述")
+  → {"id": "46", "desc": "黑色像素小猫皱着脸，显委屈不悦，适合闹别扭时发", "vlm_used": true}
+delete_sticker(id=46) → total 45，探针文件无残留
+```
+
+**验证**：`tests/test_qq_vlm_free_marker.py`（9 条：免费线带 system 且是人设文本、
+占位符已替换、图与提示词没被挤掉、付费线/本地端点不加 system、人设取不到仍发请求、
+`get_character_data()` 抛错被吞、取不到人设要留日志、**标志句不许硬编码**、
+人设必须来自本体的 `get_character_data()`）。
+`tests/verify_vlm_free_marker_fail_to_pass.py` **5 种注入全红** + 对照组绿
+（含"免费线不带 system"、"自配线也塞人设"、"人设取不到就整条放弃"、"换成硬编码标志句"、
+"不替换占位符"）。
+
+**留给下次的坑**：如果哪天免费线又全变 400，**先看本体人设里那句标志句还在不在**
+（`config/characters.json` → 角色的 prompt），这是唯一被验证过的判据。
 
 ---
 
@@ -1305,6 +1386,8 @@ git apply .dsh-artifacts/bm25-threshold-floor.patch
 | 多群共现长期统计 | 单次会话样本，长期是否出现 3+ 群竞争未验证 |
 | MaiBot 1.0.0 的 `focus_*` / `attention_drift` | **只有配置文档、无源码**，行为语义未确认 |
 | 注意力重构 | **步 0/1/2/3/6/7 已落地**（见 §0 与 §4.0a–i）；步 4/5 已由使用者否决 |
+| 免费线看图（`[VLM]`） | **已修**（§4.0t）：原因是请求里没带本体人设，免费端判成"不是 Lanlan 客户端"。端到端 `vlm_used=true` 已实测 |
+| "哪个模型真的支持看图" | 仍无对比数据：`conversation`(`free-model`) 实测能描述图；`vision` 槽那条**没单独实测过**（使用者要求不动槽，所以没测） |
 
 ---
 
@@ -1326,6 +1409,10 @@ git apply .dsh-artifacts/bm25-threshold-floor.patch
    要么接回引导流程，要么从真源里删掉。现在它们能存能回显但没人用。
 3. 低风险 UX：焦点发送门控的界面 `max` 跟当前焦点线联动（否则用户填 8 保存后变回 4，无提示）。
 4. 插件外的 BM25 阈值补丁（见 §5）——**需要你确认后才动**。
+5. **免费线的看门狗**：现在插件靠"请求里带本体人设"过免费端的校验（§4.0t）。
+   如果哪天 `[VLM]` 又开始全 400，**先确认本体人设里那句标志句还在**
+   （`config/characters.json` 里角色的 prompt 第一条 `<Context Awareness>` 之后那句）。
+   插件侧不需要改代码 —— 它逐字复用本体人设。
 
 如果要别的方向：`docs/attention-redesign-draft.md` §8 列了未验证边界，§1.4 是可直接复算的数据。
 
