@@ -67,10 +67,61 @@ class QQMessageEnricher:
 
     # ── segment extraction (what the pipeline should enrich) ────────────
 
+    @staticmethod
+    def _message_segments(message: Dict[str, Any]) -> Any:
+        """这条入站消息的"段"从哪读 —— **连接器归一化后段落在 `raw.message`**。
+
+        2026-09-26 修：四个增强入口（引用 / 合并转发 / 语音 / 文件）此前读的是
+        `message["message"]`，而两个连接器（host 的 `utils.connection.onebot` 与
+        插件 `_vendor` 的开放平台）归一化出来的字典里**只有 `content`（CQ 串）与
+        `raw`（原始事件）**，既没有 `message` 也没有 `raw_message`
+        —— 见 docs/SESSION-HANDOFF.md §4.0x 的实测。
+
+        后果：`_expand_reply_segments` 永远返回空 → `_pending_reply_ids` 永远不被打上
+        → `_fetch_reply_content` 永远不跑 → **引用正文与引用里的图从来没进过 prompt**；
+        转发/语音/文件同理（生产日志里 `get_forward_msg` / `get_record` /
+        `get_group_file_url` / `get_private_file_url` 两天调用数为 **0**）。
+
+        主消息的图之所以一直正常（`_inject_image_descriptions`），只是因为它单独写成
+        `raw.message or message["message"]` —— 同一件事两种写法，恰好只有它对。
+        现在五个入口共用这一个函数。
+
+        没有 `raw` 的调用方（测试桩、开放平台早期形态）仍按老键回退，最后落到
+        CQ 串（数组形态缺失时唯一的兜底）。
+        """
+        raw = message.get("raw")
+        if isinstance(raw, dict):
+            segments = raw.get("message")
+            if isinstance(segments, list) and segments:
+                return segments
+            if isinstance(segments, str) and segments.strip():
+                return segments
+        for key in ("message", "raw_message"):
+            segments = message.get(key)
+            if isinstance(segments, list) and segments:
+                return segments
+            if isinstance(segments, str) and segments.strip():
+                return segments
+        return None
+
+    @staticmethod
+    def _message_text(message: Dict[str, Any]) -> str:
+        """CQ 串形态的正文：`raw_message` 优先（老形态），否则 `content`（连接器给的）。
+
+        最后的兜底是"段本身就是一条 CQ 串"的老形态（早期连接器/桩会把整条消息塞进
+        `message`），CQ 正则那些入口要靠它。
+        """
+        for key in ("raw_message", "content"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        segments = QQMessageEnricher._message_segments(message)
+        return segments if isinstance(segments, str) else ""
+
     def _transcribe_record_segments(self, message: Dict[str, Any]) -> list[str]:
         """Extract voice-segment info, returning the file_ids to fetch asynchronously.
         Supports array segments, CQ-code strings, and raw_message."""
-        segments = message.get("message")
+        segments = self._message_segments(message)
         record_files: list[str] = []
         if isinstance(segments, list):
             for seg in segments:
@@ -85,8 +136,8 @@ class QQMessageEnricher:
                 f = m.group(1).strip()
                 if f:
                     record_files.append(f)
-        raw_msg = message.get("raw_message")
-        if isinstance(raw_msg, str) and not record_files:
+        raw_msg = self._message_text(message)
+        if raw_msg and not record_files:
             for m in re.finditer(r"\[CQ:record,\s*file=([^,\]]+)", raw_msg):
                 f = m.group(1).strip()
                 if f:
@@ -99,7 +150,7 @@ class QQMessageEnricher:
 
     def _collect_file_segments(self, message: Dict[str, Any]) -> list[dict]:
         """Extract file-segment info, returning ``[{file_id, name, url, busid}]``."""
-        segments = message.get("message")
+        segments = self._message_segments(message)
         files: list[dict] = []
         if isinstance(segments, list):
             for seg in segments:
@@ -119,7 +170,7 @@ class QQMessageEnricher:
                     "busid": busid,
                 })
         if not files:
-            raw = str(message.get("raw_message") or message.get("message") or "")
+            raw = self._message_text(message)
             for m in re.finditer(r"\[CQ:file,[^\]]*\]", raw):
                 text = m.group(0)
                 fid = re.search(r"file_id=([^,\]]+)", text)
@@ -136,7 +187,7 @@ class QQMessageEnricher:
     def _expand_forward_segments(self, message: Dict[str, Any]) -> list[str]:
         """Expand forward segments, appending readable text to raw_message.
         Returns forward_ids that must be fetched via API."""
-        segments = message.get("message")
+        segments = self._message_segments(message)
         if not isinstance(segments, list):
             return []
         forward_texts: list[str] = []
@@ -170,7 +221,7 @@ class QQMessageEnricher:
             elif forward_id:
                 unresolved_ids.append(forward_id)
         if forward_texts:
-            raw = str(message.get("raw_message") or "").strip()
+            raw = self._message_text(message)
             expanded = "\n".join(forward_texts)
             message["raw_message"] = f"{raw}\n{expanded}" if raw else expanded
             if not message.get("content"):
@@ -180,7 +231,7 @@ class QQMessageEnricher:
 
     def _expand_reply_segments(self, message: Dict[str, Any]) -> list[str]:
         """Collect quoted-reply message IDs, for async full-content fetch."""
-        segments = message.get("message")
+        segments = self._message_segments(message)
         if not isinstance(segments, list):
             return []
         reply_ids: list[str] = []
@@ -607,8 +658,7 @@ class QQMessageEnricher:
 
     async def _inject_image_descriptions(self, message: dict[str, Any]) -> None:
         """Call VLM to describe the images in the main message and inject into content."""
-        raw_msg = message.get("raw") or {}
-        segments = raw_msg.get("message") or message.get("message") or []
+        segments = self._message_segments(message)
         if not isinstance(segments, list):
             return
         img_urls: list[str] = []

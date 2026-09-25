@@ -203,17 +203,32 @@ def test_reply_context_carries_the_description_into_the_prompt():
 
     （`reply_context_node` 会把 `reply_context` 前置拼进 prompt_text，
     所以这一步过了，模型就真的看得到引用的图是什么。）
+
+    ⚠️ 入站消息用**真连接器给的那种形态**（`content` + `raw.message`，没有 `message`
+    键）—— 引用 id 也**不手打**，走 `_expand_reply_segments()` 现场识别：这条链上
+    曾经断的就是"识别"这一步（见 tests/test_qq_segment_source_shape.py）。
     """
     client = _client()
     inner = _image_msg()
     client.get_msg = AsyncMock(return_value={"data": inner, "status": "ok"})
-    message = _quoted(inner)
-    message["raw"] = {"message": message["message"]}
-    message["raw_message"] = "这图什么意思[CQ:reply,id=m1]"
-    # 引用 id 由 pipeline 在入站时打在消息上（`_pending_reply_ids`）
-    message["_pending_reply_ids"] = ["m1"]
+    segments = [
+        {"type": "reply", "data": {"id": "m1"}},
+        {"type": "text", "data": {"text": "这图什么意思"}},
+    ]
+    message = {
+        "message_type": "group",
+        "group_id": "g1",
+        "user_id": "u2",
+        "message_id": "outer",
+        "content": "这图什么意思[CQ:reply,id=m1]",
+        "raw": {"message": segments},
+        "sender": {"nickname": "小红"},
+    }
     enricher = _enricher(client, AsyncMock(return_value="一只橘猫在键盘上睡觉"))
 
+    reply_ids = enricher._expand_reply_segments(message)
+    assert reply_ids == ["m1"], f"引用 id 没识别出来：{reply_ids}"
+    message["_pending_reply_ids"] = reply_ids
     asyncio.run(enricher.enrich_message(message))
 
     context = str(message.get("_reply_context") or "")
