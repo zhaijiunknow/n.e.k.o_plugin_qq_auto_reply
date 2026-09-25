@@ -1893,6 +1893,42 @@ cd neko && uv run python -m plugin.neko_plugin_cli.cli check -r qq_auto_reply
 
 ---
 
+### 4.0ac 动态查看并评论：**不做**（使用者拍板：风控风险）
+
+**需求**：给猫娘加「看她好友的动态并评论」。先选的是 QQ 空间说说，随后改问群相册；
+**结论是都不做**。
+
+**后端能力矩阵**（实测本机 `NapCat.Shell/napcat.mjs`、上游 `NapNeko/NapCatQQ` 的
+`extends/`，以及 LLOneBot / Lagrange.Core / OpenShamrock 对照 —— 记在这里，
+下次别再查一遍）：
+
+| 后端 | 读动态 | 评论 / 点赞 |
+|---|---|---|
+| NapCat | ❌ **没有**（注册的动作只有 `send_qzone_msg` / `delete_qzone_msg`） | ❌ 空间无；群相册**有**（见下） |
+| LLOneBot | ❌ | ❌ |
+| Lagrange.Core | ❌ | ❌ |
+| OpenShamrock | ❌（只有 NT 内核接口的镜像） | ❌ |
+
+细节：NapCat 内部**存在** `getQzoneAuth` / `getQzoneCookies` / `uploadImageToQzone` /
+`publishQzoneMsg` / `deleteQzoneMsg`，但只注册了发/删说说两个动作 —— **读和评论没暴露**。
+群相册家族倒是齐的：`get_qun_album_list`、`get_group_album_media_list`、
+`do_group_album_comment`、`set_group_album_media_like`、`cancel_group_album_media_like`、
+`upload_image_to_qun_album`、`del_group_album_media`。NT 内核本身有
+`NodeIKernelFeedService`（动态在核心里是存在的，只是没做成动作）。
+生态里的绕过做法（MaiBot 的 Maizone）：借 NapCat 的 HTTP 拿 cookie，或自己扫码登录，
+cookie 约 1 天有效。
+
+**决策：不做。** 使用者原话：**「风控风险有点危险」**。判断依据：评论/点赞是脚本化的
+"像人"操作，落点在使用者自己的 QQ 账号上，收益（几句评论）远小于封号/限流的代价；
+而"绕过"那条路（自维护 cookie / 扫码重登）更差 —— 长期凭证、重登互动、cookie 泄露面。
+
+**如果将来要重开这个方向**：先谈风险与降级，再谈代码；**不要**默认走自维护 cookie 那条。
+技术上唯一不需要新东西的部分是群相册（NapCat 已有动作），且客户端有泛用
+`call_action(action, params)`（`utils/connection/onebot/onebot_client.py`），
+真要做也不用改连接器 —— 但**风险结论不因此改变**。
+
+---
+
 ### 4.1 关键认知修正
 
 1. **注意力不是频率控制**。频率闸实际是 `reply_burst_*`（60s/3 条）和缓冲延迟；注意力管的是**多个群里选哪个**。
@@ -1965,6 +2001,7 @@ git apply .dsh-artifacts/bm25-threshold-floor.patch
 | 注意力重构 | **步 0/1/2/3/6/7 已落地**（见 §0 与 §4.0a–i）；步 4/5 已由使用者否决 |
 | 免费线上自拼消息的 LLM 调用（看图 / XML 修复 / 「我在听」/ 缓冲总结） | **已修**（§4.0t）：原因是请求里没带本体人设，免费端判成"不是 Lanlan 客户端"。看图那条端到端 `vlm_used=true` 已实测；另外三条只有单测 + fail-to-pass，**没有真实流量实测** |
 | "哪个模型真的支持看图" | 仍无对比数据：`conversation`(`free-model`) 实测能描述图；`vision` 槽那条**没单独实测过**（使用者要求不动槽，所以没测） |
+| 动态查看并评论（QQ 空间 / 群相册） | **不做** —— 使用者拍板「风控风险有点危险」。后端能力矩阵已查清并记在 §4.0ac，**重开之前先谈风险** |
 
 ---
 
