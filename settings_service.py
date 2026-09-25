@@ -1089,6 +1089,9 @@ class QQSettingsService:
             self.plugin._qq_settings["attention_emotion_multipliers"] = (
                 self.plugin.config_store.normalize_emotion_multipliers(attention_emotion_multipliers)
             )
+        attention_lock_seconds = kwargs.get("attention_lock_seconds")
+        if attention_lock_seconds is not None:
+            self.plugin._qq_settings["attention_lock_seconds"] = max(0, int(attention_lock_seconds))
         icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
         if icebreaker_cold_threshold is not None:
             self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))

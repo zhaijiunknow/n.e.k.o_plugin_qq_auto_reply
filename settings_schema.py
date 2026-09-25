@@ -76,8 +76,10 @@ class SettingSpec:
 
 #: 情绪 → 注意力升/降速率倍率。原先硬编码在 ``attention_service._EMOTION_MULTIPLIER``。
 #: 注意 ``attention_service`` 另有两个**按名字**匹配的集合（抢焦点 `arguing`/`proud`、
-#: 让焦点 `sulking`/`embarrassed`），它们不随这张表配置化 —— 用户往表里加新情绪时，
+#: 让焦点 `sulking`/`embarrassed`/`bored`），它们不随这张表配置化 —— 用户往表里加新情绪时，
 #: 新情绪不会自动获得抢/让焦点的行为。
+#: 这张表与 ``attention_service._EMOTION_MULTIPLIER`` 必须逐键一致，由
+#: ``tests/test_qq_emotion_vocabulary.py`` 强制。
 DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = {
     "arguing": 1.2,      # 上头死磕，涨得快跌得慢
     "proud": 0.8,        # 赢了要炫耀，猛拉注意力
@@ -87,6 +89,7 @@ DEFAULT_EMOTION_MULTIPLIERS: dict[str, float] = {
     "calm": 0.0,         # 正常
     "sad": -0.4,         # 难过，不太想说话
     "embarrassed": -0.6,  # 尴尬想溜
+    "bored": -0.7,       # 没兴趣的话题，主动掉注意力去找别的群
     "sulking": -0.9,     # 赌气——基本清零，主动让出焦点
 }
 
@@ -164,10 +167,19 @@ ATTENTION = (
 ATTENTION_NEW = (
     SettingSpec("attention_fall_boost_attenuation", "float", 0.3, saveable=True,
                 floor=0.0, ceiling=1.0,
-                description="save：fall 相位里消息加成的衰减系数（越小越难回血）",
+                description="save：fall 相位里消息加成的衰减系数（已废弃：不再被消费，保留键以免重置老配置）",
                 ui=UIInput("cfg-att-fall-attenuation", min=0, max=1, step=0.05,
                            label="ui.attention.fall_attenuation",
                            hint="ui.attention.fall_attenuation.hint")),
+    # 锁：`@猫娘` / 唤醒词触发，期内该群独占焦点。
+    # 与分数是两个独立信号——分数表达「没人叫我时我自己看哪」，锁表达
+    # 「有人点名，我必须回头应对」。见 docs/attention-redesign-draft.md §2/§3。
+    SettingSpec("attention_lock_seconds", "int", 90, saveable=True,
+                floor=0,
+                description="save：被 @/唤醒词后锁定该群专注的秒数（0=不锁，回到纯分数仲裁）",
+                ui=UIInput("cfg-att-lock-seconds", min=0, max=1800, step=10,
+                           label="ui.attention.lock_seconds",
+                           hint="ui.attention.lock_seconds.hint")),
     SettingSpec("attention_at_bot_boost", "float", 3.0, saveable=True,
                 floor=0.0, description="save：被 @ 时消息加成的倍率",
                 ui=UIInput("cfg-att-at-bot-boost", min=0, max=20, step=0.5,
@@ -189,6 +201,35 @@ ATTENTION_NEW = (
                 ui=UIInput("cfg-att-decay-interval", min=1, max=120, step=0.5,
                            label="ui.attention.decay_interval",
                            hint="ui.attention.decay_interval.hint")),
+    # ── 发言频率 → 自然增速 ──
+    # 让 rise 相位的自然增长按**本群的消息节奏**缩放：热群涨得快、冷群几乎不涨。
+    # 判据用「距上一条消息的间隔」（attention_service._frequency_scale），不引入
+    # 滑动窗口或计数器 —— 无状态、可复现、也不需要额外的老化机制。
+    #
+    # 注意 ``_advance_phase`` 在 ``update_on_message`` 写新的 ``last_message_at``
+    # **之前**执行，所以间隔天然就是「距上一条」而不是「距这一条」。
+    #
+    # 下限不为 0：冷群应当涨得慢，但不该完全冻结 —— 完全冻结会让一个曾夺冠、
+    # 如今沉寂的群永远卡在 fall 里出不来（fall 相位的消息加成已被
+    # ``attention_fall_boost_attenuation`` 压到 0.3，那里没有第二个回血来源）。
+    SettingSpec("attention_frequency_target_gap", "float", 30.0, saveable=True,
+                floor=1.0,
+                description="save：发言频率的目标间隔（秒）——恰好这个节奏时增速为基准 1.0×",
+                ui=UIInput("cfg-att-freq-target-gap", min=1, max=600, step=1,
+                           label="ui.attention.freq_target_gap",
+                           hint="ui.attention.freq_target_gap.hint")),
+    SettingSpec("attention_frequency_min_multiplier", "float", 0.15, saveable=True,
+                floor=0.0, ceiling=1.0,
+                description="save：冷群的增速下限倍率（消息间隔远大于目标间隔时逼近它）",
+                ui=UIInput("cfg-att-freq-min-mult", min=0, max=1, step=0.05,
+                           label="ui.attention.freq_min_multiplier",
+                           hint="ui.attention.freq_min_multiplier.hint")),
+    SettingSpec("attention_frequency_max_multiplier", "float", 1.8, saveable=True,
+                floor=1.0,
+                description="save：热群的增速上限倍率（消息间隔远小于目标间隔时封顶到这里）",
+                ui=UIInput("cfg-att-freq-max-mult", min=1, max=20, step=0.5,
+                           label="ui.attention.freq_max_multiplier",
+                           hint="ui.attention.freq_max_multiplier.hint")),
     # 9 项情绪 → 倍率表。做成 JSON 文本框而不是 9 个数字框：后者要在六层里各写九遍。
     SettingSpec("attention_emotion_multipliers", "dict", DEFAULT_EMOTION_MULTIPLIERS, saveable=True,
                 description="save：情绪 → 升/降速率倍率表（JSON 对象）",
@@ -325,6 +366,16 @@ MISC = (
                 handler="probability", aliases=("truth_reply_probability",),
                 ui=UIInput("cfg-truth-prob", min=0, max=1, step=0.05)),
     # ── 引导 ──
+    #: 界面语言偏好。前端 `onLangChange` 一直在以 `action:'save'` 提交它，但它
+    #: 不在真源里 → 被入口白名单整键丢弃（`_config_save` 的 payload 因此为空，
+    #: 直接返回 Err，而前端 `catch(e){}` 把它吞了）；`settings_service` 里那段
+    #: 写盘代码的上游 `dashboard_service.save_settings` 也没有这个参数，所以
+    #: **永远不可达**；快照同样不返回它，而前端在 `s.locale` 读它。
+    #: 净效果：语言只在浏览器 localStorage 里生效，换浏览器/清缓存就回到默认。
+    #: 声明成 saveable 后三条链一次接通（白名单、写盘、快照回显）。
+    SettingSpec("locale", "str", "", saveable=True,
+                handler="locale",
+                description="save：界面语言偏好（服务端只做持久化与回显）"),
     SettingSpec("show_onboarding", "bool", True, saveable=True,
                 description="save：是否显示引导"),
     SettingSpec("guide_step_napcat_done", "bool", False, saveable=True,

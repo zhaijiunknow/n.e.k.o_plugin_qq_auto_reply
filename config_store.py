@@ -13,8 +13,21 @@ from . import settings_schema
 
 class QQAutoReplyConfigStore:
     FILE_NAME = "business_config.json"
-    VALID_REPLY_MODES = {"text", "voice", "both"}
-    VALID_STRATEGY_MODES = {"neko_dynamic", "neko_scene"}
+
+    #: 枚举取值**从 settings_schema 派生**，不再手工镜像。
+    #
+    # 这两个集合曾经是手抄的一份副本（`{"text","voice","both"}` /
+    # `{"neko_dynamic","neko_scene"}`），而下面两个归一化是「不在表里就**静默**
+    # 改成默认值」。于是往真源 enum 里加一个新取值时，界面能选、能存，运行时却被
+    # 无声改回旧默认 —— 又一个"能配置但无效"的静默失效，而且这次连日志都没有。
+    # `qq_connection_mode` 早就是从真源派生的（`__init__.CONNECTION_MODES`），
+    # 所以这里不是"有意分家"，是漏改。
+    VALID_REPLY_MODES = frozenset(
+        settings_schema.BY_KEY["reply_mode"].enum or ()
+    )
+    VALID_STRATEGY_MODES = frozenset(
+        settings_schema.BY_KEY["strategy_mode"].enum or ()
+    )
 
     def __init__(self, base_dir: Path):
         self._path = Path(base_dir) / self.FILE_NAME
@@ -107,7 +120,6 @@ class QQAutoReplyConfigStore:
     def _normalize_strategy_mode(cls, value: Any) -> str:
         mode = str(value or "").strip().lower()
         return mode if mode in cls.VALID_STRATEGY_MODES else "neko_dynamic"
-
     def default_config(self) -> dict[str, Any]:
         """全部默认值。**唯一真相在 ``settings_schema.SETTINGS``**。
 

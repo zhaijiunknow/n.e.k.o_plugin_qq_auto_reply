@@ -178,11 +178,25 @@ _PLUMBING = {
 
 #: **不由插件业务代码读取**的键。每加一个都要在这里说明理由 ——
 #: 这份名单是"死键"与"合法的别处消费"之间唯一的界线。
+#:
+#: ⚠️ 理由必须**为真**。这个测试只检查"名字在表里 + 理由非空"，检查不了理由本身，
+#: 所以写假理由就能把死键放过去 —— 已经发生过：下面两条曾经写着"纯前端开关"，
+#: 而前端是把值读进一个**从不被读取**的变量。写理由前请先按名字搜一遍消费方。
 _EXEMPT: dict[str, str] = {
     "guide_step_napcat_done": "引导进度标记：由界面读写并回显，后端只做透传存储",
-    "guide_step_config_done": "同上",
     "guide_step_runtime_done": "同上（dashboard 的 guide 块另有一份派生判断）",
-    "show_onboarding": "引导页是否展示：纯前端开关",
+    # 这两条曾经的理由是"纯前端开关 / 由界面读写并回显"，**不成立**（2026-09-23 核对）：
+    #   guide_step_config_done: 前端只在 script.js:167 读进 state.config.guideStepConfigDone，
+    #       而该字段全文只出现 2 次（初始化 + 这次赋值），**从未被读取**；
+    #       也没有任何前端代码以 action:'save' 提交它（对比 guide_step_napcat_done 有：
+    #       script.js:96）。后端同样无消费方。
+    #   show_onboarding: 同上（script.js:50/165），值进了一个死变量。
+    # 保留键不删是为了配置兼容 + 将来接回引导页；但**不要**把它们当成"已经接通的开关"。
+    "guide_step_config_done": "残留键：无界面提交、无消费方（值只进死变量）。保留待接回",
+    "show_onboarding": "残留键：无消费方（前端读进死变量）。保留待接回",
+    # 服务端只负责持久化与回显：语言选择由前端 `onLangChange` 提交、`s.locale` 读回，
+    # 插件业务代码不需要按语言分支（i18n 解析在前端/宿主侧）。
+    "locale": "界面语言偏好：前端提交并回显，服务端只透传存储",
     # 这两个由**连接器工厂**读（决定拨正式/沙箱域名、是否写取证行）。消费方是
     # utils.connection.onebot 的 create_onebot_connection：现在读本仓的 _vendor 副本，
     # PR #2996 合并后读宿主包 —— 所以它们永远不会出现在插件的业务代码里。
@@ -293,3 +307,74 @@ def test_every_ui_field_is_both_loaded_and_saved():
         if occurrences < 2:
             missing.append(f"{spec.key} ({spec.ui.id}): JS 里只引用 {occurrences} 次（需 ≥2：回显+提交）")
     assert not missing, "界面字段没有被同时回显与提交：\n" + "\n".join(missing)
+
+
+def test_every_exempt_key_is_actually_referenced_somewhere():
+    """豁免名单里的键必须在**设置管线之外**真的被引用过。
+
+    `_EXEMPT` 原先只有"名字在表里 + 理由非空"两道检查，**理由本身没人验** ——
+    写一句"纯前端开关"就能把死键放过去（`show_onboarding` /
+    `guide_step_config_done` 就是这么藏了很久）。
+
+    这条做的是能机械验证的那一半：把设置管线（真源、写盘、快照、入口）和测试排除后，
+    键名必须在剩下的代码里出现过 —— 界面、`_vendor` 连接器都算。它挡不住"引用了但
+    引用无效"（那需要人读），但能挡住"彻底孤儿键长期挂在豁免名单里"。
+    """
+    plumbing = {
+        "settings_schema.py", "settings_service.py", "dashboard_service.py",
+        "__init__.py", "config_store.py",
+    }
+    haystack: list[str] = []
+    for path in BASE.rglob("*"):
+        if not path.is_file() or "tests" in path.parts or "__pycache__" in path.parts:
+            continue
+        if path.suffix not in {".py", ".js", ".html", ".json"}:
+            continue
+        if path.name in plumbing:
+            continue
+        haystack.append(path.read_text(encoding="utf-8", errors="replace"))
+
+    orphans = [
+        key for key in _EXEMPT
+        if not any(key in text for text in haystack)
+    ]
+    assert not orphans, (
+        "这些键在豁免名单里，但设置管线之外**任何地方**都没有引用 —— "
+        f"要么删掉键，要么删掉豁免: {sorted(orphans)}"
+    )
+
+
+def test_mode_enums_derive_from_the_schema(monkeypatch):
+    """`reply_mode` / `strategy_mode` 的合法取值必须**派生自真源**，不能手工镜像。
+
+    `config_store` 里的归一化是「不在集合里就**静默**改成默认值」。这两份集合曾经是
+    手抄的副本，于是往真源 `enum` 里加一个新取值时：界面能选、能存下来，运行时却被
+    无声改回旧默认 —— 能配置但无效，且没有日志。
+
+    `qq_connection_mode` 早就是从真源派生的（`CONNECTION_MODES`），所以这不是
+    "有意分家"，是漏改。
+    """
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
+
+    assert set(QQAutoReplyConfigStore.VALID_REPLY_MODES) == set(
+        settings_schema.BY_KEY["reply_mode"].enum or ()
+    )
+    assert set(QQAutoReplyConfigStore.VALID_STRATEGY_MODES) == set(
+        settings_schema.BY_KEY["strategy_mode"].enum or ()
+    )
+
+    # 模拟「往真源加了一个新取值」：归一化必须认得它。手工镜像的写法会在这里失败
+    # （新值被静默降级成默认值）。
+    monkeypatch.setattr(
+        QQAutoReplyConfigStore, "VALID_REPLY_MODES", frozenset({"text", "voice", "both", "brand_new"})
+    )
+    assert QQAutoReplyConfigStore.normalize_reply_mode("brand_new") == "brand_new", (
+        "归一化没有引用 VALID_REPLY_MODES，枚举是硬编码的 —— 新增取值会被静默改回默认"
+    )
+
+    monkeypatch.setattr(
+        QQAutoReplyConfigStore, "VALID_STRATEGY_MODES", frozenset({"neko_dynamic", "neko_scene", "brand_new"})
+    )
+    assert QQAutoReplyConfigStore._normalize_strategy_mode("brand_new") == "brand_new", (
+        "归一化没有引用 VALID_STRATEGY_MODES，枚举是硬编码的"
+    )

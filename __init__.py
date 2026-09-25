@@ -1816,12 +1816,30 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             f"group_prompt_delete/save_topics/attention_adjust/memory_forget）"))
 
     async def _config_save(self, kw: dict[str, Any]):
-        """保存设置。只认白名单里的键 —— 多余的静默丢弃，而不是撞到服务层。"""
+        """保存设置。只认白名单里的键 —— 多余的**记一条日志**后丢弃。
+
+        以前是纯静默丢弃，这是本插件反复出现的故障形态：调用方（前端表单、
+        调试脚本、`proactive_topics` 这种走错了入口的键）以为保存成功，实际
+        整键消失且没有任何痕迹可查。丢弃本身是必须的（不能撞到服务层），
+        但"丢了什么"必须留痕。
+        """
         payload = {k: v for k, v in kw.items() if k in self._CONFIG_SAVE_KEYS}
+        dropped = sorted(
+            k for k in kw
+            if k not in self._CONFIG_SAVE_KEYS and k != "action"
+        )
+        if dropped:
+            self._emit_log(
+                "WARNING",
+                f"[Config] save 丢弃了 {len(dropped)} 个不可识别的键: {dropped}"
+                f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个；"
+                f"注意有些键有专用入口，例如 proactive_topics 要走 save_topics）",
+            )
         if not payload:
             return Err(SdkError(
                 "INVALID_INPUT: save 没收到任何可识别的设置项"
-                f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个，见 config 入口的 input_schema）"))
+                f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个，见 config 入口的 input_schema）"
+                + (f"；被丢弃的键: {dropped}" if dropped else "")))
         return await self.dashboard_service.save_settings(**payload)
 
     async def _deploy_ensure(self, kw: dict[str, Any]):
@@ -2459,11 +2477,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @staticmethod
     def _sanitize_message_text(text: str, *, is_reply_to_bot: bool = False) -> str:
         import re
-        # 回复标签 → 人类可读格式
+        # 回复标签 → 人类可读格式。
+        #
+        # id 用 [^\]]* 而不是 \d+：消息 ID 不保证是纯数字。实测既有
+        # ``poke_<群>_<人>_<时间戳>`` 这类（backlog 里 120 个 ID 有 14 个非纯数字），
+        # 开放平台/Lagrange 更甚。用 \d+ 时这些 CQ 码替换不掉，**用户会在聊天里
+        # 直接看到裸的 [CQ:reply,id=...]**。同一模式在 enrichment._fetch_reply_content
+        # 也有一份，改这里时两处一起改。
         if is_reply_to_bot:
-            text = re.sub(r"\[CQ:reply,id=\d+[^\]]*\]", "[回复你的消息]", text)
+            text = re.sub(r"\[CQ:reply,\s*id=[^\]]*\]", "[回复你的消息]", text)
         else:
-            text = re.sub(r"\[CQ:reply,id=\d+[^\]]*\]", "[回复他人的消息]", text)
+            text = re.sub(r"\[CQ:reply,\s*id=[^\]]*\]", "[回复他人的消息]", text)
         text = re.sub(r"\[CQ:at,qq=all\]", "@全体成员", text)
         text = re.sub(r"\[CQ:at,qq=(\d+)\]", r"@用户\1", text)
         return text

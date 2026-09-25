@@ -201,6 +201,7 @@ class QQDashboardService:
         attention_wake_boost_ratio: Optional[float] = None,
         attention_decay_interval_seconds: Optional[float] = None,
         attention_emotion_multipliers: Optional[dict] = None,
+        attention_lock_seconds: Optional[int] = None,
         reply_burst_window_seconds: Optional[int] = None,
         reply_burst_max_replies: Optional[int] = None,
         buffer_delay_mean_seconds: Optional[float] = None,
@@ -210,6 +211,10 @@ class QQDashboardService:
         open_reply_probability: Optional[float] = None,
         buffer_collect_window_seconds: Optional[float] = None,
         buffer_collect_window_private_seconds: Optional[float] = None,
+        attention_frequency_target_gap: Optional[float] = None,
+        attention_frequency_min_multiplier: Optional[float] = None,
+        attention_frequency_max_multiplier: Optional[float] = None,
+        locale: Optional[str] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -260,6 +265,7 @@ class QQDashboardService:
                 attention_wake_boost_ratio=attention_wake_boost_ratio,
                 attention_decay_interval_seconds=attention_decay_interval_seconds,
                 attention_emotion_multipliers=attention_emotion_multipliers,
+                attention_lock_seconds=attention_lock_seconds,
                 reply_burst_window_seconds=reply_burst_window_seconds,
                 reply_burst_max_replies=reply_burst_max_replies,
                 buffer_delay_mean_seconds=buffer_delay_mean_seconds,
@@ -269,6 +275,10 @@ class QQDashboardService:
                 open_reply_probability=open_reply_probability,
                 buffer_collect_window_seconds=buffer_collect_window_seconds,
                 buffer_collect_window_private_seconds=buffer_collect_window_private_seconds,
+                attention_frequency_target_gap=attention_frequency_target_gap,
+                attention_frequency_min_multiplier=attention_frequency_min_multiplier,
+                attention_frequency_max_multiplier=attention_frequency_max_multiplier,
+                locale=locale,
             )
         except ValueError as exc:
             message = str(exc)
