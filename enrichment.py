@@ -252,9 +252,21 @@ class QQMessageEnricher:
                 if img_url and self._image_describer and depth <= _MAX_REPLY_DEPTH:
                     try:
                         desc = await asyncio.wait_for(self._image_describer(img_url), timeout=8.0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # 不往上抛（引用链不许因为一次看图失败整条断掉），但要留痕：
+                        # 这条分支的产物是 `[图片]`（模型没有任何内容可看），静默失败
+                        # 的表现是"猫娘对引用的图答非所问"，看不出原因。
+                        self._emit_log(
+                            "DEBUG", f"[VLM] 引用图描述失败: {type(e).__name__}: {str(e)[:60]}",
+                        )
                 if desc:
+                    # 成功也要留痕，而且要说清是**引用链**的图（与主消息那条
+                    # `_inject_image_descriptions` 分开看）——`_emit_log` 只进 UI
+                    # 环形缓冲、不进文件，"没有报错"并不等于"解析成功了"。
+                    self._emit_log(
+                        "INFO",
+                        f"[VLM] 引用图描述: {desc[:40]}",
+                    )
                     chain.add(Text(f"[Image {desc}]"))
                 else:
                     chain.add(Image(url=img_url))
