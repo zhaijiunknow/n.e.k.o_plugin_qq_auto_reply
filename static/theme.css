@@ -1,0 +1,81 @@
+/* 统一主题 —— 插件界面的**唯一视觉真源**。
+ *
+ * 为什么需要它：本插件历史上长出了两套平行色板，而且都没被线上页面用上 ——
+ *   style.css（旧 old.html 用的整套样式，粉调、圆角 32px）
+ *   napcat.html / open_platform.html：各自内联 17 色板（靛蓝 / 绿、冷灰底、8px 圆角）
+ *   status.html / index.html：一个 var() 都不用，颜色全是硬编码
+ * 于是同一个插件的四个页面看起来像四个产品。
+ *
+ * 这里只放 **token 与极少数通用细节**，不放任何布局/组件规则 —— 页面各自的布局
+ * 保持原样，只有颜色、圆角、阴影从这个文件来。
+ *
+ * 命名策略：两套名字都定义，指向同一组颜色。页面不必逐个改 var(--x) 的引用，
+ * 以后换色也只需要改这一个文件。
+ */
+
+:root {
+    /* ── 基准色（可爱向：粉/蜜桃/奶油）────────────────────────── */
+    --c-rose: #fb7185;          /* 主色：樱花粉 */
+    --c-rose-dark: #f43f5e;     /* 主色按下/悬停 */
+    --c-rose-soft: #fff1f2;     /* 主色浅底（徽标、选中态） */
+    --c-cream: #fff7f9;         /* 页面底色：奶油粉白（不用冷灰 #f0f2f5）*/
+    --c-cream-deep: #ffedf1;    /* 次级底色（表头、斑马纹）*/
+    --c-ink: #4b5563;           /* 正文：柔和的墨色，不用纯黑 */
+    --c-ink-strong: #3b2b31;    /* 标题：带一点暖调 */
+    --c-ink-soft: #9ca3af;      /* 次要文字 */
+    --c-line: #ffe0e6;          /* 描边：粉调，不用冷灰 #e2e8f0 */
+    --c-plum: #3a2630;          /* 侧边栏：暖深紫褐，替代冷蓝黑 #1a1a2e */
+    --c-plum-deep: #2f1f27;     /* 顶栏 */
+    --c-plum-text: #e7c9d3;     /* 侧边栏文字 */
+    --c-amber: #fbbf24;         /* 提醒（柔化过的琥珀）*/
+    --c-mint: #34d399;          /* 成功（柔化过的绿）*/
+    --c-coral: #f87171;         /* 危险（柔化过的红）*/
+    --c-lilac: #a78bfa;         /* 点缀：淡紫 */
+
+    /* ── 别名：新页面 / style.css 那套命名 ───────────────────── */
+    --primary: var(--c-rose);
+    --primary-light: var(--c-rose-soft);
+    --secondary: var(--c-lilac);
+    --bg: var(--c-cream);
+    --card-bg: #ffffff;
+    --text-main: var(--c-ink);
+    --text-sub: var(--c-ink-soft);
+    --border: var(--c-line);
+    --input-bg: #fffafb;
+    --radius-lg: 22px;
+
+    /* ── 别名：napcat / open_platform 那套命名 ──────────────── */
+    --accent: var(--c-rose);
+    --accent-hover: var(--c-rose-dark);
+    --bg-main: var(--c-cream);
+    --bg-card: #ffffff;
+    --bg-sidebar: var(--c-plum);
+    --bg-topbar: var(--c-plum-deep);
+    --text-sidebar: var(--c-plum-text);
+    --text-sidebar-active: #ffffff;
+    --text-primary: var(--c-ink-strong);
+    --text-secondary: var(--c-ink-soft);
+    --danger: var(--c-coral);
+    --success: var(--c-mint);
+    --warning: var(--c-amber);
+    --radius: 14px;             /* 原来 8px —— 圆一点是"可爱"最省力的一步 */
+    --radius-md: 16px;          /* 卡片 */
+    --radius-pill: 999px;       /* 徽标 / 药丸按钮 */
+
+    /* ── 阴影：统一柔和，不用硬边 ───────────────────────────── */
+    --shadow-card: 0 2px 10px rgba(200, 120, 140, .08);
+    --shadow-hover: 0 10px 26px rgba(200, 120, 140, .18);
+}
+
+/* 选中文字与滚动条也统一一下（细节但一眼能看出"换过皮"）*/
+::selection { background: var(--c-rose-soft); color: var(--c-rose-dark); }
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+    background: var(--c-line);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--c-rose); background-clip: content-box; }
