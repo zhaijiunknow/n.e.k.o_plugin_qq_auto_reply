@@ -1,18 +1,21 @@
-"""fail-to-pass 证据：把"免费线看图必须带本体人设"的必要条件逐个拆掉，确认看门狗会红。
+"""fail-to-pass 证据：把"免费线请求必须带本体人设"的必要条件逐个拆掉，确认看门狗会红。
 
-拆的五种情况，每一种都对应一个真实的坏结果：
+拆的八种情况，每一种都对应一个真实的坏结果：
 
 1. 免费线也不带 system → 请求被免费端 400，表情包自动描述又变回"点了没反应"
 2. 自配 API 也塞人设 → 白付 3k 字符的 token（付费线上没有任何收益）
 3. 人设取不到就整条放弃（连图都不发）→ 一个可恢复的取配置失败变成功能全灭
 4. 用硬编码的标志句代替本体人设 → 本体一改人设，插件就开始 400 且没人会想到来看
 5. 人设不替换占位符 → 模型看到字面量 `{LANLAN_NAME}`，描述会跑偏
+6. XML 修复不带人设 → 这条 `except: pass` 的修复路径永远不生效
+7. "我在听"那条闸不带人设 → 永远不响
+8. 缓冲总结不带人设 → 连发多条后的总结回复永远出不来
 
 铁律（沿用 verify_sticker_auto_desc_fail_to_pass.py）：替换前确认替换真的发生；
 恢复放 `finally` 并逐字节核对；每个用例起新进程。
 
 手动运行（不参与 pytest 收集）：
-    python plugin/plugins/qq_auto_reply/tests/verify_vlm_free_marker_fail_to_pass.py
+    python plugin/plugins/qq_auto_reply/tests/verify_free_route_persona_fail_to_pass.py
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ PLUGIN = Path(__file__).resolve().parents[1]
 TESTS = Path(__file__).resolve().parent
 
 TEST_FILES = [
-    str(TESTS / "test_qq_vlm_free_marker.py"),
+    str(TESTS / "test_qq_free_route_persona.py"),
 ]
 
 #: (相对路径, 说明, 原文, 替换成)
@@ -34,7 +37,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "__init__.py",
         "免费线也不带 system（请求被免费端 400）",
-        """            system_prompt = self._vlm_free_route_system_prompt(model_config)
+        """            system_prompt = self._free_route_system_prompt(model_config)
             messages: list[dict[str, Any]] = []
             if system_prompt:""",
         """            system_prompt = ""
@@ -81,6 +84,32 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
                 persona, lanlan_name=her_name, master_name=master_name,
             ) or \"\"""",
         """            return persona""",
+    ),
+    (
+        "reply_postprocess_node.py",
+        "XML 修复不带人设（这条 except: pass 的路径永远不生效）",
+        """            messages: list[dict[str, Any]] = []
+            free_system = self.plugin._free_route_system_prompt(model_config)
+            if free_system:
+                messages.append({"role": "system", "content": free_system})""",
+        """            messages: list[dict[str, Any]] = []""",
+    ),
+    (
+        "reply_buffer_service.py",
+        "「我在听」那条闸不带人设（永远不响）",
+        """            messages: list[dict[str, Any]] = []
+            free_system = self.plugin._free_route_system_prompt(model_config)
+            if free_system:
+                messages.append({"role": "system", "content": free_system})""",
+        """            messages: list[dict[str, Any]] = []""",
+    ),
+    (
+        "reply_buffer_service.py",
+        "缓冲总结不带人设（连发多条后的总结永远出不来）",
+        """            free_system = self.plugin._free_route_system_prompt(_mc)
+            if free_system:
+                await client.connect(instructions=free_system)""",
+        """            pass""",
     ),
 ]
 

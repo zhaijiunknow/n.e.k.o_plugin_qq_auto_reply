@@ -32,7 +32,7 @@
 | 表情包删除：后端新增 `delete_sticker`；入口只在**表情包管理页**（status 页只上传，见 §4.0r） | ✅ 落地 |
 | 表情包上传后**自动用 VLM 解析描述**（复用插件既有的看图函数与预处理，失败保留兜底，见 §4.0s） | ✅ 落地 |
 | 看图用哪个模型槽：**保持 conversation**（一度改成 vision，使用者要求回退；保留失败日志） | ✅ 已回退 + 看门狗 |
-| **免费线看图一直被 400 拦掉**（根因：请求里没带本体人设；看图现在是真能用了，见 §4.0t） | ✅ 已修 + 端到端实测 |
+| **免费线上自己拼消息的 LLM 调用一直被 400 拦掉**（根因：请求里没带本体人设；四处调用点全修，见 §4.0t） | ✅ 已修 + 端到端实测 |
 | `status.html` 三个 `data-i18n-ph` 从来没被翻译（属性名 i18n.js 不认 + 键不存在） | ✅ 已修 + 第 4 类 i18n 检查 |
 | `open_platform` 的表情包描述永远是文件名（两个缺陷叠加，静默） | ✅ 已修 + 跨页看门狗 |
 | 界面背景：**分页面配图** —— status 用森林插画 `.30`，其余用蓝白图形 `.45`（见 §4.0o-2 / §4.0o-3） | ✅ 落地 |
@@ -104,9 +104,9 @@
 - `test_qq_log_panel_scroll.py` — 日志面板滚动契约
 - `test_qq_source_kind_sets.py` — **source_kind 看门狗**（防"判据集合与真实生产者漂移"）
 - `test_qq_session_eviction_and_group_id_guard.py` — 会话回收 + 空 group_id 守卫
-- `test_qq_vlm_free_marker.py` — **免费线看图的请求形态**（必须带本体人设、只对免费线带、
-  标志句不许硬编码）——见 §4.0t
-- `verify_vlm_free_marker_fail_to_pass.py` — 同上，5 种注入全红 + 对照绿
+- `test_qq_free_route_persona.py` — **免费线请求的形态**（四处调用点：看图 / XML 修复 /
+  「我在听」/ 缓冲总结；必须带本体人设、只对免费线带、标志句不许硬编码）——见 §4.0t
+- `verify_free_route_persona_fail_to_pass.py` — 同上，8 种注入全红 + 对照绿
 
 ---
 
@@ -1236,7 +1236,7 @@ you are not using Lanlan. STOP ABUSE THE API.`），请求根本没走到"能不
 端到端（`window.call` 桩）：`.dsh-artifacts/verify-sticker.py` 实测勾选时传
 `auto_desc=True`、取消勾选传 `False`；`verify-sticker-others.py` 两页同为 `True`。
 
-**测试基线：746 passed**（§4.0t 又加了 9 条）。
+**测试基线：753 passed**（§4.0t 又加了 16 条）。
 
 ---
 
@@ -1281,7 +1281,7 @@ prompt 特征**：请求里没有它 → 判成"不是 Lanlan 客户端"→ 400�
 
 **修法**（`__init__.py`）：
 
-* 新增 `_vlm_free_route_system_prompt(model_config)`：base_url 命中 `FREE_ROUTE_HOST_HINT`
+* 新增 `_free_route_system_prompt(model_config)`：base_url 命中 `FREE_ROUTE_HOST_HINT`
   （`"lanlan"`）时，返回**本体那份人设**（`config_manager.get_character_data()` 的
   `data[5][data[1]]`），并用 `_apply_role_placeholders` 把 `{LANLAN_NAME}`/`{MASTER_NAME}`
   换掉；`_vlm_describe_locator` 把它作为**第一条 system 消息**，user 那条仍是"图 + 提示词"。
@@ -1291,6 +1291,22 @@ prompt 特征**：请求里没有它 → 判成"不是 Lanlan 客户端"→ 400�
   token 付费。
 * 人设取不到时**照发请求**（只是没有 system），失败仍由既有 `[VLM]` 日志说话；
   取不到人设这件事本身也记一条 `[INFO]`。
+
+#### 同一个根因下另外三处（一起修了）
+
+排查时把插件里**所有自己拼消息**的 LLM 调用过了一遍，发现四处都踩同一个坑，
+而它们全是 `except: pass` / 只留一条 WARN 的"尽力而为"路径 —— 也就是说这些功能
+**在免费线上从来没有生效过，且不留痕迹**：
+
+| 调用点 | 症状 | 修法 |
+|---|---|---|
+| `_vlm_describe_locator`（表情包自动描述 / 引用图描述） | 描述永远出不来 | system 首条 = 人设 |
+| `reply_postprocess_node._repair_xml` | XML 修复永远失败（`except: pass`） | 同上 |
+| `reply_buffer_service._generate_ack` | 「我在听」那条闸永远不响 | 同上（提示词本来就写着"要符合你的人设"） |
+| `reply_buffer_service._summarize_buffered` | **连发多条后的总结回复永远出不来** | 主路 `OmniOfflineClient` 改成先 `connect(instructions=人设)`（system 就是会话 instructions），raw LLM 兜底同样加 system |
+
+**注意**：自配线上人设是空的 → system 消息不加、`connect()` 也不调，**行为与改动前逐字相同**，
+所以这不是"给所有线路统一塞人设"，而是"免费线补上它一直缺的那一样"。
 
 **顺带修好的**：引用回复/入站图片的描述走的是同一个函数（`enrichment.py` 的
 `image_describer`），所以那一路也一起活了 —— 以前每张图都在静默地拿不到描述。
@@ -1303,13 +1319,14 @@ upload_sticker(auto_desc=true, desc="探针：这条是手填的兜底描述")
 delete_sticker(id=46) → total 45，探针文件无残留
 ```
 
-**验证**：`tests/test_qq_vlm_free_marker.py`（9 条：免费线带 system 且是人设文本、
+**验证**：`tests/test_qq_free_route_persona.py`（16 条：免费线带 system 且是人设文本、
 占位符已替换、图与提示词没被挤掉、付费线/本地端点不加 system、人设取不到仍发请求、
 `get_character_data()` 抛错被吞、取不到人设要留日志、**标志句不许硬编码**、
-人设必须来自本体的 `get_character_data()`）。
-`tests/verify_vlm_free_marker_fail_to_pass.py` **5 种注入全红** + 对照组绿
+人设必须来自本体的 `get_character_data()`；另外三处调用点各自的"免费线带人设 /
+自配线不带"与源码级"必须走同一个助手"）。
+`tests/verify_free_route_persona_fail_to_pass.py` **8 种注入全红** + 对照组绿
 （含"免费线不带 system"、"自配线也塞人设"、"人设取不到就整条放弃"、"换成硬编码标志句"、
-"不替换占位符"）。
+"不替换占位符"，以及 XML 修复 / 「我在听」/ 缓冲总结三处各自去掉人设）。
 
 **留给下次的坑**：如果哪天免费线又全变 400，**先看本体人设里那句标志句还在不在**
 （`config/characters.json` → 角色的 prompt），这是唯一被验证过的判据。
@@ -1386,7 +1403,7 @@ git apply .dsh-artifacts/bm25-threshold-floor.patch
 | 多群共现长期统计 | 单次会话样本，长期是否出现 3+ 群竞争未验证 |
 | MaiBot 1.0.0 的 `focus_*` / `attention_drift` | **只有配置文档、无源码**，行为语义未确认 |
 | 注意力重构 | **步 0/1/2/3/6/7 已落地**（见 §0 与 §4.0a–i）；步 4/5 已由使用者否决 |
-| 免费线看图（`[VLM]`） | **已修**（§4.0t）：原因是请求里没带本体人设，免费端判成"不是 Lanlan 客户端"。端到端 `vlm_used=true` 已实测 |
+| 免费线上自拼消息的 LLM 调用（看图 / XML 修复 / 「我在听」/ 缓冲总结） | **已修**（§4.0t）：原因是请求里没带本体人设，免费端判成"不是 Lanlan 客户端"。看图那条端到端 `vlm_used=true` 已实测；另外三条只有单测 + fail-to-pass，**没有真实流量实测** |
 | "哪个模型真的支持看图" | 仍无对比数据：`conversation`(`free-model`) 实测能描述图；`vision` 槽那条**没单独实测过**（使用者要求不动槽，所以没测） |
 
 ---

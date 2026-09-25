@@ -964,7 +964,13 @@ class QQReplyBufferService:
     # ── LLM 合并决策 ──
 
     async def _generate_ack(self, texts: list[str]) -> str:
-        """让 LLM 决定是否发简短确认，以及确认内容。返回空字符串表示不发。"""
+        """让 LLM 决定是否发简短确认，以及确认内容。返回空字符串表示不发。
+
+        **必须带本体人设**：免费端（lanlan）只认带人设的请求，不带一律 400，而这里
+        是 `except Exception: pass` 的尽力而为路径 —— 静默失败等于"我在听"这条闸
+        永远不响（见 docs/SESSION-HANDOFF.md §4.0t）。提示词本来就要求"要符合你的
+        人设"，人设进 system 与它的意图一致。
+        """
         try:
             from utils.config_manager import get_config_manager
             from utils.llm_client import create_chat_llm_async
@@ -990,8 +996,13 @@ class QQReplyBufferService:
                 "如果不需要，只输出 SKIP。\n"
                 "只输出确认语或 SKIP，不要输出其他内容。"
             )
+            messages: list[dict[str, Any]] = []
+            free_system = self.plugin._free_route_system_prompt(model_config)
+            if free_system:
+                messages.append({"role": "system", "content": free_system})
+            messages.append({"role": "user", "content": prompt})
             resp = await asyncio.wait_for(
-                llm.ainvoke([{"role": "user", "content": prompt}]),
+                llm.ainvoke(messages),
                 timeout=5.0,
             )
             result = str(getattr(resp, "content", "") or "").strip()
@@ -1002,7 +1013,14 @@ class QQReplyBufferService:
         return ""
 
     async def _summarize_buffered(self, texts: list[str], is_group: bool) -> str:
-        """缓冲结束后，让 LLM 看所有缓冲消息生成一条总结回复。"""
+        """缓冲结束后，让 LLM 看所有缓冲消息生成一条总结回复。
+
+        **两条路都必须带本体人设**：免费端（lanlan）只认带人设的请求，不带就一律
+        400 —— 主路（`OmniOfflineClient.stream_text`）以前既不 `connect()` 也不带
+        人设，等于这条请求必然被拒，再落到同样不带人设的 raw LLM 兜底，一起 400。
+        结果是"对方连发一堆消息"这个场景下总结回复永远出不来
+        （见 docs/SESSION-HANDOFF.md §4.0t）。
+        """
         try:
             combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(texts))
             prompt = (
@@ -1034,6 +1052,11 @@ class QQReplyBufferService:
                 model=str(_mc.get("model", "")),
                 on_text_delta=_on_text,
             )
+            # 人设只能经 `connect(instructions=…)` 进这条路（system 消息就是会话的
+            # instructions）。非免费线没有这道门，维持原来的"不 connect"行为。
+            free_system = self.plugin._free_route_system_prompt(_mc)
+            if free_system:
+                await client.connect(instructions=free_system)
             await _asyncio.wait_for(client.stream_text(prompt), timeout=10.0)
             result = resp_text.strip()
             if result:
@@ -1051,7 +1074,12 @@ class QQReplyBufferService:
                 max_completion_tokens=300, timeout=10.0,
                 provider_type=model_config.get("provider_type"),
             )
-            resp = await _asyncio.wait_for(llm.ainvoke([{"role": "user", "content": prompt}]), timeout=10.0)
+            messages: list[dict[str, Any]] = []
+            fallback_system = self.plugin._free_route_system_prompt(model_config)
+            if fallback_system:
+                messages.append({"role": "system", "content": fallback_system})
+            messages.append({"role": "user", "content": prompt})
+            resp = await _asyncio.wait_for(llm.ainvoke(messages), timeout=10.0)
             result = str(getattr(resp, "content", "") or "").strip()
             return result if result else ""
         except Exception as e:

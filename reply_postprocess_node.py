@@ -248,7 +248,12 @@ class QQReplyPostprocessNode:
         return blocks if blocks else [QQMessageBlock(text=raw_text)]
 
     async def _repair_xml(self, broken: str) -> str | None:
-        """用 LLM 修复格式错误的 XML 输出（30秒超时，失败则放弃）。"""
+        """用 LLM 修复格式错误的 XML 输出（30秒超时，失败则放弃）。
+
+        **必须带本体人设**：这条请求是自己拼的消息，免费端（lanlan）只认带人设的
+        请求，不带就一律 400 —— 而这个方法是 `except Exception: pass` 的"尽力而为"
+        路径，静默失败等于功能不存在（见 docs/SESSION-HANDOFF.md §4.0t）。
+        """
         import asyncio
         try:
             from utils.config_manager import get_config_manager
@@ -268,8 +273,13 @@ class QQReplyPostprocessNode:
                 "以下是一段格式错误的 XML，请修复它使其成为合法的 XML，不要改变任何内容和标签：\n\n"
                 f"{broken}\n\n只返回修复后的 XML。"
             )
+            messages: list[dict[str, Any]] = []
+            free_system = self.plugin._free_route_system_prompt(model_config)
+            if free_system:
+                messages.append({"role": "system", "content": free_system})
+            messages.append({"role": "user", "content": prompt})
             response = await asyncio.wait_for(
-                llm.ainvoke([{"role": "user", "content": prompt}]),
+                llm.ainvoke(messages),
                 timeout=15.0,
             )
             fixed = str(getattr(response, "content", "") or "").strip()
