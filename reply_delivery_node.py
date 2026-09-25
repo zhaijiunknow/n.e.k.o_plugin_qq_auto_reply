@@ -5,7 +5,12 @@ import random
 from collections.abc import Callable
 from typing import Any
 
-from .pipeline_models import QQDeliveryPlan, QQDeliveryResult, QQMessageBlock
+from .pipeline_models import (
+    QQDeliveryPlan,
+    QQDeliveryResult,
+    QQMessageBlock,
+    backlog_sender_label,
+)
 
 
 class QQReplyDeliveryNode:
@@ -55,6 +60,21 @@ class QQReplyDeliveryNode:
                 continue
 
             if block.record:
+                # record 与 text 同块时**两者都要发**：提示词明说 `<record>` 可以
+                # 和 `<text>` 组合，而这里以前直接 `continue`，那段文字永远发不出去
+                # ——用户听到语音、看不到文字，历史行里存的却是文字。
+                # 顺序与 `<sticker>` 那条「先发文字、表情包跟发」一致：先文字后语音。
+                #
+                # `keyboard` 仍不传给文本分支：按钮在语音块里没有意义，把它的文案
+                # 并进正文等于凭空多送一段用户没要求的文字（`delivered_blocks_text`
+                # 对 record 块的 keyboard 排除逻辑与此保持一致）。
+                text = self._compose_text(block)
+                if text:
+                    if i == 0:
+                        first_text = text
+                    content_attempted = True
+                    if not await self._send_text(plan, block, text, keyboard=""):
+                        content_sent = False
                 content_attempted = True
                 if not await self._send_record(plan, block):
                     content_sent = False
@@ -146,8 +166,14 @@ class QQReplyDeliveryNode:
         if block.text:
             # 兜底：清除 prompt 模板 XML 标签残留（模型偶有输出未进 msg 包裹的裸标签，
             # 后处理器移除后仍可能因格式变体留下漏网之鱼）
+            #
+            # `ark` 也在这里，而且它是**内容泄漏**而不是内容丢失：Ark 卡片没有投递
+            # 实现（下面 `if block.ark:` 分支只记一条 warning），于是块外/旧式写法里的
+            # `<ark title="…" desc="…">正文</ark>` 会原样发给用户。开放平台格式段明文
+            # 教模型用这个标签，用户就会在群里看到一整段 XML。剥掉标签壳、留下正文
+            # 是这里唯一合理的降级。
             clean = block.text
-            clean = _re.sub(r"</?(?:reply|msg|at|poke|sticker|record|keyboard|text|emoji|think|feeling|forward|mark)(?:\s[^>]*)?\s*/?>", "", clean, flags=_re.IGNORECASE)
+            clean = _re.sub(r"</?(?:reply|msg|at|poke|sticker|record|keyboard|text|emoji|think|feeling|forward|mark|ark)(?:\s[^>]*)?\s*/?>", "", clean, flags=_re.IGNORECASE)
             parts.append(clean.strip())
         if block.emoji:
             parts.append(f"[CQ:face,id={block.emoji}]")
@@ -254,6 +280,69 @@ class QQReplyDeliveryNode:
             await self.plugin.qq_client.send_group_poke(plan.target_id, block.poke),
         )
 
+    @staticmethod
+    def build_forward_nodes(
+        messages: list[dict[str, Any]], *, summary: str = "",
+        bot_name: str = "", bot_uin: str = "",
+    ) -> list[dict[str, Any]]:
+        """把「标记之后的多人多句」组装成合并转发节点。
+
+        节点格式是 OneBot v11 的 `node`：每个节点带 `name`/`uin`（显示成谁说的）
+        和 `content`（消息段数组）。**第一句是模型写的那句总结**，用机器人自己的
+        身份发（提示词：「写一句总结，系统自动附上标记之后的对话原文」）。
+        """
+        nodes: list[dict[str, Any]] = []
+
+        def _node(name: str, uin: str, text: str) -> dict[str, Any]:
+            return {
+                "type": "node",
+                "data": {
+                    "name": str(name or "群友"),
+                    "uin": str(uin or "0"),
+                    "content": [{"type": "text", "data": {"text": str(text)}}],
+                },
+            }
+
+        text = str(summary or "").strip()
+        if text:
+            nodes.append(_node(bot_name or "猫娘", bot_uin or "0", text))
+        for item in messages or []:
+            body = str(item.get("text") or item.get("message_text") or "").strip()
+            if not body:
+                continue
+            nodes.append(
+                _node(
+                    backlog_sender_label(item),
+                    str(item.get("sender_id") or "0"),
+                    body,
+                )
+            )
+        return nodes
+
+    async def send_forward(
+        self, *, target_type: str, target_id: str, nodes: list[dict[str, Any]],
+    ) -> bool:
+        """发一条合并转发。仅 NapCat 支持（开放平台是返回 `{}` 的空桩，判成未确认）。"""
+        target_id = str(target_id or "").strip()
+        if not target_id or not nodes:
+            self.plugin.logger.info("合并转发缺少目标或内容，跳过")
+            return False
+        client = self.plugin.qq_client
+        if not client:
+            return False
+        try:
+            if target_type == "group":
+                result = await client.send_group_forward_msg(target_id, nodes)
+            else:
+                result = await client.send_private_forward_msg(target_id, nodes)
+        except Exception:
+            self.plugin.logger.warning("合并转发发送失败", exc_info=True)
+            return False
+        if not self._confirm_platform_result(result):
+            self.plugin.logger.info(f"合并转发未被确认（target={target_id}）")
+            return False
+        return True
+
     def _supports_keyboard(self) -> bool:
         """Only the Open Platform renders official keyboard buttons.
 
@@ -261,6 +350,39 @@ class QQReplyDeliveryNode:
         accepts the kwarg for interface parity but never reads it."""
         client = self.plugin.qq_client
         return bool(client and not client.needs_attention)
+
+    async def send_emoji_reaction(self, message_id: str, emoji_id: str) -> bool:
+        """给某条消息**贴表情**（反应），不是把表情当消息发出去。
+
+        这是 `<emoji>` 块外标签的唯一正确投递方式：提示词承诺的就是「对消息的表情回复
+        （贴表情到对方消息上）」。以前这个字段解析出来却**没有任何消费方**，模型照提示词
+        做也零效果。
+
+        仅 NapCat 支持：开放平台客户端里 `set_msg_emoji_like` 是返回 `{}` 的空桩，
+        `{}` 是假值，所以这里天然会被判成未确认 —— 不需要额外分支，但也不能因为
+        它而让整轮回复失败（反应是装饰，失败只降级成日志）。
+        """
+        message_id = str(message_id or "").strip()
+        emoji_id = str(emoji_id or "").strip()
+        if not message_id or not emoji_id:
+            # 合成轮（回溯补回/破冰）没有对应的具体消息，没有可以贴的对象。
+            self.plugin.logger.info("表情反应缺少目标消息 id，跳过")
+            return False
+        client = self.plugin.qq_client
+        if not client or not hasattr(client, "set_msg_emoji_like"):
+            self.plugin.logger.info("当前连接不支持表情反应，跳过")
+            return False
+        try:
+            result = await client.set_msg_emoji_like(message_id, emoji_id)
+        except Exception:
+            self.plugin.logger.warning("表情反应发送失败", exc_info=True)
+            return False
+        if not self._confirm_platform_result(result):
+            self.plugin.logger.info(
+                f"表情反应未被确认（message_id={message_id} emoji={emoji_id}）",
+            )
+            return False
+        return True
 
     @staticmethod
     def _confirm_platform_result(result) -> bool:

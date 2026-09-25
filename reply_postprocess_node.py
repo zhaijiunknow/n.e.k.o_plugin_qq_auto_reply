@@ -136,10 +136,7 @@ class QQReplyPostprocessNode:
                     block.ark["_body"] = ark_el.text.strip()
 
             # 如果没有任何子元素但有直接文本（裸 <msg>text</msg>）
-            if not any([
-                block.text, block.emoji, block.at_user, block.reply_to,
-                block.sticker, block.poke, block.record, block.keyboard, block.ark,
-            ]) and msg_el.text:
+            if not QQReplyPostprocessNode.block_has_content(block) and msg_el.text:
                 block.text = msg_el.text.strip()
 
             blocks.append(block)
@@ -149,6 +146,33 @@ class QQReplyPostprocessNode:
             return [QQMessageBlock(text=text)]
 
         return blocks
+
+    @staticmethod
+    def block_has_content(block: QQMessageBlock) -> bool:
+        """这个块里有没有**用户能看到的东西**。
+
+        与投递层同口径：``reply_delivery_node._compose_text`` 把 text/emoji/at/reply
+        组合成最终文本，poke/sticker/record/keyboard/ark 各有分支。任何一项非空都
+        意味着"发得出去"。
+
+        抽出来是因为这个判断以前散在两处（``_parse_blocks`` 的裸 ``<msg>`` 回退、
+        投递分支），而**漏掉它的代价已经真实发生过**：``<msg></msg>`` 解析出一个
+        全空块，投递层正确地跳过了它（什么都不发），但 ``outcome.reply_text`` 仍是
+        ``"<msg></msg>"`` 这个真值字符串 —— 于是所有
+        ``outcome.action == "reply" and outcome.reply_text`` 的调用点全部误判：
+        注意力被当成"已回复"扣了一次、用户消息被标成已读、回溯/破冰记成"成功"。
+        """
+        return bool(
+            str(getattr(block, "text", "") or "").strip()
+            or str(getattr(block, "emoji", "") or "").strip()
+            or str(getattr(block, "at_user", "") or "").strip()
+            or str(getattr(block, "reply_to", "") or "").strip()
+            or str(getattr(block, "sticker", "") or "").strip()
+            or str(getattr(block, "poke", "") or "").strip()
+            or str(getattr(block, "record", "") or "").strip()
+            or str(getattr(block, "keyboard", "") or "").strip()
+            or getattr(block, "ark", None)
+        )
 
     @staticmethod
     def _normalize_keyboard(raw: str | None) -> str:
@@ -285,7 +309,25 @@ class QQReplyPostprocessNode:
         forward_count = 0
         mark_flag = False
 
-        if strategy_mode == "neko_dynamic" and reply_text:
+        # 门控必须与「提示词有没有教模型用这些标签」一致，而不是只看策略。
+        #
+        # `session_instruction_service.py:388-394` 是**按平台优先**选格式段的：
+        # 开放平台一定拿到 `FORMAT_PROMPT_SECTION_OPEN_PLATFORM`，里面完整教了
+        # `<at>/<reply>/<sticker>/<keyboard>/<ark>`。而这里以前只按
+        # `strategy_mode == "neko_dynamic"` 开门 —— 于是「开放平台 + neko_scene」
+        # 这个组合下，提示词教了一整套标签、解析器一个都不认：`<at>123456</at>`
+        # 被剥成裸数字 `123456` 发给用户（不是 @），`<reply>114514</reply>` 变成
+        # 裸 ID，`<sticker>` 只剩 ID 数字且表情包根本不发。两个开关在界面上都能选
+        # 且互不联动（`config_store.py` 的 VALID_STRATEGY_MODES、两个 html 的策略下拉）。
+        #
+        # 判据直接镜像提示词那一处（`is_open_plat or neko_dynamic`），这样两边的
+        # 条件以后不会再各自漂移。neko_scene + NapCat 的行为完全不变
+        # （`needs_attention` 为 True ⇒ 不解析，仍走纯文本）。
+        _non_attention_client = bool(
+            getattr(self.plugin, "qq_client", None)
+            and not getattr(self.plugin.qq_client, "needs_attention", True)
+        )
+        if (strategy_mode == "neko_dynamic" or _non_attention_client) and reply_text:
             import re
             # --- 提取独立标签（仅限 <msg> 之外的标签，不碰块内内容）---
             # 计算 <msg> 块区间，辅助判断标签是否在块外
@@ -364,6 +406,23 @@ class QQReplyPostprocessNode:
             # 构建人类可读的 reply_text（首个块的文本）
             first_text = blocks[0].text if blocks else ""
             reply_text = first_text or reply_text
+
+            # 全是空块（典型 `<msg></msg>`）⇒ 模型说了个空消息 = 它选择不说话。
+            #
+            # 必须在这里归零，不能留给投递层：投递层确实会跳过空块（什么都不发），
+            # 但 `reply_text` 仍是 "<msg></msg>" 这个**真值字符串**，于是所有
+            # `outcome.action == "reply" and outcome.reply_text` 的调用点全部误判 ——
+            # 注意力被当成"已回复"扣一次、用户消息被标已读（再也不会被回溯补回）、
+            # 回溯/破冰记成"成功"。实测见过：日志里
+            # `[RetroReview] 回溯回复已发送: <msg></msg>`。
+            #
+            # 归零之后本方法自然走到下面的 `llm_skip` 分支（`reply_text=None`），
+            # 语义正好是"模型被给了机会但没说话"，而且 `feeling` 照旧保留。
+            if blocks and not any(
+                QQReplyPostprocessNode.block_has_content(b) for b in blocks
+            ):
+                blocks = []
+                reply_text = ""
             # 日志：LLM 使用的标签
             tags = []
             if emoji_reaction_id:
@@ -388,7 +447,11 @@ class QQReplyPostprocessNode:
             if tags:
                 self.plugin._emit_log("INFO", f"[Tags] {' | '.join(tags)}")
 
-        if blocks or reply_text:
+        # `emoji_reaction_id` / `forward_content` 也算"有内容"：只贴一个表情、或只发一次
+        # 合并转发，都是完全合理的回复（提示词把这两个都描述成独立的块外标签）。
+        # 不算进来的话，这些输出会被判成 `llm_skip` —— 于是日志写成「决定不回复」
+        # 而其实已经发了东西，注意力/频率的记账也与事实不符。
+        if blocks or reply_text or emoji_reaction_id or forward_content:
             return QQReplyOutcome(
                 action="reply",
                 reply_text=reply_text,

@@ -15,6 +15,7 @@ import asyncio
 from typing import Any
 
 from .feedback_classifier import QQFeedbackClassifier
+from .pipeline_models import backlog_sender_label
 
 
 class GateDecision:
@@ -238,6 +239,11 @@ class QQAttentionGateService:
         # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
         #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。
         if is_at_bot and not is_reply_to_bot:
+            # 被 @ = **锁**：期内该群独占焦点，其余群不参与竞争。
+            # mark_focus / wake_boost 仍保留（它们管分数与保持线），但独占语义由
+            # lock 承担 —— 分数是「我多想聊这个群」，锁是「有人点名叫我」。
+            # 见 docs/attention-redesign-draft.md §2「锁与归属是两条并行规则」。
+            attention.lock_group(normalized_group_id)
             attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
             return GateDecision("reply", reason="at_bot", force_reply=True)
@@ -380,6 +386,14 @@ class QQAttentionGateService:
         # 有未审消息 → 重置冷场计数
         self._cold_focus_count.pop(group_id, None)
         self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
+        # 本次**真正喂给模型**的消息就是"已审"的边界。标记必须收窄到这个集合，
+        # 不能整群全标：模型只看得到最新 max_messages 条，超窗的旧消息若被一起
+        # 标成已审，就永远不会被补回——用户既没看到、也再没有机会看到。
+        reviewed_ids = {
+            str(item.get("message_id") or "").strip()
+            for item in unreviewed
+            if str(item.get("message_id") or "").strip()
+        }
 
         # 2. 复用缓冲链路：构造总结 prompt，让猫娘挑最多 max_reply 条用 <reply> 回应
         summary = self._build_ignored_summary(unreviewed)
@@ -422,11 +436,13 @@ class QQAttentionGateService:
         except Exception as e:
             self._logger.warning(f"[RetroReview] 回溯总结失败: {e}")
 
-        # 3. 标记已读
+        # 3. 标记已读（只标本次消费掉的那批，见上）
         attention.mark_focus(group_id)
         try:
-            await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
-            self._logger.info(f"[RetroReview] 群 {group_id} 已标记为已审阅")
+            await self.plugin.backlog_service.mark_group_reviewed_payload(
+                group_id, message_ids=reviewed_ids,
+            )
+            self._logger.info(f"[RetroReview] 群 {group_id} 已标记 {len(reviewed_ids)} 条为已审阅")
         except Exception as e:
             self._logger.warning(f"[RetroReview] 标记已审阅失败: {e}")
         return []
@@ -440,7 +456,10 @@ class QQAttentionGateService:
         """把被忽略的消息列表生成 LLM 可读的摘要，每条消息后携带 (id=消息ID) 供 <reply> 引用。"""
         lines: list[str] = []
         for i, msg in enumerate(messages, 1):
-            nickname = str(msg.get("sender_nickname") or msg.get("sender_id") or "未知")
+            # 发言人显示名收口进 `backlog_sender_label`：backlog 落盘的键是
+            # `sender_name`，这里原先硬编码 `sender_nickname` —— 对 backlog 记录
+            # 永远取不到，于是**回溯补回的摘要里显示的全是 QQ 号**而不是昵称。
+            nickname = backlog_sender_label(msg, default="未知")
             # backlog 存储项来自 QQBacklogMessage.to_dict()，内容键是 text；
             # message_text 是旧键名（无历史数据），保留作兜底。
             text = str(msg.get("text") or msg.get("message_text") or "").strip()

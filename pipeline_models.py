@@ -13,17 +13,53 @@ class QQPipelineStageTrace:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# 合成来源：这些轮次的 sender 只是名义上的发言人（主动搭话的控制指令、
-# 缓冲合并/确认、延迟投递、回溯补回、入群通知），其 prompt 文本不是这个人
-# 说的话。写侧（不入 participant bucket）、读侧（不召回该成员的 scoped
-# 记忆）、mention 计数三处必须用同一份判据，否则一处漏掉就等于用别人的
-# 私人事实去生成公开发言。
+# ── source_kind 的单一真相表 ─────────────────────────────────────────
+#
+# 这些常量是**全部真实写者**（`source_kind=` 的赋值点）。任何一处新增来源都必须
+# 同时决定它属于下面哪一类，否则就会重演本次修掉的两个洞。
+#
+#: 该轮是**真实的人在说话**：sender 就是发言人本人。
+KIND_INCOMING = "incoming"
+KIND_INCOMING_PRIVATE = "incoming_private"
+KIND_INCOMING_GROUP = "incoming_group"
+KIND_RAPID_FIRE = "rapid_fire_flush"
+
+#: 该轮的 sender 只是**名义发言人**，prompt 文本不是这个人说的话。
+#: 主动搭话的控制指令、缓冲合并、回溯补回、入群通知、破冰都属此类。
+KIND_PROACTIVE_SPEECH = "proactive_speech"
+KIND_PROACTIVE_PRIVATE = "proactive_private"
+KIND_PROACTIVE_GROUP = "proactive_group"
+KIND_RETROACTIVE_REVIEW = "retroactive_review"
+KIND_GROUP_JOIN_NOTICE = "group_join_notice"
+
+#: 合成来源：其 sender 是名义发言人而非真实说话者。
+#:
+#: 写侧（不入 participant bucket）、读侧（不召回该成员的 scoped 记忆）、mention
+#: 计数必须用**同一份**判据，否则一处漏掉就等于用别人的私人事实去生成公开发言。
+#:
+#: ⚠️ 本集合曾经漏掉 `proactive_private` / `proactive_group`（主动发言把 admin
+#: 当 sender，于是**管理员在本群的成员域画像被注入一条公开发到全群的回复**，
+#: 见 `runtime_ops_service.py` 的两个 send 入口），同时含一个**零生产者**的
+#: `buffer_delayed`。两类漂移（漏真实生产者 / 留死常量）都是靠人工同步集合与
+#: 赋值点造成的，现在由 `tests/test_qq_source_kind_sets.py` 的看门狗盯着。
 SYNTHETIC_SOURCE_KINDS = frozenset({
-    "proactive_speech",
-    "rapid_fire_flush",
-    "buffer_delayed",
-    "retroactive_review",
-    "group_join_notice",
+    KIND_PROACTIVE_SPEECH,
+    KIND_PROACTIVE_PRIVATE,
+    KIND_PROACTIVE_GROUP,
+    KIND_RAPID_FIRE,
+    KIND_RETROACTIVE_REVIEW,
+    KIND_GROUP_JOIN_NOTICE,
+})
+
+#: 这些来源**本身已经是缓冲投递链路的一环**，不得再被投进 reply_buffer
+#: （否则会自我延迟/自我合并）。与 `SYNTHETIC_SOURCE_KINDS` 是**不同的判据**：
+#: 入群通知是合成轮，但它走正常投递、不过缓冲；而主动发言两者都是。
+#: 曾经这里是 `reply_pipeline` 里内联的第三个元组，于是同样漏了 proactive_group。
+BUFFER_INTERNAL_SOURCE_KINDS = frozenset({
+    KIND_RAPID_FIRE,
+    KIND_PROACTIVE_SPEECH,
+    KIND_PROACTIVE_PRIVATE,
+    KIND_PROACTIVE_GROUP,
 })
 
 
@@ -36,17 +72,17 @@ def delivered_blocks_text(blocks) -> str:
     reach anti-repeat suppression."""
     parts: list[str] = []
     for block in blocks or []:
-        # 与投递侧同一优先级：record 块在文本之前被处理并 continue，所以
-        # 一个既有 text 又有 record 的块，用户听到的是语音、看不到那段
-        # 文本——两段都记会把没送出去的内容写进记忆与 mention 计数。
+        # 与投递侧同口径：同块的 record 与 text **两者都发**（先文字、再语音），
+        # 所以两段都要记进记忆与 mention 计数。以前只记 record，是因为那会儿
+        # 文字根本发不出去（投递侧 record 分支直接 continue）。
         record = str(getattr(block, "record", "") or "").strip()
-        value = record or str(getattr(block, "text", "") or "").strip()
-        if value:
-            parts.append(value)
+        for value in (str(getattr(block, "text", "") or "").strip(), record):
+            if value:
+                parts.append(value)
         # 选项文案在**文本块**上才会送到用户面前（开放平台渲染成按钮，
-        # NapCat/私聊把它并进正文，语音把它念出来）。record 块走的是另一
-        # 条分支并直接 continue，keyboard 根本不会渲染——把它记下来等于
-        # 让没人看过的选项进记忆与 mention 计数。
+        # NapCat/私聊把它并进正文，语音把它念出来）。record 块投递时不把
+        # keyboard 交给文本分支（见 reply_delivery_node 的 record 分支），
+        # 所以它根本不会渲染——记下来等于让没人看过的选项进记忆与 mention 计数。
         if not record:
             labels = " / ".join(
                 part.strip()
@@ -61,6 +97,22 @@ def delivered_blocks_text(blocks) -> str:
 def is_synthetic_source(source_kind: str | None) -> bool:
     """True when the turn's nominal sender did not actually say anything."""
     return str(source_kind or "") in SYNTHETIC_SOURCE_KINDS
+
+
+def backlog_sender_label(item: dict, *, default: str = "群友") -> str:
+    """一条 backlog 记录里发言人的显示名。
+
+    **键名只能写在这里**。backlog 落盘的键是 ``sender_name``（见
+    ``QQBacklogMessage.to_dict`` 与真实 ``backlog_state.json``），而另外几条路径
+    （喂给插件的消息字典）用的是 ``sender_nickname``。三处读点各自硬编码键名时，
+    两处写成了 ``sender_nickname`` —— 对 backlog 记录永远取不到，于是**全部回落到
+    QQ 号**：转发卡片、回溯补回摘要里显示的都是数字而不是昵称。
+    """
+    for key in ("sender_name", "sender_nickname"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return str(item.get("sender_id") or "").strip() or default
 
 
 @dataclass(slots=True)

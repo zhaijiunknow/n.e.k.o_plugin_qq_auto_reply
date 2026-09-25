@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import time
 from typing import Any
 
@@ -9,6 +10,54 @@ from .display_name_service import QQDisplayNameService
 from .pipeline_models import is_synthetic_source
 
 _CURRENT_TURN_AI_ROW = object()
+
+#: 与投递层**同一份标签表**（`reply_delivery_node._compose_text` 的兜底清洗）。
+#:
+#: 为什么记忆写入侧也要清：历史里的 `ai` 行是**模型原始输出**（宿主把模型文本原样
+#: append 进 `_conversation_history`），带 `<feeling>`/`<msg>`/`<text>` 这套插件自己的
+#: 格式标记；而用户实际看到的只有投递层剥出来的内文。实测（2026-09-25 真实落盘）：
+#:
+#:   recent.json     含内部标记 19 处
+#:   outbox.ndjson   含内部标记 173 处
+#:   facts / reflections / persona  —— 0 处（提取器会重写文本，所以持久语义层是干净的）
+#:
+#: 也就是说这不是隐私泄漏，而是**卫生问题**：记忆的近窗/续接文本里带着内部控件标记，
+#: 它们可能被喂回 prompt（教模型在不用 XML 格式的场合也吐标记），也会污染任何直接
+#: 渲染记忆文本的界面。
+#:
+#: 分类**按真实数据定**（从 145 条落盘 ai 行里枚举出的全部标签：`msg`/`text`/`feeling`/
+#: `sticker`/`emoji`/`reply`，均无属性）：
+#:
+#: * **连内容一起丢** —— 里面装的是内部状态或 ID，用户看不到对应文字：
+#:   `<feeling>playful</feeling>`（只剥壳会留下 "playful" 这种内部状态词！）、
+#:   `<sticker>11</sticker>`、`<emoji>277</emoji>`、`<reply>消息ID</reply>`、
+#:   `<at>`/`<poke>`（裸 QQ 号不如不留）、`<think>`（实测 0 条，作为防推理外泄的护栏留着）。
+#: * **只剥壳、保留内文** —— 内文就是用户看到/听到的那句话：`<msg>`、`<text>`、
+#:   `<record>`（语音念出来的就是这段）、`<keyboard>`（NapCat 会并进正文）、`<forward>`（转发卡片上的那句总结）、`<ark>`。
+#:
+#: **只清洗 `ai` 行**：真人用户完全可以自己打 `<msg>`，他的话必须逐字保留。
+_MEMORY_DROP_WITH_CONTENT = re.compile(
+    r"<(feeling|emoji|sticker|at|reply|poke|think)\b[^>]*>.*?</\1\s*>"
+    r"|<mark\b[^>]*/?>",
+    re.IGNORECASE | re.DOTALL,
+)
+#: 兜底：上面漏掉的孤立标签壳（配对不完整时），至少别把标记本身留在记忆里。
+_MEMORY_DROP_SHELL = re.compile(
+    r"</?(?:feeling|emoji|sticker|at|reply|poke|think|mark)\b[^>]*/?>",
+    re.IGNORECASE,
+)
+_MEMORY_UNWRAP = re.compile(
+    r"</?(?:msg|text|record|keyboard|forward|ark)\b[^>]*/?>",
+    re.IGNORECASE,
+)
+
+
+def _strip_internal_markup(text: str) -> str:
+    """把猫娘自己那行里的插件内部标记清掉，留下用户实际看到的那句话。"""
+    cleaned = _MEMORY_DROP_WITH_CONTENT.sub("", text)
+    cleaned = _MEMORY_DROP_SHELL.sub("", cleaned)
+    cleaned = _MEMORY_UNWRAP.sub("", cleaned)
+    return cleaned.strip()
 
 
 
@@ -283,6 +332,12 @@ class QQSessionMemoryService:
                 text = "".join(parts)
             else:
                 text = str(content)
+            if role == "assistant":
+                # 只清猫娘自己的行：那是模型原始输出，带插件自己的 XML 格式标记
+                # （见 `_MEMORY_DROP_WITH_CONTENT` 的注释）。用户实际看到的就是剥掉
+                # 标记后的内文，记忆里该存同一句话。真人用户的行逐字保留 —— 他可能
+                # 真的在聊 `<msg>` 这种东西。
+                text = _strip_internal_markup(text)
             if not text:
                 continue
             memory_messages.append({
@@ -2498,6 +2553,21 @@ class QQSessionMemoryService:
         Returns False when batches remain (the cap keeps one flush from
         holding the session lock for minutes); raises when a batch fails,
         so the cursor stays at the last confirmed batch."""
+        if not group_id:
+            # 群会话却没有 group_id：此前这里会**静默 `return True`**（循环条件
+            # `while group_id:` 直接不成立），调用方据此认为"群 digest 已结算"，
+            # 于是 :2374 的 `if not group_settled` 不触发、会话被 pop ——
+            # **该群的历史整个丢掉，且没有任何日志**。
+            #
+            # 修法是把伪成功改成显式拒绝：既不复述"成功"这个假话，也让调用方
+            # 的未结算分支照常生效。丢失本身没法在这里补救（没有 group_id 就
+            # 没有可写的域，且这正是它为空的原因），所以必须至少让它**可见**。
+            self.plugin.logger.error(
+                f"[{reason}] 群会话缺少 group_id，群 digest 无法结算。"
+                f"这是会话状态异常，请上报：group_id 为空意味着没有任何可写的域，"
+                f"该群待结算的历史既写不出去也不会被重试成功。"
+            )
+            return False
         digest_batches_left = 5
         while group_id:
             if digest_batches_left <= 0:

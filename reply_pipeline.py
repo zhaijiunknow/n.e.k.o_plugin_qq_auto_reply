@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any
 
 from .pipeline_models import (
+    BUFFER_INTERNAL_SOURCE_KINDS,
     QQDeliveryResult,
     QQModelResult,
     QQPipelineStageTrace,
@@ -13,6 +15,7 @@ from .pipeline_models import (
     QQReplyDecision,
     QQReplyOutcome,
     QQReplyRequest,
+    backlog_sender_label,
     delivered_blocks_text,
 )
 from .reply_buffer_service import QQReplyBufferService
@@ -291,6 +294,286 @@ class QQReplyPipelineRunner:
             self.plugin.logger.warning(f"[Ark] 发送失败: {e}")
             return False
 
+    #: 合并转发单次最多带多少条原文。**这是防炸的安全阀，不是产品上限** ——
+    #: 一个群在 backlog 里能留 200 条，把几小时的闲聊整段抛出去既刷屏也没人看。
+    FORWARD_MAX_NODES = 50
+
+    async def _handle_forward_marks(self, request, outcome) -> None:
+        """处理 `<mark/>` 与 `<forward>`（合并转发）。
+
+        - `<mark/>`：把「起点」落盘。提示词说「感觉话题会有意思/可能吵起来时打个标记，
+          后续 `<forward>` 只转发标记之后的对话」——标记与转发往往隔几十条消息，
+          所以起点必须持久化，不能只留在内存里。
+        - `<forward to="X">一句总结</forward>`：取标记之后的**多人多句**原文，
+          连同一句总结组装成合并转发发出去，然后**清掉标记**（同一个标记不能复用，
+          否则下次转发会把早就发过的对话再抛一遍）。
+
+        `to` 的解析：空 = 当前群；命中已知群号 = 发到那个群；否则当作 QQ 号私聊转发
+        （提示词里的例子正是「赢了用 `<forward to="管理员QQ">` 炫耀」）。
+        """
+        if request is None or not getattr(request, "is_group", False):
+            return
+        group_id = str(getattr(request, "group_id", "") or "").strip()
+        if not group_id:
+            return
+        store = getattr(self.plugin, "backlog_store", None)
+        if store is None:
+            return
+
+        if getattr(outcome, "forward_mark", False):
+            now = int(
+                self.plugin.attention_service._current_time()
+                if getattr(self.plugin, "attention_service", None)
+                else time.time()
+            )
+            await store.set_forward_mark(
+                group_id,
+                message_id=str(getattr(request, "current_message_id", "") or ""),
+                timestamp=now,
+            )
+            self.plugin._emit_log("INFO", f"[Forward] 群{group_id} 已标记转发起点")
+            return
+
+        summary = str(getattr(outcome, "forward_content", "") or "").strip()
+        if not summary:
+            return
+
+        mark = await store.get_forward_mark(group_id)
+        if not isinstance(mark, dict):
+            # 没有起点就没有"标记之后的对话"这个集合。宁可什么都不发，也不要把
+            # 整个 backlog 抛出去 —— 提示词要求先打标记，这里把原因说清楚。
+            self.plugin._emit_log(
+                "WARNING",
+                f"[Forward] 群{group_id} 收到转发但没有 <mark/> 起点，跳过",
+            )
+            return
+
+        since = int(mark.get("timestamp") or 0)
+        anchor_id = str(mark.get("message_id") or "")
+        timeline = await store.get_recent_group_messages(group_id, limit=0)
+        picked = [
+            item for item in timeline
+            if int(item.get("timestamp") or 0) > since
+            and str(item.get("message_id") or "") != anchor_id
+        ]
+        if len(picked) > self.FORWARD_MAX_NODES:
+            picked = picked[-self.FORWARD_MAX_NODES:]
+        if not picked:
+            self.plugin._emit_log(
+                "INFO", f"[Forward] 群{group_id} 标记之后没有新消息，跳过",
+            )
+            await store.clear_forward_mark(group_id)
+            return
+
+        target = str(getattr(outcome, "forward_target", "") or "").strip()
+        if target:
+            known_groups = set()
+            mgr = getattr(self.plugin, "group_permission_mgr", None)
+            if mgr is not None:
+                known_groups = {
+                    str(g.get("group_id") or "").strip()
+                    for g in (mgr.list_groups() or [])
+                }
+            target_type = "group" if target in known_groups else "private"
+            target_id = target
+        else:
+            target_type, target_id = "group", group_id
+
+        nodes = self.plugin.reply_delivery_node.build_forward_nodes(
+            picked,
+            summary=summary,
+            bot_name=str(getattr(self.plugin, "_bot_nickname", "") or ""),
+            bot_uin=str(getattr(self.plugin.qq_client, "self_id", "") or ""),
+        )
+        sent = await self.plugin.reply_delivery_node.send_forward(
+            target_type=target_type, target_id=target_id, nodes=nodes,
+        )
+        if sent:
+            self.plugin._emit_log(
+                "INFO",
+                f"[Forward] 已合并转发 {len(nodes)} 条到 {target_type}:{target_id}",
+            )
+            await store.clear_forward_mark(group_id)
+            await self._record_forward_in_memory(
+                source_group_id=group_id,
+                target_type=target_type,
+                target_id=target_id,
+                summary=summary,
+                forwarded=picked,
+            )
+        else:
+            # 失败**不清标记**：起点还在，下一轮还能重试（清掉就永远补不上了）。
+            self.plugin._emit_log("WARNING", f"[Forward] 群{group_id} 合并转发未确认")
+
+    #: 转发记录里最多带多少条原文 / 多少字符。转发是把**别人的话**搬进接收方的记忆域，
+    #: 必须有界：一次转发可以有 50 个节点，整段塞进去会把那个域淹掉。
+    FORWARD_MEMORY_MAX_LINES = 20
+    FORWARD_MEMORY_MAX_CHARS = 1200
+
+    def _forward_memory_channel(self, target_type: str, target_id: str):
+        """转发记录该写进哪个回忆域（跟着既有的 opt-in 门控走，不另开一套判据）。
+
+        判据与读路径同源（`reply_context_node` 的 `private_memory_mode`）：
+
+        * 群 → `group_chat` 域（需 `group_memory_enabled`）
+        * 私聊**管理员** → 主人的 legacy 私有语料（走 `/cache`，与他和猫娘的私聊记忆
+          同一个域，所以他一问就能召回）
+        * 私聊好友 → 对方 `participant` 域（需 `private_participant_memory_enabled`）
+        * 其余（开关关着 / 非信任对象）→ 不写
+
+        返回 `("legacy", None)` / `("scoped", subject)` / `None`。
+        """
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        target_id = str(target_id or "").strip()
+        if not target_id:
+            return None
+        if target_type == "group":
+            if not bool(settings.get("group_memory_enabled", False)):
+                return None
+            return ("scoped", self.plugin.memory_bridge.group_subject(target_id))
+        mgr = getattr(self.plugin, "permission_mgr", None)
+        level = mgr.get_permission_level(target_id) if mgr is not None else "none"
+        if level == "admin":
+            return ("legacy", None)
+        if bool(settings.get("private_participant_memory_enabled", False)):
+            return ("scoped", self.plugin.memory_bridge.participant_subject(target_id))
+        return None
+
+    @classmethod
+    def _forward_memory_text(
+        cls, *, source_group_id: str, target_label: str, summary: str,
+        forwarded: list[dict], for_source_group: bool = False,
+    ) -> str:
+        """组装转发记录。
+
+        **必须明确标注这是转发来的**（使用者的要求）：接收方的记忆域里会出现群友说的话，
+        不标注的话提取器会把它当成猫娘自己说的、或当成这个域的成员说的。所以这里写死
+        一段「以下原文来自群 X，是群友说的话，不是我说的」，并且逐行带发言人。
+        """
+        head = f"【转发记录】我把群 {source_group_id} 的一段群聊合并转发给了 {target_label}。"
+        if summary:
+            head += f"转发时我写了一句总结：{summary}"
+        if for_source_group:
+            # 源群那侧不需要附原文 —— 那些话本来就是这里的 human 行。
+            return head
+
+        lines: list[str] = []
+        used = 0
+        for item in forwarded:
+            name = backlog_sender_label(item)
+            sid = str(item.get("sender_id") or "")
+            body = str(item.get("text") or item.get("message_text") or "").strip()
+            if not body:
+                continue
+            line = f"{name}({sid}): {body}" if sid else f"{name}: {body}"
+            if (
+                len(lines) >= cls.FORWARD_MEMORY_MAX_LINES
+                or used + len(line) > cls.FORWARD_MEMORY_MAX_CHARS
+            ):
+                lines.append(f"…（其余 {max(0, len(forwarded) - len(lines))} 条未记入）")
+                break
+            lines.append(line)
+            used += len(line)
+        if not lines:
+            return head
+        return (
+            head
+            + f"\n——以下原文来自群 {source_group_id}，是**群友说的话，不是我说的**，"
+            f"我只是把它转发了出去——\n"
+            + "\n".join(lines)
+        )
+
+    def _resolve_her_name(self, source_group_id: str) -> str:
+        """角色名（记忆按它分库）。
+
+        取法与既有写路径一致，**三级回退**：本群会话的 `her_name` → 宿主角色配置 →
+        `"neko"`。注意**不能**写成 `getattr(plugin, "_her_name", "")` —— 插件上没有这个
+        属性，那样拿到空串就会在下面 `if not her_name: return` 静默早退，整个转发记录
+        功能变成空操作（静默失效正是本会话一直在修的那类问题）。
+        """
+        sessions = getattr(self.plugin, "_user_sessions", {}) or {}
+        group_key = self.plugin._build_session_key(
+            sender_id="", is_group=True, group_id=source_group_id,
+        )
+        user_data = sessions.get(group_key)
+        if isinstance(user_data, dict):
+            name = str(user_data.get("her_name") or "").strip()
+            if name:
+                return name
+        try:
+            from utils.config_manager import get_config_manager
+
+            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
+            name = str(her_name or "").strip()
+            if name:
+                return name
+        except Exception:
+            pass
+        return "neko"
+
+    async def _record_forward_in_memory(
+        self, *, source_group_id: str, target_type: str, target_id: str,
+        summary: str, forwarded: list[dict],
+    ) -> None:
+        """把「我转发了什么」记进接收方的回忆域（+ 源群留一句动作记录）。
+
+        为什么需要：转发以前是**一次性外发** —— `send_forward` 只调 API，不写任何会话
+        历史/记忆；源群那条 ai 行又因为只含 `<forward>` 标记而被当「未投递」排除。
+        结果接收方事后问「你转的那段里说的 X 是什么意思」，猫娘手里什么都没有，只能
+        反问「是什么东西呀」。
+
+        记的是 **assistant 行**（猫娘自己发出去的话）——**不伪造 human 行**：合成的用户
+        发言会被提取器抽成「用户说过」，那是 `SYNTHETIC_SOURCE_KINDS` 那套护栏一直在防的。
+        """
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if bridge is None:
+            return
+        her_name = self._resolve_her_name(source_group_id)
+        if not her_name:
+            return
+
+        async def _post(channel, subject, text: str, label: str) -> None:
+            messages = [{"role": "assistant", "content": [{"type": "text", "text": text}]}]
+            try:
+                if channel == "legacy":
+                    await bridge.post_memory_history("cache", her_name, messages, timeout=5.0)
+                else:
+                    await bridge.post_scoped_memory_history(
+                        her_name, messages, subject=subject, timeout=10.0,
+                    )
+            except Exception as exc:
+                # 转发已经发出去了，这里只是补记 —— 失败只降级成日志。
+                self.plugin._emit_log("WARNING", f"[Forward] {label}转发记录写入失败: {exc}")
+
+        channel = self._forward_memory_channel(target_type, target_id)
+        if channel is not None:
+            kind, subject = channel
+            # 接收方那份写「你」/「群 X」：这是**他自己的域**，写"转发给了你"最自然。
+            recipient_label = f"群 {target_id}" if target_type == "group" else "你"
+            await _post(kind, subject, self._forward_memory_text(
+                source_group_id=source_group_id, target_label=recipient_label,
+                summary=summary, forwarded=forwarded,
+            ), "接收方")
+
+        # 源群也留一句动作记录（不附原文：那些话本来就是这里的 human 行）。
+        # 这样她在群里也能主动说「我刚把那段转给了 X」。
+        #
+        # ⚠️ 目标标签**不写私聊对象的 QQ 号**：源群记忆会被群聊回复召回，把管理员的
+        # QQ 存进群域是一种披露。群目标写群号（本来就在群语境里），私聊目标只写
+        # 「私聊里的某人」。
+        if bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+            "group_memory_enabled", False,
+        )):
+            source_label = f"群 {target_id}" if target_type == "group" else "私聊里的某人"
+            await _post(
+                "scoped", bridge.group_subject(source_group_id),
+                self._forward_memory_text(
+                    source_group_id=source_group_id, target_label=source_label,
+                    summary=summary, forwarded=[], for_source_group=True,
+                ),
+                "源群",
+            )
+
     async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None, context=None) -> QQDeliveryResult | None:
         if (
             request is not None
@@ -321,8 +604,29 @@ class QQReplyPipelineRunner:
             if group and self.plugin.attention_service:
                 await self.plugin.attention_service.set_emotion(group, outcome.feeling)
 
-        # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
-        skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
+        # 表情反应（贴表情到对方消息上）：同样是"内部状态"级的一次性副作用，
+        # 不参与块投递、也不该受缓冲/冷却影响 —— 反应是针对某条已存在的消息，
+        # 延迟或合并都没有意义。以前这个解析结果没有任何消费方。
+        if outcome is not None and getattr(outcome, "emoji_reaction_id", ""):
+            target_message_id = (
+                str(getattr(request, "current_message_id", "") or "")
+                or str(getattr(request, "quoted_message_id", "") or "")
+            )
+            await self.plugin.reply_delivery_node.send_emoji_reaction(
+                target_message_id, outcome.emoji_reaction_id,
+            )
+
+        # 合并转发：`<mark/>` 记起点，`<forward>` 把标记之后的多人多句抛出去。
+        if outcome is not None:
+            await self._handle_forward_marks(request, outcome)
+
+        # 缓冲内部调用的请求不再次走缓冲（否则自我延迟/自我合并）。
+        # 判据收口到 `BUFFER_INTERNAL_SOURCE_KINDS`：这里曾经内联第三个元组，
+        # 于是与 SYNTHETIC_SOURCE_KINDS 一起漂移、双双漏掉 proactive_group。
+        skip_buffer = bool(
+            request
+            and getattr(request, "source_kind", "") in BUFFER_INTERNAL_SOURCE_KINDS
+        )
         # 缓冲可按群聊/私聊分别关闭；关掉的那一类走正常投递，不再排队等待。
         buffer_on = bool(
             self.plugin.reply_buffer_service
@@ -564,19 +868,18 @@ class QQReplyPipelineRunner:
     def _primary_row_superseded(outcome, delivery_plan) -> bool:
         """True when the ai row this turn wrote is not what went out.
 
-        Two shapes: a default reply that replaced a nonempty primary answer,
-        and a block carrying both <text> and <record> — delivery sends the
-        record and continues, so that text reaches nobody while it sits in
-        the history row."""
+        The only remaining shape is a default reply that replaced a nonempty
+        primary answer. A block carrying both `<text>` and `<record>` used to
+        count too, because delivery sent the record and continued, so the text
+        reached nobody while it sat in the history row. Delivery now sends
+        **both** (see `reply_delivery_node`), so that shape is gone — keeping it
+        would mark a fully delivered turn as undelivered and drop genuinely
+        spoken content from the digest."""
         if getattr(outcome, "used_fallback", False):
             return False  # fallback turns have no history row of their own
         if getattr(outcome, "used_default_message", False):
             return bool(str(getattr(outcome, "raw_reply_text", "") or "").strip())
-        return any(
-            str(getattr(block, "record", "") or "").strip()
-            and str(getattr(block, "text", "") or "").strip()
-            for block in (getattr(delivery_plan, "blocks", None) or [])
-        )
+        return False
 
     def _consent_revoked_before_send(self, context) -> bool:
         """True when a switch this reply's prompt relied on went off since
