@@ -252,6 +252,14 @@ class QQSessionRuntimeService:
                 )
                 return False
         user_data = self.plugin._user_sessions.pop(session_key, None)
+        # 会话没了之前，留一句"刚才聊到哪儿"给下一个会话（接续摘要）。
+        # 放在 pop 之后、close 之前：历史还在这个对象上，而 pop 保证不会重复捕获。
+        handoff = getattr(self.plugin, "session_handoff_service", None)
+        if handoff is not None and user_data is not None:
+            try:
+                handoff.capture(session_key, user_data)
+            except Exception as exc:  # noqa: BLE001
+                self.plugin.logger.warning(f"[Handoff] 捕获接续摘要失败 ({session_key}): {exc}")
         session = user_data.get("session") if user_data else None
         if session is None and not finalized and peek:
             # finalize 的 early-exit（缺 her_name/session 元数据）会弹出

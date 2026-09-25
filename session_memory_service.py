@@ -2536,6 +2536,17 @@ class QQSessionMemoryService:
             if user_data.get(cutoff_key) == consumed_cutoff:
                 user_data.pop(cutoff_key, None)
             return True
+        handoff = getattr(self.plugin, "session_handoff_service", None)
+        if handoff is not None:
+            # 会话在这里消失（idle 结算 / 关机结算 / discard 的 finalize 都走这条）：
+            # 留一句"刚才聊到哪儿"给下一个会话。capture 内部按 memory_enabled 与
+            # 未授权边界自行取舍，失败也不影响结算本身。
+            try:
+                handoff.capture(session_key, user_data)
+            except Exception as handoff_err:  # noqa: BLE001
+                self.plugin.logger.warning(
+                    f"[Handoff] 捕获接续摘要失败 ({session_key}): {handoff_err}"
+                )
         self.plugin._user_sessions.pop(session_key, None)
         try:
             await session.close()
@@ -2815,6 +2826,19 @@ class QQSessionMemoryService:
                     return
 
             user_data = self.plugin._user_sessions.pop(session_key, None)
+            # 权限变更（移除用户 / 降级）：接续摘要里可能有撤权之前的原文，
+            # 不能留给下一个会话 —— 先捕获（若仍被授权）再无条件抹掉旧的。
+            handoff = getattr(self.plugin, "session_handoff_service", None)
+            if handoff is not None:
+                try:
+                    if user_data is not None and user_data.get("memory_enabled"):
+                        handoff.capture(session_key, user_data)
+                    else:
+                        handoff.forget(session_key)
+                except Exception as handoff_err:  # noqa: BLE001
+                    self.plugin.logger.warning(
+                        f"[Handoff] 权限变更时处理接续摘要失败 ({session_key}): {handoff_err}"
+                    )
             session = user_data.get("session") if user_data else None
             if session:
                 await session.close()

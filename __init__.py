@@ -76,6 +76,7 @@ from .runtime_ops_service import QQProactiveMessageService, QQRuntimeOpsService
 from .runtime_service import QQRuntimeService
 from .session import QQAutoReplySessionMixin
 from .session_bootstrap_service import QQSessionBootstrapService
+from .session_handoff_service import QQSessionHandoffService
 from .session_instruction_service import (
     QQSessionInstructionService,
     resolve_prompt_override,
@@ -746,6 +747,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 群友复读 → 跟着复读一次（判定要按人去重、跨消息累积，所以单独一个服务；
         # 规则与理由见 repeat_echo_service 的模块 docstring）。
         self.repeat_echo_service = QQRepeatEchoService(self)
+        # 接续摘要：会话被回收（空闲 5 分钟 / 换人格 / 重启）时留一句"刚才聊到哪儿"，
+        # 新会话开口就接得上（见 session_handoff_service 的模块 docstring）。
+        self.session_handoff_service = QQSessionHandoffService(self)
         self._ensure_qq_client_initialized()
         if self.attention_gate_service:
             await self.attention_gate_service.start_proactive_loop()
