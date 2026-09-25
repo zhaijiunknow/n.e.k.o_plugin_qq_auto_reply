@@ -103,15 +103,29 @@ class QQSessionHandoffService:
 
     # ── 摘要内容 ────────────────────────────────────────────────
 
-    @staticmethod
-    def _row_text(row: Any) -> str:
-        """历史行 → 一行纯文本（去掉她自己会用到的协议标签与多余空白）。"""
+    #: 这些标签的**内容**是协议负载（内部状态 / ID / QQ 号），不是她说过的话：
+    #: 只脱壳会留下内容，摘要里就会出现 `你：playful看得到呀乖乖…` 这种句子
+    #: （实测在真小票里就长这样）。`<text>` / `<record>` 的内容是话，必须留。
+    _DROP_WITH_CONTENT = (
+        "feeling", "sticker", "emoji", "poke", "at", "reply", "keyboard", "ark", "forward",
+    )
+
+    @classmethod
+    def _row_text(cls, row: Any) -> str:
+        """历史行 → 一行纯文本（去掉她自己的输出协议与多余空白）。"""
         content = getattr(row, "content", None)
         if not isinstance(content, str):
             content = str(content or "")
-        # `<msg>`/`<feeling>` 这类是她自己的输出协议，摘要里留着只会干扰下一轮
         import re
-        content = re.sub(r"</?(?:msg|text|feeling|emoji|at|reply|sticker|poke|record|keyboard|ark|mark|forward)\b[^>]*>", "", content)
+        for tag in cls._DROP_WITH_CONTENT:
+            content = re.sub(
+                rf"<{tag}\b[^>]*>.*?</{tag}>", "", content, flags=re.S | re.I,
+            )
+        # 剩下的容器标签（msg / text / record）只脱壳，内容保留
+        content = re.sub(
+            r"</?(?:msg|text|feeling|emoji|at|reply|sticker|poke|record|keyboard|ark|mark|forward)\b[^>]*>",
+            "", content,
+        )
         content = " ".join(content.split())
         return content[:MAX_LINE_CHARS]
 

@@ -101,6 +101,24 @@ def test_note_strips_protocol_tags_and_truncates(tmp_path):
     assert len(note["lines"][1]) <= MAX_LINE_CHARS + 4  # 「你：」前缀 + 截断
 
 
+def test_internal_state_and_id_tags_drop_their_content(tmp_path):
+    """`<feeling>` 的**内容**是内部状态、`<sticker>` 的内容是 ID，都不是她说过的话。
+
+    （真小票里出现过 `你：playful看得到呀乖乖…` —— 只脱壳会留下内容。）
+    """
+    history = [
+        _Human("看得到嘛"),
+        _AI("<feeling>playful</feeling><msg>看得到呀乖乖</msg>"),
+        _Human("再来一张"),
+        _AI("<feeling>curious</feeling><msg><sticker>20</sticker></msg>"),
+    ]
+    note = _service(tmp_path).build_note(session_key="k", user_data=_user_data(history))
+
+    first, second = note["lines"][-2], note["lines"][-1]
+    assert "playful" not in first and "看得到呀乖乖" in first, first
+    assert "curious" not in second and "20" not in second, second
+
+
 def test_system_rows_never_enter_the_note(tmp_path):
     history = [_System("你是一个角色扮演大师"), _Human("在吗"), _AI("在的喵")]
     note = _service(tmp_path).build_note(session_key="k", user_data=_user_data(history))
