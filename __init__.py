@@ -465,7 +465,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _vlm_describe_locator(self, locator: str, *, prompt: str, max_tokens: int = 60) -> str:
         """对一张图（本地路径或 http(s) URL）跑一次 VLM，返回文本；失败返回 ""。
 
-        **插件里"看图"的地方都走这一条**（vision 模型配置 → 图片压成 JPEG b64
+        **插件里"看图"的地方都走这一条**（conversation 模型配置 → 图片压成 JPEG b64
         → create_chat_llm_async）。刻意收成一个函数：以前只有引用回复的图走这条路，
         表情包自动描述再抄一份的话，两处的模型配置迟早会漂移。
 
@@ -477,7 +477,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         model_config = self._pick_vlm_config()
         if not model_config:
             self.logger.info(
-                "[VLM] 没有可用的看图模型配置（vision / conversation 都没有 model+base_url）")
+                "[VLM] 没有可用的看图模型配置（conversation 缺 model 或 base_url）")
             return ""
         slot = str(model_config.get("_slot") or "?")
         model = str(model_config.get("model") or "").strip()
@@ -521,30 +521,27 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return ""
 
     def _pick_vlm_config(self) -> dict[str, Any] | None:
-        """挑"看图"该用哪套模型配置：**优先本体的 vision 槽**，没配再退回 conversation。
+        """"看图"用哪套模型配置：**conversation**（与插件改动前一致）。
 
-        为什么：本体给图片分析**专门留了 `vision` 槽**（`VISION_MODEL` /
-        `VISION_MODEL_URL` / `VISION_MODEL_API_KEY`），它自己的图片分析
-        （`utils/screenshot_utils.py`）用的就是 `get_model_api_config('vision')`。
-        而插件里引用回复的图片描述一直用的是 `conversation` —— 那是聊天模型，
-        **只有在它恰好多模态时才能看图**；换成不支持看图的聊天模型就会静默失败。
+        这里一度改成"优先本体的 vision 槽"—— 本体给图片分析专门留了 `VISION_MODEL`
+        （`utils/screenshot_utils.py` 用的就是 `aget_model_api_config('vision')`），
+        而聊天模型不一定多模态、不支持看图时会静默失败。
 
-        `get_model_api_config('vision')` 在用户没单独配时**会自己回退到辅助 API**，
-        所以这里拿到 model + base_url 就用它；两者都空才退回 conversation。
+        **但使用者明确要求回退**：只把新功能（表情包自动描述）接到既有分析上，
+        **不要动既有路径用的模型**。这两个用途共用 `_vlm_describe_locator`，
+        换槽会连带改变引用回复图片描述的行为 —— 那不是这次要动的东西。
+
+        **别再"顺手"改回 vision。** 真出问题时有日志可查（见 `_vlm_describe_locator`），
+        不需要靠换模型来"修"。
         """
         try:
             from utils.config_manager import get_config_manager
 
-            cm = get_config_manager()
+            cfg = get_config_manager().get_model_api_config("conversation")
         except Exception:
             return None
-        for slot in ("vision", "conversation"):
-            try:
-                cfg = cm.get_model_api_config(slot)
-            except Exception:
-                continue
-            if str(cfg.get("base_url") or "").strip() and str(cfg.get("model") or "").strip():
-                return dict(cfg, _slot=slot)
+        if str(cfg.get("base_url") or "").strip() and str(cfg.get("model") or "").strip():
+            return dict(cfg, _slot="conversation")
         return None
 
     async def _describe_reply_image(self, image_url: str) -> str:

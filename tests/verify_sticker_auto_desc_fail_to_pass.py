@@ -62,21 +62,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "__init__.py",
-        "看图退回用聊天模型（不支持看图的模型会静默失败）",
-        'for slot in ("vision", "conversation"):',
-        'for slot in ("conversation", "vision"):',
-    ),
-    (
-        "__init__.py",
-        "去掉 conversation 兜底（只配了聊天模型的机器上直接不工作）",
-        'for slot in ("vision", "conversation"):',
-        'for slot in ("vision",):',
+        "把看图改成 vision 槽（会连带改变引用回复图片描述 —— 使用者要求不动它）",
+        'cfg = get_config_manager().get_model_api_config("conversation")',
+        'cfg = get_config_manager().get_model_api_config("vision")',
     ),
     (
         "__init__.py",
         "没有看图模型配置时静默返回空（用户无从判断原因）",
         """            self.logger.info(
-                "[VLM] 没有可用的看图模型配置（vision / conversation 都没有 model+base_url）")
+                "[VLM] 没有可用的看图模型配置（conversation 缺 model 或 base_url）")
             return \"\"""",
         """            return \"\"""",
     ),

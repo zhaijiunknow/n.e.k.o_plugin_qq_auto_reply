@@ -30,8 +30,8 @@
 | 界面素材：本体品牌图 `neko-logo.png` / `paw.png`（见 §4.0n） | ✅ 落地 |
 | status 页拖入表情包（同一个后端契约）+ 操作条（见 §4.0p / §4.0q） | ✅ 落地 |
 | 表情包删除：后端新增 `delete_sticker`；入口只在**表情包管理页**（status 页只上传，见 §4.0r） | ✅ 落地 |
-| 表情包上传后**自动用 VLM 解析描述**（复用既有看图路径，失败保留兜底，见 §4.0s） | ✅ 落地 |
-| **看图改用本体的 `vision` 模型槽**（原来走 `conversation` 聊天模型，非多模态就静默失败） | ✅ 已修（含引用图描述） |
+| 表情包上传后**自动用 VLM 解析描述**（复用插件既有的看图函数与预处理，失败保留兜底，见 §4.0s） | ✅ 落地 |
+| 看图用哪个模型槽：**保持 conversation**（一度改成 vision，使用者要求回退；保留失败日志） | ✅ 已回退 + 看门狗 |
 | `status.html` 三个 `data-i18n-ph` 从来没被翻译（属性名 i18n.js 不认 + 键不存在） | ✅ 已修 + 第 4 类 i18n 检查 |
 | `open_platform` 的表情包描述永远是文件名（两个缺陷叠加，静默） | ✅ 已修 + 跨页看门狗 |
 | 界面背景：**分页面配图** —— status 用森林插画 `.30`，其余用蓝白图形 `.45`（见 §4.0o-2 / §4.0o-3） | ✅ 落地 |
@@ -1167,9 +1167,15 @@ dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会�
   **刻意收成一个函数**：以前只有引用回复的图走这条路，表情包再抄一份的话，两处的
   模型配置迟早漂移。看门狗里连"委托关系"一起钉住了。
 
-#### 更正：那条既有路径**用错了模型槽**
+#### 看图用哪个模型槽：**保持 conversation**（一度改成 vision，使用者要求回退）
 
-使用者问了一句"是走原本就有的图片分析嘛"，我去核实，结果是**不完全**：
+使用者问"是走原本就有的图片分析嘛 / 走插件现有的分析嘛" —— 答案是**是**：表情包自动
+描述和引用回复的图片描述**共用同一个 `_vlm_describe_locator`**，同一套图片预处理
+（`_prepare_attachment_image_b64` → `compress_screenshot` → JPEG base64）、同一个
+客户端工厂（`create_chat_llm_async`，同样 15 秒超时）。唯一不同是**提示词**
+（表情包那条要的是"画面 + 情绪 + 什么场合发"，因为它要进 system prompt 当挑图依据）。
+
+过程中我去核实了"既有这条路径用的是哪个模型槽"，发现：
 
 | 键 | 本机实际值 |
 |---|---|
@@ -1179,25 +1185,25 @@ dispatch 加了动作却忘了往 `properties` 里加 `id`，前端的调用会�
 * 本体给图片分析留了**专门的 `vision` 槽**（`VISION_MODEL` / `VISION_MODEL_URL` /
   `VISION_MODEL_API_KEY`，`utils/config_manager/core_config.py`），而且**它自己的图片
   分析**（`utils/screenshot_utils.py`）用的就是 `aget_model_api_config('vision')`。
-* 而插件里引用回复的图片描述一直用的是 **`conversation`** —— 那是**聊天模型**，
-  **只有在它恰好多模态时才能看图**。换成不支持看图的聊天模型，这条路径会静默失败
-  （`_describe_reply_image` 把所有异常都吞成 `""`）。这是**既有的**问题，
-  表情包自动描述只是把它继承了过来。
+* 而插件这条路径用的是 **`conversation`** —— 聊天模型，**只有在它恰好多模态时才能
+  看图**；换成不支持看图的聊天模型会静默失败。这是**既有**行为。
 
-已修：新增 `_pick_vlm_config()` —— **优先 `vision` 槽，两者都空才退回 `conversation`**
-（`get_model_api_config('vision')` 在用户没单独配时会自己回退到辅助 API，所以只要它能
-给出 model + base_url 就用它）。**所以引用回复的图片描述也跟着换了模型** ——
-这是同一处修复的连带影响，属于"本来该用 vision"。
+我一度改成"优先 `vision`，两者都空才退回 `conversation`"，但**使用者要求完全回退**：
+只把新功能接到既有分析上，**不要动既有路径用的模型** —— 而两者共用同一个函数，
+换槽会**连带改变引用回复图片描述的行为**。所以现在仍是 `conversation`。
+`_pick_vlm_config()` 的 docstring 里写明了"别再顺手改回去"，并有看门狗钉住
+（`test_vlm_uses_the_conversation_slot` 断言**根本不去问 vision 槽**；
+fail-to-pass 里有一条注入就是"把槽改成 vision"，会红）。
 
-顺带把**静默失败**改掉：`_vlm_describe_locator` 现在会把原因写进日志
-（没有可用配置 / 图片预处理失败 / 调用抛错 / 返回空内容，各自一条，带上槽名和模型名）。
+**回退时保留的部分**：失败**有日志**。`_vlm_describe_locator` 会把原因写进日志
+（没有可用配置 / 图片预处理失败 / 调用抛错 / 返回空内容，各一条，带槽名与模型名）——
 它服务的是"用户看得到的功能"，静默返回空会让用户以为是自己没点到。
+所以真出问题时有迹可循，不需要靠换模型来"修"。
 
 **一次没能给出结论的实测**：我试着把同一张图分别喂给 `conversation` 和 `vision` 看谁
 能描述，结果**两个都在 provider 层被拒**（`Invalid request: you are not using Lanlan.
 STOP ABUSE THE API.`），请求根本没走到"能不能看图"这一步。所以"哪个模型支持看图"
-**我没有实测数据**，上面的结论只基于**配置层面**的证据（本体为图片分析专门留了
-vision 槽、它自己的图片分析用的就是这个槽）。
+**没有实测数据**。如果哪天自动描述一直不出结果，先看插件日志里那条 `[VLM]` 记录。
 
 **两个刻意的设计**：
 
@@ -1217,15 +1223,15 @@ vision 槽、它自己的图片分析用的就是这个槽）。
 
 **验证**：`tests/test_qq_sticker_auto_desc.py`（13 条：覆盖 / 不勾就不调模型 /
 **失败保留兜底描述与图** / 用的是表情包提示词 / 委托关系 / describe_sticker 的成功、
-失败、id 与文件校验 / **优先 vision 槽、没配才退回 conversation、都没有则为 None、
-且要留日志**）、`tests/test_qq_sticker_desc_wiring.py` 加 3 条
+失败、id 与文件校验 / **必须走 conversation 槽且不去问 vision** / 没有配置时要留日志）、
+`tests/test_qq_sticker_desc_wiring.py` 加 3 条
 （三个上传页都有开关、默认勾选、都传 `auto_desc` 且读的是那个复选框）。
-`tests/verify_sticker_auto_desc_fail_to_pass.py` **8 种注入全红** + 对照组绿
-（含"看图退回用聊天模型"和"没有配置时静默返回空"这两种）。
+`tests/verify_sticker_auto_desc_fail_to_pass.py` **7 种注入全红** + 对照组绿
+（含"把看图改成 vision 槽"和"没有配置时静默返回空"）。
 端到端（`window.call` 桩）：`.dsh-artifacts/verify-sticker.py` 实测勾选时传
 `auto_desc=True`、取消勾选传 `False`；`verify-sticker-others.py` 两页同为 `True`。
 
-**测试基线：737 passed**（733 + 4）。
+**测试基线：737 passed**。
 
 ---
 

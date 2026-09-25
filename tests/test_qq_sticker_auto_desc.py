@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import pathlib
+import re
 from types import SimpleNamespace
 
 from plugin.plugins.qq_auto_reply import STICKER_VLM_PROMPT, QQAutoReplyPlugin
@@ -171,16 +172,18 @@ def test_describe_sticker_validates_id_and_file(tmp_path):
     assert "NOT_FOUND" in str(res.error)
 
 
-# ── 用哪套模型配置：「看图」必须优先本体的 vision 槽 ──────────────────
+# ── 用哪套模型配置：**必须还是 conversation**（使用者明确要求的回退） ──────
 #
-# 这是这轮真正修掉的东西：插件里引用回复的图片描述一直用 `conversation`
-# （聊天模型），只有在它恰好多模态时才能看图 —— 换了不支持看图的聊天模型就静默失败。
-# 本体给图片分析**专门留了 `vision` 槽**，它自己的图片分析
-# （`utils/screenshot_utils.py`）用的就是 `get_model_api_config('vision')`。
+# 这中间我一度改成"优先本体的 vision 槽"（本体给图片分析专门留了 VISION_MODEL，
+# 它自己的 utils/screenshot_utils.py 用的就是这个槽），理由是聊天模型不一定多模态。
+# **使用者要求回退**：只把新功能接到既有分析上，不动既有路径用的模型 ——
+# 而这两者共用 _vlm_describe_locator，换槽会连带改变引用回复图片描述的行为。
+#
+# 下面几条就是把这个决定钉住，免得以后有人又"顺手"改回 vision。
 
 
 class _FakeCM:
-    """假的 config manager：按槽返回预设配置。"""
+    """假的 config manager：记录被问了哪些槽，并返回预设配置。"""
 
     def __init__(self, mapping: dict[str, dict]) -> None:
         self.mapping = mapping
@@ -205,36 +208,47 @@ _VISION = {"model": "free-vision-model", "base_url": "https://x/v1", "api_key": 
 _CONV = {"model": "free-model", "base_url": "https://x/v1", "api_key": "k"}
 
 
-def test_vlm_prefers_the_vision_slot(monkeypatch):
+def test_vlm_uses_the_conversation_slot(monkeypatch):
+    """回退后的行为：和插件改动前一致（conversation），而且**不会去问 vision**。"""
     cm = _install_cm(monkeypatch, {"vision": _VISION, "conversation": _CONV})
 
     cfg = QQAutoReplyPlugin._pick_vlm_config(SimpleNamespace())
 
     assert cfg is not None
-    assert cfg["_slot"] == "vision", f"应当优先 vision 槽，实际用了 {cfg['_slot']}"
-    assert cfg["model"] == "free-vision-model"
-    assert cm.asked[0] == "vision", "应当先问 vision"
-
-
-def test_vlm_falls_back_to_conversation_when_vision_is_unusable(monkeypatch):
-    """只配了聊天模型的机器上不能直接不工作。"""
-    _install_cm(monkeypatch, {"vision": {"model": "", "base_url": ""}, "conversation": _CONV})
-
-    cfg = QQAutoReplyPlugin._pick_vlm_config(SimpleNamespace())
-
-    assert cfg is not None
-    assert cfg["_slot"] == "conversation", "vision 不可用时应退回 conversation"
+    assert cfg["_slot"] == "conversation", f"应当用 conversation，实际 {cfg['_slot']}"
     assert cfg["model"] == "free-model"
+    assert "vision" not in cm.asked, (
+        "不该去问 vision 槽 —— 换槽会连带改变引用回复图片描述的行为，使用者要求不动它"
+    )
 
 
-def test_vlm_returns_none_when_nothing_is_configured(monkeypatch):
-    _install_cm(monkeypatch, {"vision": {"model": "", "base_url": ""},
-                              "conversation": {"model": "", "base_url": ""}})
+def test_vision_slot_is_never_consulted_even_when_conversation_is_unconfigured(monkeypatch):
+    """即使 conversation 没配也不许悄悄改用 vision：那等于又把既有行为改了。"""
+    cm = _install_cm(monkeypatch, {"vision": _VISION, "conversation": {"model": "", "base_url": ""}})
+
     assert QQAutoReplyPlugin._pick_vlm_config(SimpleNamespace()) is None
+    assert "vision" not in cm.asked
+
+
+def test_the_helper_does_not_mention_the_vision_slot():
+    """源码级兜底：这个函数里不该出现 vision 槽。
+
+    （`_pick_vlm_config` 的注释里提到 vision 是在解释"为什么没用它"，所以只查
+    `get_model_api_config(...)` 的实参。）
+    """
+    body = SOURCE[SOURCE.index("def _pick_vlm_config"):]
+    body = body[: body.index("async def _describe_reply_image")]
+    # `\b` 是必须的：注释里引用了本体那个 `aget_model_api_config('vision')`，
+    # 不加词边界会把 `aget_…` 里的子串也匹配进来（第一版就误报成"问了 vision"）。
+    asked = re.findall(r"\bget_model_api_config\(\s*['\"](\w+)['\"]", body)
+    assert asked == ["conversation"], f"这个函数只该问 conversation，实际问了 {asked}"
 
 
 def test_a_missing_vlm_config_is_logged_not_silent(monkeypatch, caplog):
-    """静默返回空会让用户以为是自己没点到 —— 实际原因要留在日志里。"""
+    """静默返回空会让用户以为是自己没点到 —— 实际原因要留在日志里。
+
+    （这是回退时**保留**的部分：模型槽不动，但失败要有迹可循。）
+    """
     _install_cm(monkeypatch, {})
 
     plugin = SimpleNamespace(logger=logging.getLogger("qq.test"))
