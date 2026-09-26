@@ -3750,10 +3750,59 @@ napcat / open_platform / status / old / theme.css / i18n.js 全是这一条）�
   焦点挪到确定）→ 目标全红、控制组全绿、逐字节还原。
 - 全量 **1200 passed**；ruff（E4/E7/E9/F/I）All checks passed。
 
-### 18.5 诚实说明
+### 18.5 定位到宿主侧：**线上 dist 的 sandbox 比源码旧**
 
-我没能**直读**使用者那个 frame 的运行期 DOM（这台机器上没有 Electron 进程、宿主也没开
-调试端口），"你的环境正好是没有 allow-modals 的沙箱"是**推断**——只有现象与它一模一样，
-而且新的页内确认框在任何 frame 里都不依赖对话框策略。如果换成页内确认框后**依然**
-"点了没反应"（连弹层都不出现），那就说明点击根本没进处理函数，下一步该查父页面的
-遮罩 / 指针事件，而不是这一层。
+使用者补了一句关键信息：**「在网页里删除是好的，在插件管理页显示的窗口里就不好」**。
+顺着这条线查到宿主 `frontend/plugin-manager`：
+
+| 位置 | sandbox |
+|---|---|
+| 源码 `src/components/plugin/PluginUIFrame.vue:36` | `allow-scripts allow-forms allow-popups allow-same-origin` **`allow-modals`** ✓ |
+| 源码 `src/components/plugin/HostedSurfaceFrame.vue:22`（static 分支） | 同上，**带** `allow-modals` ✓ |
+| **线上构建产物** `dist/assets/PluginUIFrame-DcdTyaEL.js` | `allow-scripts allow-forms allow-popups allow-same-origin` ✗ **缺** `allow-modals` |
+| **线上构建产物** `dist/assets/PluginDetail-DLh4US0m.js`（static 分支） | 同上，**缺** `allow-modals` |
+
+源码里那句注释正是这件事的来龙去脉：
+`<!-- Preserve standard alert/confirm/prompt behavior authored by static plugins. -->`
+—— 宿主**已经**在源码里为静态插件补上了 `allow-modals`，但 **dist 没有重新构建**
+（dist 文件时间 `2026-06-10`，对应源码 `2026-08-28`）。于是：
+
+* 浏览器标签页里：没有 sandbox → `confirm()` 正常弹窗 → 删除正常（使用者观察一致）；
+* 插件管理页的窗口里：iframe 缺 `allow-modals` → `confirm()` **被静默拦掉、返回 false**
+  → 旧代码 `if(!confirm(...)) return;` 什么都不做（使用者观察一致）。
+
+这不是我们插件能改的宿主构建产物，也不再需要：插件侧的页内确认框不依赖对话框策略。
+**宿主侧建议**：在 `frontend/plugin-manager` 跑一次构建（或确认 CI 里有构建步骤），
+否则**任何**插件在那个窗口里用原生 `alert/confirm/prompt` 都会静默失效 —— 这是个宿主机
+级别的坑，值得单独反馈。
+
+### 18.6 复现与验证（用线上 dist 的**同一串** sandbox 参数）
+
+`.dsh-artifacts/cdp-confirm-probe.py` 第三个场景用的就是 dist 里那串
+`allow-scripts allow-forms allow-popups allow-same-origin`：
+
+```
+frameElement.sandbox: allow-scripts allow-forms allow-popups allow-same-origin
+原生 confirm 探针：返回='false' 弹窗=0            ← 旧代码在这里静默失效（= 插件管理页窗口）
+点删除 → 页内弹层：确定删除这张表情包吗？… 取消 删除
+点取消后：没有 delete_sticker（只有页面自己的轮询调用）
+点确定后：["asset",{"action":"delete_sticker","id":"1"}] + ["asset",{"action":"list_stickers"}]
+点删除期间新增原生弹窗：0
+```
+
+对照另两个场景（顶层标签页 / 带 `allow-modals` 的沙箱）：原生 `confirm()` 都正常弹窗返回
+true —— 也就是说三种环境里**新的页内确认框行为完全一致**，而旧写法只在没有
+`allow-modals` 的那种里静默失效。
+
+### 18.7 使用者需要做的一步
+
+**重开一次插件管理页里的那个面板**：面板 URL 形如 `/plugin/qq_auto_reply/ui/?_ui=<时间戳>`，
+每次打开都会重新取 `index.html`；再由 `nav.js` 带时间戳进子页 —— 所以不必手动清缓存，
+重开面板即可拿到新代码。
+
+### 18.8 诚实说明
+
+我读的是**宿主源码 + 线上 dist 文件**（以及 CDP 里同参数复现），没有直读那个窗口的运行时
+DOM（这台机器上没有 Electron 进程、宿主也没开调试端口）。所以"缺 allow-modals 就是原因"
+的链条是：现象完全吻合 + 同参数复现 + 源码注释自证。若重开面板后**连页内弹层都不出现**，
+那就说明点击根本没进处理函数，下一步查父页面的遮罩 / 指针事件。
