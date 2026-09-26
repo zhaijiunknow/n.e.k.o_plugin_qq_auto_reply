@@ -79,6 +79,7 @@ from .reply_postprocess_node import QQReplyPostprocessNode
 from .reply_relay_node import QQReplyRelayNode
 from .runtime_ops_service import QQProactiveMessageService, QQRuntimeOpsService
 from .runtime_service import QQRuntimeService
+from .runtime_transition import runtime_transition_guard
 from .session import QQAutoReplySessionMixin
 from .session_bootstrap_service import QQSessionBootstrapService
 from .session_handoff_service import QQSessionHandoffService
@@ -703,6 +704,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 logger=self.logger,
                 emit_log=self._emit_log,
             )
+        elif getattr(self.enricher, "_client", None) is not self.qq_client:
+            # 连接对象被收尾重建换掉之后（切换连接模式 / 一键部署 / 补写配置），
+            # enricher 仍指着**被丢弃的那个**：引用链、合并转发、语音、文件全都
+            # 会去调一条已经断开的连接，异常被 ``_fetch_reply_content`` 的 except
+            # 吞成一行 "Failed to fetch reply msg"，**被引用正文静默丢出 prompt**。
+            # 2026-09-27 00:41-00:58 现场：NapCat 早就在跑，增强却去调开放平台对象，
+            # 报 `QQOpenPlatformConnection.get_msg() takes 1 positional argument`。
+            self.enricher.rebind(self.qq_client)
+            self.logger.info("[增强] enricher 已重绑到新连接对象")
 
     async def _broadcast_qq_inbound(self, message: dict[str, Any]) -> None:
         """把一条入站 QQ 消息广播给其它插件（SSE 推送）。
@@ -2742,34 +2752,42 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
         任何一步失败都不向上抛：凭据此刻已经写好了，启动失败是**运行状态**问题，不该让
         整个绑定结果变成"失败"。
+
+        **整段持闸**：下面是「停 → 丢对象 → 启」，中间任何一刻放别的入口进来动同一个
+        连接对象，都会复现 2026-09-27 00:18:53 那次
+        ``AttributeError: 'NoneType' object has no attribute 'get'``（``disconnect``
+        把正在 ``connect`` 的 ``_http`` 关掉并置空）。重入是安全的：内层
+        ``stop_runtime`` / ``start_auto_reply`` 与本方法同属一个任务。
         """
         out: dict[str, Any] = {"ok": False, "status": "", "error": ""}
         if not auto_start:
             return out
-        try:
-            await self._stop_auto_reply_runtime(stop_napcat=False)
-        except Exception as e:
-            # 停不下来不阻断重建：对象照样丢，运行状态由下面的 start 收敛。
-            self.logger.warning(f"[绑定] 停止旧运行时失败（继续重建）: {e}")
-        self.qq_client = None
-        try:
-            # 必须走 service，不能调入口方法：`start_auto_reply` 这个入口已经并进
-            # `runtime`（见本文件 runtime 段），调 self.start_auto_reply() 只会抛
-            # AttributeError，然后被下面的 except 吞掉 —— 表现为"启动静默失败"。
-            started = await self.runtime_ops_service.start_auto_reply()
-        except Exception as e:
-            out["error"] = f"{type(e).__name__}: {e}"
-            self.logger.warning(f"[绑定] 凭据已写入，但自动回复启动失败: {e}")
+        async with runtime_transition_guard(self).hold("收尾重建运行时"):
+            self.logger.info(f"[运行时] 收尾重建连接对象（auto_start={auto_start}）")
+            try:
+                await self._stop_auto_reply_runtime(stop_napcat=False)
+            except Exception as e:
+                # 停不下来不阻断重建：对象照样丢，运行状态由下面的 start 收敛。
+                self.logger.warning(f"[绑定] 停止旧运行时失败（继续重建）: {e}")
+            self.qq_client = None
+            try:
+                # 必须走 service，不能调入口方法：`start_auto_reply` 这个入口已经并进
+                # `runtime`（见本文件 runtime 段），调 self.start_auto_reply() 只会抛
+                # AttributeError，然后被下面的 except 吞掉 —— 表现为"启动静默失败"。
+                started = await self.runtime_ops_service.start_auto_reply()
+            except Exception as e:
+                out["error"] = f"{type(e).__name__}: {e}"
+                self.logger.warning(f"[绑定] 凭据已写入，但自动回复启动失败: {e}")
+                return out
+            if started.is_ok():
+                payload = started.value if isinstance(started.value, dict) else {}
+                out["ok"] = True
+                out["status"] = str(payload.get("status") or "")
+                self.logger.info(f"[绑定] 自动回复已启动（{out['status'] or 'ok'}）")
+            else:
+                out["error"] = str(started.error)
+                self.logger.warning(f"[绑定] 凭据已写入，但自动回复启动被拒: {started.error}")
             return out
-        if started.is_ok():
-            payload = started.value if isinstance(started.value, dict) else {}
-            out["ok"] = True
-            out["status"] = str(payload.get("status") or "")
-            self.logger.info(f"[绑定] 自动回复已启动（{out['status'] or 'ok'}）")
-        else:
-            out["error"] = str(started.error)
-            self.logger.warning(f"[绑定] 凭据已写入，但自动回复启动被拒: {started.error}")
-        return out
 
     @staticmethod
     def _sanitize_message_text(text: str, *, is_reply_to_bot: bool = False) -> str:

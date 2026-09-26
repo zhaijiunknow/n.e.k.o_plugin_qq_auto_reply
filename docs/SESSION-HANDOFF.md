@@ -3401,3 +3401,133 @@ i18n）后发现**只对了一半**：
   我倾向于**保守做法**：保持顺序与 reason 语义不变，只把重复的原因字符串与前置检查
   收敛成一张显式的判定表 + 一条顺序看门狗；纯结构性重写收益小、风险大。
 - 可选：接话反馈闭环（把「她说完之后群里的反应」回灌存在感/频率）。
+
+---
+
+## 15. 修掉 00:18:53 那条 AttributeError：运行时启停互斥 + enricher 换绑
+
+使用者问「`AttributeError: 'NoneType' object has no attribute 'get'` 是为什么」。
+查清后确认这**不是**注意力/necessity 那套代码的问题，而是「运行时启停没有互斥」，
+并且顺着同一条线又挖出第二个一直在偷偷生效的 bug（enricher 指着被丢弃的连接对象）。
+使用者选了「两个都修」。
+
+### 15.1 现场与根因（已取证）
+
+插件日志 `00:18:53`（`_error.log` 同一份，行 18803-18813）::
+
+    runtime_ops_service.py:73   await self.plugin.qq_client.connect()
+    qq_open_plat.py:307         ws_url = await self._get_gateway_url()
+    qq_open_plat.py:928         resp = await self._http.get(...)
+    AttributeError: 'NoneType' object has no attribute 'get'
+
+宿主 `connect()`（`utils/connection/onebot/qq_open_plat.py:292-316`）的顺序是
+**「303 建 `_http` → 304 发 token 网络请求 → 307 才用它」**，而 `disconnect()`
+（366-381）末尾是 `await self._http.aclose(); self._http = None`。
+
+于是：`disconnect()` 插进了 `connect()` 的两个 await 中间，把 `_http` 置空；
+`connect()` 醒来后既不重查 `_http` 也不看 `_closing`（它在 295 行入口刚把 `_closing`
+置回 `False`），直接对 `None` 取 `.get` —— 本该是「连接已取消」，退化成了
+`AttributeError`。
+
+时间线（同一进程内两个入口并发）：
+
+| 时刻 | 事件 |
+|---|---|
+| 00:18:49 | 插件进程起来；自启（`__init__.py:889`）调 `start_auto_reply()`，当时配置**还是开放平台**（`环境: 正式`），`connect()` 开始并卡在 token 请求上 |
+| 00:18:51 | `TRIGGER entry='config'` + `TRIGGER entry='runtime'`：配置被改成 NapCat，随后又有人调启动 |
+| 00:18:51 | 第二次 `start_auto_reply`：`_running` 仍为 `False`（它要等 connect 成功才在 L80 置位），**"already_running" 早退拦不住** → 模式不匹配分支（`runtime_ops_service.py:56-62`）→ `await qq_client.disconnect()`，对象就是那条在飞的连接 |
+| 00:18:53 | 第一次 connect 从 token 请求返回 → 307 → 928 → 炸，被第一次调用的 `except`（L114）记成 `Failed to start auto reply`。NapCat 那条 00:19:04 正常连上，所以插件看起来"没事" |
+
+两个缺陷叠加才出这条 traceback：**① 插件侧三个改客户端的入口没有互斥**（全插件的
+`asyncio.Lock` 一把都没覆盖启停，已核对）；**② 宿主 `connect()` 每个 await 之后不复检**。
+
+干扰项排除：`_error.log` 紧邻的另一条 `shutdown → disconnect → _ws.close() →
+Event loop is closed` 不是成因 —— 那条路径 `_ws` 非空，而崩溃这次 `_ws` 还没建，
+它来自重载时正在退出的**旧进程**。
+
+### 15.2 改动
+
+- **新模块 `runtime_transition.py`**：`RuntimeTransitionGuard`，**按任务归属可重入**
+  的 `asyncio.Lock`（收尾重建是「停 → 丢对象 → 启」，持闸期间必然再停一次、启一次，
+  普通 `Lock` 会当场自锁死）；`held`/`owner`/`depth`/`waits` 供测试与诊断；排队时
+  写一行 `[运行时] 上一个启停还没结束，等待中（…）`。
+  `runtime_transition_guard(owner)` 惰性把闸门挂在**插件对象**上，插件与各服务因此
+  共用同一把锁，而只拿 `SimpleNamespace` 当桩的测试不必预置字段。
+- **接线**：`start_auto_reply` / `stop_auto_reply` / `stop_runtime` 三个入口
+  （`runtime_ops_service.py`）各自持闸，方法体原样挪进 `_*_locked`；
+  `__init__._restart_auto_reply_runtime` 的「停 → 丢对象 → 启」**整段持闸**
+  （保持单方法：既有测试用 `MethodType(QQAutoReplyPlugin._restart_auto_reply_runtime, 桩)`
+  绑定，拆成两个方法会把这些桩打断）。
+  `stop_auto_reply` 的 `not_running` 早退现在在闸门内判定 —— 用户点停止不会再被
+  在飞的启动绕过。
+- **两个重建点补文件日志**（此前完全不留痕，这次排查就卡在这）：
+  `[运行时] 连接模式不匹配（连接对象=X 配置=Y），断开旧连接并重建`、
+  `[运行时] 收尾重建连接对象（auto_start=…）`。
+
+### 15.3 附带发现的第二个 bug：enricher 一直指着被丢弃的连接对象
+
+`__init__.py:698` 原本是 `if self.enricher is None:` —— 增强器只在第一次建连接时
+绑定 client；`_restart_auto_reply_runtime` 把 `qq_client` 丢掉重造之后它**仍然指着
+旧对象**。现场证据（`00:41:06` - `00:58:42`，共 6 条）::
+
+    enrichment.py:551   data = await self._client.get_msg(rid)
+    TypeError: QQOpenPlatformConnection.get_msg() takes 1 positional argument but 2 were given
+
+当时跑的是 NapCat（同一条消息的 `call_action response: get_msg status=ok` 是活着的
+连接器发的，连接器自己用它判 `is_reply_to_bot`，所以 normal 群的「引用她算 @」判定
+没坏），可 enricher 手里还是 00:18:49 建的那个开放平台对象。后果是引用链、合并转发、
+语音、文件增强全部打向一条已断开的连接，异常被 `_fetch_reply_content` 的
+`except Exception` 吞成一行日志 —— **用户看到的是「引用她的话」没进 prompt**。
+它在 `01:09:34` 那次重载后自然消失（新进程重新绑定），所以属于**潜伏**：下次模式切换
+或一键部署重建连接就复发。
+
+修法：`QQMessageEnricher.rebind(client)` + `_ensure_qq_client_initialized` 里
+`elif enricher._client is not qq_client: rebind(...)`（重绑而不是重建 —— VLM/STT
+回调与 `emit_log` 是构造时注入的，重建会丢），并写一行
+`[增强] enricher 已重绑到新连接对象`。
+
+### 15.4 验证
+
+- 新增 `tests/test_qq_runtime_transition_lock.py`（9 条）：闸门可重入、第二个任务排队
+  且留下等待日志、**复刻现场**（`connect()` 卡在闸门上时并发 `stop_runtime`，断言
+  `disconnect` 必须晚于 `connect` 返回）、停止能在闸门内看到刚落地的启动、收尾重建与
+  入口启动共用一把锁、整链真跑不自锁、四个入口的持闸断口守卫。
+- 新增 `tests/test_qq_enricher_rebind.py`（5 条）：换绑发生、对象不重建、同对象不重复
+  换绑、**端到端**（换绑后引用链真的打到新连接上）、`rebind` API 与调用点守卫。
+- 全量：`pytest plugin/plugins/qq_auto_reply/tests -q` → **1190 passed**（基线 1176 + 14）；
+  `ruff check`（E4/E7/E9/F/I）All checks passed。
+- 变异取证（两个脚本都先确认目标在干净树上绿、恢复后逐字节核对、每次都跑控制组
+  `test_qq_permission_levels.py`）：
+  - `tests/verify_runtime_transition_lock_fail_to_pass.py`：4 处变异（启动入口不持闸 /
+    停止入口不持闸 / 闸门永远当重入 / 收尾重建不持闸）→ 目标全红、控制组全绿，**5/5**；
+  - `tests/verify_enricher_rebind_fail_to_pass.py`：2 处变异（不换绑 / `rebind` 变空操作
+    ——后者调用点与方法都还在，只有行为没了，纯扫源码的守卫抓不到）→ **3/3**。
+- **真机**（03:07-03:08）：
+  1. `POST /plugin/qq_auto_reply/reload` 载入新码 → 03:07:26 新进程、03:07:54 NapCat 已连；
+  2. 调 `runtime` 入口 `action=set_mode, mode=napcat`（同模式，只为触发收尾重建）
+     → 03:08:09 日志：`[运行时] 收尾重建连接对象（auto_start=True）` → `OneBot client
+     disconnected` → `Reverse WS server stopped` → `[QQ] 连接器来源: host` →
+     **`[增强] enricher 已重绑到新连接对象`** → `Reverse WS server listening` →
+     `[绑定] 自动回复已启动（started）`；**没有 AttributeError**；
+  3. 03:08:39 NapCat 重新连上、`get_login_info status=ok`；`_error.log` 行数仍是
+     18855（自 `00:58:42` 起零新增），即整轮零错误。
+
+### 15.5 还剩的收尾
+
+- 宿主侧仍缺那半个防护：`connect()` 每个 await 之后应复检
+  `if self._http is None or self._closing: raise RuntimeError("连接已取消")`（或给
+  `connect()` 一个代次令牌）。本仓只读，只能作为上游建议；插件侧现在不会再制造这个
+  交错。
+- 代价说清楚：启停从此是**串行**的，`shutdown` 若撞上一条在飞的 `connect()` 会等它
+  走完（宿主 httpx 超时 15s；`websockets.connect` 无显式超时，理论上是这个等待的
+  上界）。换来的是不再出现"半个连接对象"。
+- 最终端到端确认（引用一条消息看 `_reply_context`）：需要在群里发一条**引用她的消息**，
+  我发不了 —— 使用者随手引一条即可，日志里不该再出现 `Failed to fetch reply msg`。
+
+### 15.6 队列剩余（未动）
+
+- `napcat.html` 残留的 scene-prob-card（`display:none`）+ `ui.shared.card.scene_prob`
+  的 i18n 键 + 约 10 处 `neko_scene` 注释/JS。
+- 给 `reply_necessity_threshold` 补面板控件（需要把「不可保存」的键接到 dashboard
+  快照 + `save_settings` 参数上）。
+- C 档（门控出口合并 + 顺序看门狗）、接话反馈闭环。

@@ -100,6 +100,16 @@ class QQMessageEnricher:
         self.logger = logger
         self._emit_log = emit_log or (lambda level, msg: None)
 
+    def rebind(self, client: Any) -> None:
+        """换绑连接对象。
+
+        收尾重建（切换连接模式 / 一键部署 / 补写 OneBot 配置）会把连接对象整个丢掉
+        重造（见 ``__init__._restart_auto_reply_runtime`` 的说明），而 enricher 是
+        初始化时按连接对象建的、只建一次 —— 不换绑就会一直拿旧对象去拉引用/转发/
+        语音/文件，异常还被本模块的 ``except Exception`` 吞成一行日志。
+        """
+        self._client = client
+
     # ── segment extraction (what the pipeline should enrich) ────────────
 
     @staticmethod

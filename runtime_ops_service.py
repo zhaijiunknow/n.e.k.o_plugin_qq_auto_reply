@@ -6,6 +6,7 @@ from typing import Any
 from plugin.sdk.plugin import Err, Ok, SdkError
 
 from .pipeline_models import QQReplyRequest
+from .runtime_transition import runtime_transition_guard
 from .targets import QQAutoReplyValidationError
 
 
@@ -14,6 +15,10 @@ class QQRuntimeOpsService:
         self.plugin = plugin
 
     async def start_auto_reply(self):
+        async with runtime_transition_guard(self.plugin).hold("启动自动回复"):
+            return await self._start_auto_reply_locked()
+
+    async def _start_auto_reply_locked(self):
         housekeeping = getattr(self.plugin, "_session_housekeeping_task", None)
         if housekeeping is None or housekeeping.done():
             # 交互式 stop 会取消 housekeeping；重启必须把它拉起来，否则
@@ -54,7 +59,16 @@ class QQRuntimeOpsService:
         else:
             mismatch = False
         if mismatch:
-            # 模式不匹配 → 断开旧连接，重建
+            # 模式不匹配 → 断开旧连接，重建。
+            # 这行日志曾是缺口：重建静默发生，事后只能从"连接器来源"多打了一次
+            # 来推断（2026-09-27 那次 AttributeError 的排查就卡在这）。
+            self.plugin.logger.info(
+                f"[运行时] 连接模式不匹配（连接对象={client_mode} 配置={expected}），"
+                f"断开旧连接并重建"
+            )
+            self.plugin._emit_log(
+                "WARN", f"连接模式已变（{client_mode} → {expected}），正在重建连接…",
+            )
             try:
                 await self.plugin.qq_client.disconnect()
             except Exception:
@@ -144,12 +158,20 @@ class QQRuntimeOpsService:
         )
 
     async def stop_auto_reply(self):
+        async with runtime_transition_guard(self.plugin).hold("停止自动回复"):
+            return await self._stop_auto_reply_locked()
+
+    async def _stop_auto_reply_locked(self):
         if not self.plugin._running and not self.plugin._message_task:
             return Ok({"status": "not_running"})
-        await self.stop_runtime(stop_napcat=False)
+        await self._stop_runtime_locked(stop_napcat=False)
         return Ok({"status": "stopped"})
 
     async def stop_runtime(self, *, stop_napcat: bool):
+        async with runtime_transition_guard(self.plugin).hold("停止运行时"):
+            await self._stop_runtime_locked(stop_napcat=stop_napcat)
+
+    async def _stop_runtime_locked(self, *, stop_napcat: bool):
         self.plugin._running = False
         getattr(self.plugin, "_spawn_push_ui_event", lambda *a, **k: None)("status")  # 运行状态翻转 → SSE 通知前端
         if self.plugin.attention_service:
