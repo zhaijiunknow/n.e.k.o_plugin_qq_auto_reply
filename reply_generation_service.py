@@ -511,9 +511,11 @@ class QQReplyGenerationService:
                 context=context, consent_before=consent_before,
             )
         definitions.extend(bridge_tools)
-        bridge_handler = bridge.build_handler(mounted, session_key=str(
-            getattr(context, "session_key", "") or "",
-        ))
+        bridge_handler = bridge.build_handler(
+            mounted,
+            session_key=str(getattr(context, "session_key", "") or ""),
+            conversation=self._bridge_conversation(context),
+        )
 
         async def _dispatch(tool_call: Any) -> Any:
             name = str(getattr(tool_call, "name", "") or "")
@@ -542,11 +544,33 @@ class QQReplyGenerationService:
         )
         return True, True
 
+    @staticmethod
+    def _bridge_conversation(context: Any) -> dict[str, Any]:
+        """这一轮的**会话身份**：异步任务的结果要回到同一场对话（见
+        `plugin_tool_followup_service`）。记忆策略也一起带走 —— 回投是同一场对话的
+        下一轮，不是另起一个临时会话。"""
+        return {
+            "sender_id": str(getattr(context, "sender_id", "") or ""),
+            "is_group": bool(getattr(context, "is_group", False)),
+            "group_id": str(getattr(context, "group_id", "") or ""),
+            "user_nickname": str(getattr(context, "user_nickname", "") or ""),
+            "permission_level": str(getattr(context, "permission_level", "") or ""),
+            "use_memory_context": getattr(context, "use_memory_context", None),
+            "persist_memory": getattr(context, "persist_memory", None),
+            "ephemeral_session": bool(getattr(context, "ephemeral_session", False)),
+            "group_scene_mode": str(getattr(context, "group_scene_mode", "") or ""),
+        }
+
     async def _build_bridge_tools(self, context: Any) -> tuple[list[tuple[dict[str, Any], str]], list[Any]]:
         """把「白名单 ∧ 已启动 ∧ 这个人有权用」的插件变成工具定义。"""
         from . import connector_seam
+        from .pipeline_models import KIND_PLUGIN_TOOL_RESULT
         from .plugin_tool_service import QQPluginToolService
 
+        if str(getattr(context, "source_kind", "") or "") == KIND_PLUGIN_TOOL_RESULT:
+            # 结果回投那一轮**不再挂插件工具**：这一轮的任务是把已经到手的结果说出去，
+            # 而挂上工具就等于"一个异步结果可以生出下一个异步任务"，会跑成环。
+            return [], []
         client = getattr(self.plugin, "qq_client", None)
         if client is None or not connector_seam.open_platform_media.is_open_platform(client):
             return [], []

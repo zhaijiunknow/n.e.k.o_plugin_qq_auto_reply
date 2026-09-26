@@ -352,6 +352,11 @@ MISC = (
     # 只认"已经启动"的插件：没启动的那些挂不上工具，也不会出现在提示词里。
     SettingSpec("qq_open_plugin_tools", "dict", {}, saveable=True,
                 description="save：开放平台上允许猫娘调用的插件及其分级（JSON 对象）"),
+    # 异步插件任务的**结果回投**：她答应过"结果出来告诉你"时，由后台轮询到结果后
+    # 主动回一条到同一个会话（见 `plugin_tool_followup_service`）。使用者 16:3x 要的
+    # ——这是插件里唯一一条"她主动说话"的路径，所以要给一个能一键关掉的开关。
+    SettingSpec("qq_open_plugin_followup_enabled", "bool", True, saveable=True,
+                description="save：开放平台上是否允许她主动把异步插件的结果回投给对方"),
     # ── 名单与账本 ──
     SettingSpec("trusted_users", "list", [], description="可信用户名单",
                 ui=UIInput("", kind="text")),

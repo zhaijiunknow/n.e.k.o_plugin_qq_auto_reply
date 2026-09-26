@@ -704,5 +704,9 @@
   "ui.openplat.sidebar.plugintools": "插件",
   "ui.openplat.plugintools.tier_all_short": "所有人",
   "ui.openplat.plugintools.tier_admin_short": "仅管理员",
-  "ui.openplat.plugintools.search_placeholder": "搜索插件名 / id"
+  "ui.openplat.plugintools.search_placeholder": "搜索插件名 / id",
+  "ui.openplat.plugintools.followup_enabled": "结果出来时允许她主动回一条（异步任务的后续）",
+  "ui.openplat.plugintools.followup_hint": "她答应「结果出来告诉你」时，后台会替你盯着那个任务；出结果后她把结论主动发回同一个会话。关掉之后她就不会再承诺这件事。",
+  "ui.openplat.plugintools.followup_pending": "正在等结果：{items}",
+  "ui.openplat.plugintools.followup_waited": "已等 {s}s"
 }

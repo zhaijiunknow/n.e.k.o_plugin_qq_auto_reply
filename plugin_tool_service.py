@@ -430,11 +430,15 @@ class QQPluginToolService:
         mounted: list[tuple[dict[str, Any], str]],
         *,
         session_key: str = "",
+        conversation: dict[str, Any] | None = None,
     ) -> Callable[[Any], Any]:
         """这一轮的分发器：把模型的工具调用转成 `call_entry`。
 
         entry 只认**这一轮挂上去的那份清单**（模型不能自己编一个 entry 名来透传），
         这是这条链路唯一的安全边界之一。
+
+        `conversation` 是**这一轮的会话身份**（谁/哪个群/什么权限/记忆策略）。
+        只有异步任务的结果回投需要它 —— 见 `plugin_tool_followup_service`。
         """
         from main_logic.tool_calling import ToolResult
 
@@ -474,8 +478,13 @@ class QQPluginToolService:
             output, payload = await self.call_plugin_entry_with_payload(
                 plugin_id, entry_id, params, session_key=session_key,
             )
+            registered = await self._register_followup(
+                payload, plugin_id=plugin_id, entry_id=entry_id,
+                poller=pollers.get(name, ""), conversation=conversation,
+            )
             output += self._async_followup_note(
                 payload, plugin_id=plugin_id, poller=pollers.get(name, ""),
+                registered=registered,
             )
             return ToolResult(call_id=call_id, name=name, output=output)
 
@@ -503,23 +512,68 @@ class QQPluginToolService:
                     return name, text
         return "", ""
 
-    def _async_followup_note(self, payload: Any, *, plugin_id: str, poller: str) -> str:
+    async def _register_followup(
+        self,
+        payload: Any,
+        *,
+        plugin_id: str,
+        entry_id: str,
+        poller: str,
+        conversation: dict[str, Any] | None,
+    ) -> bool:
+        """结果里认得出 `task_id` 就登记回投。返回"真的会回投吗"。"""
+        field, value = self._find_task_id(payload)
+        if not field:
+            return False
+        followups = getattr(self.plugin, "plugin_tool_followup_service", None)
+        register = getattr(followups, "register", None)
+        if not callable(register):
+            return False
+        try:
+            return bool(await register(
+                plugin_id=plugin_id, entry_id=entry_id, field=field,
+                task_id=value, poller=poller, conversation=conversation,
+            ))
+        except Exception:
+            self.plugin.logger.warning("登记异步任务回投失败", exc_info=True)
+            return False
+
+    def _async_followup_note(
+        self,
+        payload: Any,
+        *,
+        plugin_id: str,
+        poller: str,
+        registered: bool = False,
+    ) -> str:
         """异步任务要**当场把"下一步"告诉模型**。
 
         真机教训（`writer_power_analysis:analyze_text`）：结果里只有
         `{"task_id": …, "status": "queued"}`，模型于是对用户说"等结果出来我第一时间
         告诉你"—— 而**这条承诺根本没法兑现**：插件会话一轮只走一次工具轮，
-        没有任何东西会再回来喂结果。所以这里明写：本轮没有结果、不要承诺主动通知、
-        对方再问时用哪个 entry 带哪个字段去查。
+        没有任何东西会再回来喂结果。所以这里明写：本轮没有结果，以及**到底会不会
+        有后续**（`registered` 由 `_register_followup` 实测得出，不是猜的）：
+
+        * 登记成功（`plugin_tool_followup_service` 会去轮询并回投）→ 允许承诺，
+          但**不许承诺具体时间**，也不许提前编结果；
+        * 登记不上（没配查状态的 entry / 查不到进度 / 已经在等别的 / 开关关了 /
+          不认识这个会话）→ 沿用原来的口径：**不要承诺**，让对方再问一次，
+          并给出查询入口。
         """
         field, value = self._find_task_id(payload)
         if not field:
             return ""
+        if registered:
+            return (
+                "\n（这是**异步任务**，本轮拿不到结果。**结果一出来系统会再喊你一次**，"
+                "那时你直接把结论告诉对方即可 —— 所以你可以说「出来了我告诉你」，"
+                "但**不要承诺具体时间**，也**不要提前编结果**。）"
+            )
         where = f"{plugin_id}:{poller}" if poller else f"{plugin_id} 里查状态的那个 entry"
         return (
-            "\n（这是**异步任务**，本轮拿不到结果。不要承诺「结果出来我主动告诉你」——"
-            f"你没有办法再回来喂结果。请让对方稍后再问一次，那时用 {where} 带上 "
-            f"{field}={value} 去查。）"
+            "\n（这是**异步任务**，本轮拿不到结果。**没有东西会回来喂结果**，"
+            "所以不要承诺「结果出来我主动告诉你」——你兑现不了。"
+            f"请让对方稍后再问一次，那时用 {where} 带上 {field}={value} 去查。）"
         )
 
     async def call_plugin_entry(

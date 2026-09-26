@@ -31,6 +31,10 @@ KIND_PROACTIVE_PRIVATE = "proactive_private"
 KIND_PROACTIVE_GROUP = "proactive_group"
 KIND_RETROACTIVE_REVIEW = "retroactive_review"
 KIND_GROUP_JOIN_NOTICE = "group_join_notice"
+#: 异步插件任务的结果回投（她先前答应过"结果出来告诉你"，后台轮询到结果后由
+#: `plugin_tool_followup_service` 合成的那一轮）。sender 同样是**名义发言人**：
+#: 群聊里借管理员的身份，私聊里就是收件人本人。
+KIND_PLUGIN_TOOL_RESULT = "plugin_tool_result"
 
 #: 合成来源：其 sender 是名义发言人而非真实说话者。
 #:
@@ -49,6 +53,7 @@ SYNTHETIC_SOURCE_KINDS = frozenset({
     KIND_RAPID_FIRE,
     KIND_RETROACTIVE_REVIEW,
     KIND_GROUP_JOIN_NOTICE,
+    KIND_PLUGIN_TOOL_RESULT,
 })
 
 #: 这些来源**本身已经是缓冲投递链路的一环**，不得再被投进 reply_buffer
@@ -60,6 +65,9 @@ BUFFER_INTERNAL_SOURCE_KINDS = frozenset({
     KIND_PROACTIVE_SPEECH,
     KIND_PROACTIVE_PRIVATE,
     KIND_PROACTIVE_GROUP,
+    # 结果回投是一条**到点就该发**的通知：它已经在后台等过一轮了，再进缓冲
+    # 就等于"等结果"之后又随机延迟并可能和别的草稿合并。
+    KIND_PLUGIN_TOOL_RESULT,
 })
 
 

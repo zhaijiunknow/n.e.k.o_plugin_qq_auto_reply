@@ -704,5 +704,9 @@
   "ui.openplat.sidebar.plugintools": "Plugins",
   "ui.openplat.plugintools.tier_all_short": "Everyone",
   "ui.openplat.plugintools.tier_admin_short": "Admins",
-  "ui.openplat.plugintools.search_placeholder": "Filter by name / id"
+  "ui.openplat.plugintools.search_placeholder": "Filter by name / id",
+  "ui.openplat.plugintools.followup_enabled": "Let her send the result on her own once it is ready (async task follow-up)",
+  "ui.openplat.plugintools.followup_hint": "When she promises to report back, the background keeps polling that task and she sends the conclusion to the same chat once it lands. Turn this off and she will stop promising it.",
+  "ui.openplat.plugintools.followup_pending": "Waiting for results: {items}",
+  "ui.openplat.plugintools.followup_waited": "waiting {s}s"
 }

@@ -59,6 +59,7 @@ from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
 from .napcat_service import QQNapcatService
 from .permission import PermissionManager
+from .plugin_tool_followup_service import QQPluginToolFollowupService
 from .plugin_tool_service import PLUGIN_TOOL_MAX_MOUNTED, QQPluginToolService
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
@@ -177,6 +178,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.memory_tool_service = QQMemoryToolService(self)
         # 插件工具桥（只在开放平台启用）：把别的插件的能力按分级挂到 QQ 会话上。
         self.plugin_tool_service = QQPluginToolService(self)
+        # 异步插件任务的结果回投：她答应过"结果出来告诉你"，这条链路让它成真。
+        self.plugin_tool_followup_service = QQPluginToolFollowupService(self)
         self.relay_service = QQRelayService(self)
         self.reply_generation_service = QQReplyGenerationService(self)
         self.reply_decision_node = QQReplyDecisionNode(self)
@@ -848,6 +851,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if tool_bridge is not None:
             tool_bridge.ensure_refresh_loop()
 
+        # 异步任务的结果回投（她也在这里把"从上次没说完的事"接着说完）：
+        # 磁盘上可能还留着宿主重启前在等的任务，得接着轮询 —— 否则那句
+        # "结果出来我告诉你"就永远没人兑现，而且连日志都不会有。
+        followups = getattr(self, "plugin_tool_followup_service", None)
+        if followups is not None:
+            followups.ensure_loop()
+
     async def _autostart_on_launch(self) -> None:
         """开机自启：起监听 / 拉起 NapCat。
 
@@ -1295,6 +1305,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             str(self.qq_client.mode if self.qq_client is not None else "")
             or str(self._qq_settings.get("qq_connection_mode") or "")
         )
+        followups = getattr(self, "plugin_tool_followup_service", None)
+        pending_followups = followups.snapshot() if followups is not None else []
         return Ok({
             "enabled_on_this_channel": current == "open_platform",
             "connection_mode": current,
@@ -1302,6 +1314,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "candidates": candidates,
             "configured_not_running": configured_not_running,
             "max_plugins": PLUGIN_TOOL_MAX_MOUNTED,
+            # 还在等结果的异步任务（结果一到她会主动回一条），界面显示它，
+            # 免得使用者以为"又没下文了"。
+            "followups_enabled": bool(followups.enabled()) if followups is not None else False,
+            "pending_followups": pending_followups,
+            "max_pending_followups": (
+                followups.max_pending() if followups is not None else 0
+            ),
         })
 
     async def _query_dashboard(self, kw: dict[str, Any]):

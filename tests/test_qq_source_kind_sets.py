@@ -42,6 +42,7 @@ DECLARED: dict[str, dict[str, bool]] = {
     pipeline_models.KIND_PROACTIVE_GROUP:   {"synthetic": True,  "buffer_internal": True},
     pipeline_models.KIND_RETROACTIVE_REVIEW: {"synthetic": True, "buffer_internal": False},
     pipeline_models.KIND_GROUP_JOIN_NOTICE: {"synthetic": True,  "buffer_internal": False},
+    pipeline_models.KIND_PLUGIN_TOOL_RESULT: {"synthetic": True,  "buffer_internal": True},
 }
 
 #: 合法地**没有** `source_kind="字面量"` 赋值点的来源，附理由。
@@ -55,6 +56,10 @@ NOT_ASSIGNED_AS_LITERAL: dict[str, str] = {
         "经变量注入 source_kind=（message_dispatcher.py:912 "
         "`source_kind=synthetic_source or \"incoming_group\"`），"
         "因此静态扫描看不到这个字面量",
+    pipeline_models.KIND_PLUGIN_TOOL_RESULT:
+        "唯一生产者是 plugin_tool_followup_service.deliver()：它用**模块常量**"
+        "`source_kind=KIND_PLUGIN_TOOL_RESULT` 组请求（同文件从 pipeline_models "
+        "import 这个常量），所以调用点没有字面量可扫",
 }
 
 

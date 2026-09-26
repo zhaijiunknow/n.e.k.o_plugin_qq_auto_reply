@@ -253,6 +253,14 @@ body{display:flex;height:100vh;overflow:hidden}
         </div>
         <div class="form-hint" style="margin-top:10px" data-i18n="ui.openplat.plugintools.drag_hint">点按钮或拖拽都能改档位；拖回左边（或点「撤销」）即移除。改动立刻保存。</div>
         <div id="plugin-tools-note" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+        <!-- 异步任务的结果回投：她说"结果出来我告诉你"时，后台替她盯着那个任务，
+             到点后由她主动回一条到同一个会话。这是插件里唯一一条"她主动说话"的路，
+             所以给一个能一键关掉的开关，并把"还在等什么"显示出来。 -->
+        <div class="form-group" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+            <label><input id="pt-followup-enabled" type="checkbox" onchange="ptSetFollowup(this.checked)"> <span data-i18n="ui.openplat.plugintools.followup_enabled">结果出来时允许她主动回一条（异步任务的后续）</span></label>
+            <div class="form-hint" data-i18n="ui.openplat.plugintools.followup_hint">她答应"结果出来告诉你"时，后台会替你盯着那个任务；出结果后她把结论主动发回同一个会话。关掉之后她就不会再承诺这件事。</div>
+            <div class="form-hint" id="pt-followups" style="margin-top:6px"></div>
+        </div>
     </div>
 </div>
 <div class="page" id="page-sticker">
@@ -401,10 +409,15 @@ function renderPluginTools(){
     card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',card.dataset.pid);ev.dataTransfer.effectAllowed='move'});
   });
   let ch=document.getElementById('plugin-tools-channel');
-  if(ch){let modeTxt=_pluginTools.connection_mode||'?';ch.textContent=_pluginTools.enabled_on_this_channel?tf('ui.openplat.plugintools.only_openplat','当前通道是开放平台，配置生效中（最多 {n} 个）',{n:_pluginTools.max}):tf('ui.openplat.plugintools.not_openplat','当前通道是 {mode}，这些配置只在开放平台生效',{mode:modeTxt});ch.style.color=_pluginTools.enabled_on_this_channel?'var(--success)':'var(--warning)'}
+  if(ch){let modeTxt=_pluginTools.connection_mode||'?';let cap=_pluginTools.max_plugins||_pluginTools.max||8;ch.textContent=_pluginTools.enabled_on_this_channel?tf('ui.openplat.plugintools.only_openplat','当前通道是开放平台，配置生效中（最多 {n} 个）',{n:cap}):tf('ui.openplat.plugintools.not_openplat','当前通道是 {mode}，这些配置只在开放平台生效',{mode:modeTxt});ch.style.color=_pluginTools.enabled_on_this_channel?'var(--success)':'var(--warning)'}
   let note=document.getElementById('plugin-tools-note');
   if(note){let miss=_pluginTools.configured_not_running||[];note.textContent=miss.length?tf('ui.openplat.plugintools.missing_note','这些已配置但当前没启动，挂不上去：{ids}',{ids:miss.join('、')}):''}
+  let fuBox=document.getElementById('pt-followup-enabled');
+  if(fuBox)fuBox.checked=_pluginTools.followups_enabled!==false;
+  let fu=document.getElementById('pt-followups');
+  if(fu){let rows=_pluginTools.pending_followups||[];fu.textContent=rows.length?tf('ui.openplat.plugintools.followup_pending','正在等结果：{items}',{items:rows.map(fr=>fr.conversation+' · '+fr.plugin_id+' · '+tf('ui.openplat.plugintools.followup_waited','已等 {s}s',{s:Math.round(fr.age_seconds)})+(fr.status&&fr.status!=='queued'&&fr.status!=='running'?'（'+fr.status+'）':'')).join('；')}):'';fu.style.color=rows.length?'var(--accent)':'var(--muted)'}
 }
+async function ptSetFollowup(on){try{await call('config',{action:'save',qq_open_plugin_followup_enabled:!!on});_pluginTools.followups_enabled=!!on;toast(t('ui.openplat.plugintools.saved','分级已保存'),true)}catch(e){toast(t('ui.openplat.plugintools.save_failed','保存失败: ')+e.message)}}
 async function ptSetTier(pid,tier){let t2=Object.assign({},_pluginTools.tiers||{});if(tier)t2[pid]=tier;else delete t2[pid];try{await call('config',{action:'save',qq_open_plugin_tools:t2});_pluginTools.tiers=t2;renderPluginTools();toast(t('ui.openplat.plugintools.saved','分级已保存'),true)}catch(e){toast(t('ui.openplat.plugintools.save_failed','保存失败: ')+e.message)}}
 (function(){['pt-zone-available','pt-zone-all','pt-zone-admin'].forEach(id=>{let z=document.getElementById(id);if(!z)return;['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.add('drag-over')}));['dragleave','drop'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.remove('drag-over')}));z.addEventListener('drop',e=>{let pid=e.dataTransfer.getData('text/plain');if(pid)ptSetTier(pid,z.dataset.tier||null)})})})();
 async function doSave(){try{let args={qq_connection_mode:MODE,qq_open_app_id:document.getElementById('cfg-appid').value.trim(),qq_open_client_secret:document.getElementById('cfg-secret').value,qq_open_sandbox_enabled:document.getElementById('cfg-sandbox').checked,qq_open_identity_probe_enabled:document.getElementById('cfg-identity-probe').checked,group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1){toast(t('ui.shared.toast.save_not_persisted','写盘失败，设置已回滚（记忆开关未生效）'))}else{toast(t('ui.shared.toast.saved','设置已保存'),!0)}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
