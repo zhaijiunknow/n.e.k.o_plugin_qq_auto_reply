@@ -328,6 +328,30 @@ else: delay_seconds = max(0.0, (trigger_threshold - pending_count) * average_mes
 9. **ASI（回复效果分）是只写不读的观测功能，不是闭环**：`reply_effect/tracker.py` 全部方法只做 record → judge → score → **save JSON 文件**；`storage.py` 只有写与裁剪，**仓内无读回消费点**；`runtime.py` 里所有 `reply_effect` 引用只 import/构造/调用，**从无 ASI 消费**；整个子系统还由 `debug.enable_reply_effect_tracking` 门控（面向看板）。→ 公式值得移植，但**别以为 MaiBot 用它调整过行为**；把它接成真正的反馈闭环（`msgs_after_bot_reply` 回灌注意力/频率）是我们可以做的真实增量。
 10. **移植陷阱：`reply_necessity.py` 里硬编码了 bot 名字「麦麦」**（`if not is_direct_context and "麦麦" not in text: return ""`、`re.search(r"(?:你|麦麦).{0,6}怎么看|怎么看.{0,6}(?:你|麦麦)", text)`），而不是读 `global_config.bot.nickname`。后果：**改名后「征询意见」这一整类 +20 分静默失效且不报错**。我们抄它的评分表时必须把所有字面量换成 `self_id`/昵称 + 别名列表（我们已有 `_self_id`，本来就该这么做）。
 
+### 5.7 MaiBot 第三轮补充：人物状态 / 学习 / 唯一真正闭环 / 更多陷阱【原文·子代理全仓 clone 后 grep】
+
+**(a) 精确修正「没有闭环」这句话。** 我前面写「ASI 只写不读」是对的，但**不能说 MaiBot 没有闭环**——它有**且只有一个**：`BehaviorExperiencePath.score`（表键 `("session_id","scene_cluster_id","action_id","outcome_id","actor_type","learning_type")`，**按「聊天流 × 场景 × 动作 × 结果」而不是按人**）：
+- 字段：`count / activation_count / success_count / failure_count / score(default 0.0) / enabled / evidence_list / feedback_list`；
+- 范围 `MIN=-6.0 ~ MAX=8.0`（`_clamp_score`）；增量归一：success → `max(0.1, min(1.0, |delta|))`、partial → `max(0.05, min(0.35, |delta|))`、failed → 负值同量级；
+- **回读（这就是闭环）**：`behavior_selector.py:66-94` 的选择权重
+  `weight = max(0.2, 1.0 + count*0.15 + score*0.7 + success_count*0.4 − failure_count*0.6 − activation_count*0.03 + self_feedback_bonus)`（`self_feedback_bonus = 0.15` 当 `learning_type == "self_reflection"`）；
+- **证据门槛**（我们最该抄的一条）：LLM 反馈评估必须引用真实消息，且**至少一条被引用消息的 speaker 是 `"SELF"`**，否则以 `missing_self_adoption_evidence` **丢弃**——防止把「群友自己的行为」当成她的经验；
+- 衰减：`DECAY_COOLDOWN_DAYS=7`、`UNUSED_DECAY_AFTER_DAYS=14`、`UNUSED_DISABLE_AFTER_DAYS=60`、`UNRESPONDED_DECAY_AFTER_DAYS=21`；失效条件 `score ≤ −6.0 且 failure_count ≥ 3`；召回层先过滤 `min_score = −4.0`；
+- **但它的调用点在 `_post_process_chat_history_after_cycle`（本轮结束之后）→ 只影响「怎么说」，不影响「要不要说」**；且开关 `experimental.enable_behavior_learning` **默认 False**。
+
+**(b) `_talk_frequency_adjust` 的唯一写入路径是插件能力**（`plugin_runtime/capabilities/data.py:830-843`），**仓内没有任何内置插件调用它**，且**不落盘、进程重启回 1.0**。→ 进一步坐实 §8 第 11 条的更正：所谓「动态频率控制」在现版本里只是留给第三方插件的一个旋钮，不是一个会自己工作的机制。
+
+**(c) 「关系」在 MaiBot 里是文本，不是分数。** 人物画像表 `person_profile_snapshots` 的 `profile_text` 有固定段落协议：`身份设定 / 关系设定 / 稳定了解 / 相处偏好 / 近期互动 / 不确定信息 / 维护备注`（逐字 `PROFILE_SECTION_TITLES`），**注入只取前 5 段**，各段条数上限 `4/4/6/5/3/3`；`PROFILE_TEXT_MAX_CHARS = 900`，每次最多注入 `max_profiles=3`，候选按「当前对象优先」（群聊顺序 `recent_speaker → at_user → reply_sender`）；前缀逐字 `【人物画像-内部参考】\n以下内容仅供内部推理，不要向用户逐字复述。`。
+**关键：`## 关系设定` 是 LLM 生成的自然语言条目，没有任何代码对它做算术**；而且画像的**唯一调用点在 `_run_planner_request` 内部（`reasoning_engine.py:493-509, 694`）——即「已经决定进 Planner 之后」**，所以它**不参与「要不要说」的判定**。黑话（`jargons`，键是 `session_id_dict`）与高频词（`high_frequency_terms`，键 `("chat_id","term")`，`high_frequency_score = 1000 + count*2 + max(0, 100−rank)`）同样都是**触发后**才注入的参考。
+→ **「让某些人的话更容易让她开口」这件事，在 MaiBot 里没有实现**：现成参与判定的连续量只有三个——`effective_frequency`、`pressure_score`(0–100)、`presence_penalty`(0–25)，**三者都不区分是谁在说话**。要做成真状态，得同时新增输入字段 + 评分项 + 一张按 `person_id` 键的持久化数值表（`PersonInfo` 现在是纯文本+计数器，**0 个数值型亲密度字段**；现有 `know_counts/first_known_time/last_known_time` 是行为痕迹计数）。最省成本的路径是复用 `reply_effect` 记录里已经按人存的 `target_user` + ASI 做滚动均值——但那条链路默认关且无人回读（见 (a)）。
+
+**(d) 「表达习惯」学习（可移植到「她说得像不像人」）**：表 `expressions` 字段 `situation / style / content_list / count / last_active_time / create_time / session_id / checked / modified_by(AI|USER)`——**作用域是 `session_id`（NULL=全局），没有 person_id**。选择模式 `expression_selection_mode ∈ {legacy("随手"), vector("精细"), vector_intent("超级精细")}`；向量打分常量 `VECTOR_ITEM_WEIGHT=0.7 / VECTOR_CLUSTER_WEIGHT=0.1 / VECTOR_LEXICAL_WEIGHT=0.2`、候选上限 50、MMR 多样性 `VECTOR_DIVERSITY_LAMBDA=0.85`；legacy 权重按 `count` 线性映射到 `[1,5]`。注入是**以 User 角色**插入一条 `【表达习惯参考，请视情况自然的使用】`，每行 `- 当"{situation}"时，可以用"{style}"来表达。`。
+⚠️ **文档 vs 实际陷阱**：选择 prompt 逐字写「请只从下面候选中选择 **0 到 5 条**」，但**解析时硬截断为 3 条**（`if len(selected_ids) >= 3: break`）——抄 prompt 时别抄数字。学习批次门控：间隔 `30s`、条数 ≥`10`、并发上限 `3`（拒绝原因 `max_expression_learner <= 0` / `session_busy` / `global_limit`）。
+
+**(e) 另外两个「文档 vs 实际」坑**：
+- `talk_value_rules` 同级并列时**配置列表里靠后的规则胜出**（判据 `if priority <= selected_priority: continue`，严格大于才替换）；`_talk_rule_time_priority`：空串→1、`"*"`→3、`parse_range` 命中→2。
+- `PersonInfo` 的 Python 属性名与 DB 列名**不同名**：`know_times→know_counts`、`know_since→first_known_time`、`last_know→last_known_time`、`nickname→user_nickname`；`person_id = md5(platform_userid)`；SQLite（`data/MaiBot.db`，WAL）。另 `memory_points` 的 `category:content:weight` 里第三段 weight **两端都被丢弃**（写入端与读取端都没用）。
+
 ---
 
 ## 6. 关键约束：QQ 官方通道的真相
