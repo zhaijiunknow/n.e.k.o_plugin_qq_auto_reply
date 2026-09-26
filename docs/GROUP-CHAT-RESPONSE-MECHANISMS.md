@@ -43,7 +43,8 @@
 5. **[原文·官方文档] 我们当前通道的真相**：QQ 开放平台群聊**只推送 @ 机器人的消息**（`GROUP_AT_MESSAGE_CREATE`）。我们插件的 intent 掩码是 `(1 << 25) | (1 << 12)`（`_vendor/connection_onebot/qq_open_plat.py:351`），而「群消息（全量模式）」`GROUP_MESSAGE_CREATE` 的 Intent 也是 `GROUP_AND_C2C_EVENT (1<<25)` —— **即：只要在开放平台后台开启「接收所有消息」，事件就会推到我们已经在订阅的这条 websocket 上，我们只需要在代码里处理这个事件类型**。在此之前，「该不该插话」这个问题在群聊里**根本不存在**：我们能收到的每条群消息都已经被 @ 了。
 
 6. **我们现在的「像不像接话」规则，正好是文献里最弱的 baseline**：「取最近 4 条里第一条非自己发言，≤60s 就抑制」= addressee 研究里的 preceding-speaker 启发式，短会话 p@1 63.5%、**长会话 Acc 只有 13.08%**（Le et al. 2019 Table 3）；而 CHI 2025 的 Inner Thoughts 直接论证：在**没人被点名**的场景，next-speaker prediction **本质上不适定**，应该改成 LLM 按 8 条启发式打 1–5 分、过阈值才说话。
-7. **两个可以直接抄的节流机制**：MaiBot 的**空闲退避**（连续不回复 → 检查间隔从 15s 起、最长 300s，但积压 6 条消息立刻醒）与**动态频率乘子**（≥160s 且 ≥20 条才用 LLM 判「过于频繁/正常/过少」，`×0.8/×1.0/×1.2`，钳制 `[0.1,1.5]`）；以及 Bocchy 的**热度分档冷却**（excitement 9–10→20s … 1–4→300s）。
+7. **MaiBot 已经把我们想要的「必要性打分器」实现出来了**（`src/maisaka/reply_necessity.py`，阈值 80）：强相关分（at=100 / mention=80 / 私聊=40 / focus=40 / 普通=0）+ 内容分（问题+15、请求+20、征询+20、长文+5/+10、纯短反应−25）+ 积压压力分（阈值内二次增长、阈值外对数增长，上限 100）− **存在感惩罚**（近 300s 自己发言占比 >0.25 起扣，0.60 扣满 25 分），再乘 `frequency_factor = 0.5 + 0.5×freq`。另有**空闲退避**（`min(300, 15×2^(count−2))`，积压 ≥6 条绕过，私聊/focus 时重置）与**空窗补偿**（沉默时间折算成虚拟消息数，上限硬扣在 `threshold−1`，且 `pending_count<1` 绝不自我唤醒）。**这些常数可以照抄。**
+8. **我此前引用的「动态频率乘子 ×0.8/×1.2、钳制 [0.1,1.5]、≥160s 且 ≥20 条触发 LLM 判定」来自 DeepWiki，源码里不存在——这是一条错误引用，已在 §5.5(d) 与 §8 更正**（真实源码只有 `talk_frequency_adjust` 的存取与 `max(0.1, min(5.0, value))`）。
 
 ---
 
@@ -258,13 +259,71 @@ Inner Thoughts（CHI 2025，[arXiv:2501.00383](https://arxiv.org/abs/2501.00383)
 
 MUCA（[arXiv:2401.04883](https://arxiv.org/abs/2401.04883)）给出 3W 框架（**What / When / Who**）与子话题状态机（`not_discussed` / `being_discussed` / `well_discussed`），并用「参与度均衡（conversation evenness）」作为指标——它明确警告：主动搭话（pinging a lurker）必须谨慎设计 **timing / frequency / contents**，否则带来负面感受。Inner Thoughts 同样明确：**「只被动响应」和「永远在响应」两个极端都不好**。
 
-**(d) 工业界的频率自适应与冷却分档（二手，DeepWiki 基于源码）**
-- MaiBot 动态频率控制：`talk_value` 作为 `random.random()` 的阈值；**触发动态调整需「距上次调整 ≥160 秒 且 ≥20 条消息」**，用 LLM 分析最近 20 条判断「过于频繁 / 正常 / 过少」，分别 `×0.8 / ×1.0 / ×1.2`，乘子**钳制在 `[0.1, 1.5]`**。
-- bocchy-discord-bot：LLM 给群聊打 **excitement 1–10**，据此设动态冷却：**9–10→20s；7–8→60s；5–6→120s；1–4→300s**（越热闹越能多说，越冷清越少打扰）。
-- 说明：这两条来自 DeepWiki 自动生成的文档，**未读原仓库源码**，按二手证据对待。
+### 5.5 学术界与工业界的量化依据【原文·子代理读 PDF 原文】
+
+**(d) 工业界的频率自适应与冷却分档（二手，DeepWiki 基于源码）**——⚠️ **本节 (d) 的第一条于复核时被证伪，见 §8 第 11 条**，保留在此仅为记录「不要信二手」这件事：
+- ~~MaiBot 动态频率控制：`talk_value` 作为 `random.random()` 的阈值；触发动态调整需「距上次调整 ≥160 秒 且 ≥20 条消息」…~~ **不存在**。真实的 MaiBot 机制见 §5.4 与 §5.6。
+- bocchy-discord-bot：LLM 给群聊打 **excitement 1–10**，据此设动态冷却：**9–10→20s；7–8→60s；5–6→120s；1–4→300s**（越热闹越能多说，越冷清越少打扰）。说明：同样来自 DeepWiki 自动生成的文档，**未读原仓库源码**，按二手证据对待。
 
 **(e) 纯文本群聊的时间阈值：没有公开可用值（未验证）。**
 语音侧有扎实的量化：Heldner & Edlund 2010（KTH 全文）——说话人之间间隔的**众数偏离 0 约 200 ms**，**14%–19% 的 gap <200ms**，**55%–59%** 属于「不可察觉 gap 或重叠」，引用 Walker & Trimboli (1982)：**人对说话人间沉默的察觉阈值接近 200 ms**；Azure Voice Live API 的 `silence_duration_ms` **默认 500**、`speech_duration_ms` 默认 200ms（server_vad）。但**这些是语音信号，纯文本群聊没有对应研究**（本次尝试的两条文本/CMC 路径都失败）。→ 我们的 60s 阈值只能靠**自家数据标定**，不能引用文献当依据。
+
+### 5.6 MaiBot `reply_necessity`：可直接抄的常数【原文·子代理读 GitLab 镜像源码】
+
+`src/maisaka/reply_necessity.py` → `score_reply_necessity`，常量逐字：
+
+| 组 | 项 | 分值 |
+|---|---|---|
+| 强相关 | `has_at` | **100**（`"@"`） |
+| | `has_mention` | **80**（`"提及"`） |
+| | 私聊 | 40 |
+| | `focus_active` | 40 |
+| | 普通（没人叫） | **0** |
+| 内容 | 问题 / 请求 / 征询意见 | +15 / +20 / +20 |
+| | 总长 ≥40 / ≥120 | +5 / +10 |
+| | **纯短反应批次** | **−25** |
+| 压力 | `pending_ratio = pending_count / threshold`；`≤1.0` → `round(50*ratio²)`（`idle_reached_average` 再 +15，上限 50）；`>1.0` → `50 + round(50*log1p(overflow)/log1p(4.0))`，上限 100 | 0–100 |
+| **存在感惩罚** | `self_ratio = 近 300s 自己发言数 / 窗口内消息数`；`≤0.25` → 0；否则 `round(25*(ratio−0.25)/0.35)`（**0.60 扣满 25 分**） | 0–−25 |
+| 汇总 | `raw = 强相关 + 内容 + 压力 − 存在感`；`frequency_factor = 0.5 + 0.5*min(1.0, freq)`；`final = max(0, round(raw * factor))` | — |
+| 判定 | **`score >= REPLY_NECESSITY_TRIGGER_SCORE(80)` → `trigger`，否则 `wait`** | — |
+
+配套细节：
+- `SHORT_REACTIONS = {"哈哈","哈哈哈","草","笑死","好","嗯","啊","哦","6","666","？","?"}`——**全部 ≤8 字符且都落在集合里**才算「纯短反应批次」（扣 25 分）。
+- `strip_reply_necessity_noise` 会先剥掉 `[CQ:reply…]`、`[reply]`、`[回复了…的消息: …]`、`@<…>`；**`@all` 开头 → 直接返回空**。
+- `OTHER_ASSISTANT_ADDRESSEE_PATTERN = ^(?:DeepSeek|ChatGPT|Grok|豆包|千问|元宝|通义|Kimi|Claude)[，,、\s]`——**识别「这话是对另一个 AI 说的」并让请求类加分归零**。这是它对 addressee 的唯一显式处理（词表式，不是结构化三元组）。
+- `reply_trigger_mode` 影响的是**攒够几条才思考**：`frequency` → `max(1, ceil(1/freq))`，`reply_necessity` → `max(1, ceil(1/freq²))`（`runtime._get_message_trigger_threshold`）。
+- `focus` 激活时 `_get_effective_reply_frequency()` **直接返回 1.0**（焦点=免频率限制）；`talk_value=0` → `_is_reply_frequency_silent()`，日志「判定=静默消费」，消息被消费但**不回复**。
+
+`src/maisaka/turn_gates.py` → `FrequencyThresholdTurnGate`（**空窗补偿**，比我们的固定窗口聪明）：
+
+```python
+if pending_count >= trigger_threshold: -> trigger
+if pending_count < 1: -> False, None, "pending=0，不允许纯沉默触发"     # 绝不自唤醒
+idle_equivalent = min(idle_seconds / average_message_interval, float(max(0, trigger_threshold - 1)))
+equivalent = pending_count + idle_equivalent
+if equivalent >= trigger_threshold: -> trigger
+else: delay_seconds = max(0.0, (trigger_threshold - pending_count) * average_message_interval - idle_seconds)   # -> delay
+```
+
+`src/maisaka/idle_backoff.py` → `IdleBackoffController`：`exponent = max(0, count - start_count)`；`seconds = min(cap, base * 2**exponent)`（默认 15 → 30 → 60 → 120 → 240 → 300）；`pending_count >= bypass(6)` 时**绕过退避**；非「空闲周期原因」`reset()`；**私聊与 focus 激活时重置**。触发退避的原因集合是 `{"planner_no_tool_end", "planner_wait_rest", "tool_pause:wait"}`。
+
+**OneBot/Koishi 生态的两个成品**（子代理实测 npm/PyPI 源码）：
+- **`koishi-plugin-group-control@1.0.5`：按群持久化的频率记录 + 四态升级封禁**。表 `command_frequency_record(platform, guildId, commandCount, lastCommandTime, warningSent, blockExpiryTime, firstWarningTime, blockCount, lastBlockNotifyTime)`；超限第一次只 **warn**（并把计数重置为 1），再超就 `blockCount += 1`、`blockDur = round(baseDur * expBase^(blockCount-1))`，窗口 `blockExpWindow=3600` 内累计；四态 `warn / new-blocked / blocked / blocked-silent`——**`blocked-silent` 什么都不发，靠 `blockNotifyCooldown=60` 节流提示本身**（避免限流提示自己刷屏）。默认 `limit=5, window=60, blockDur=300, blockExpBase=2`。判「在叫 bot」的唯一实现是 `session.elements` 里有 `type==="at"` 且 `attrs.id === session.bot.userId`。
+- **`nonebot-plugin-limiter@0.6.0`：把「限制对象」与「窗口算法」解耦**，三种算法（固定窗口 / 滑动窗口 / 令牌桶）共用 `CooldownEntity`；作用域 `GlobalScope="__global"`、`UserScope`、**`SceneScope`（每群）**、`UserSceneScope`，白名单/权限命中返回哨兵 `BYPASS_ENTITY = "__bypass"`，算法侧只认 `entity_id`。
+- 反常见误传：**NoneBot2 核心没有任何内置限流原语**（六个 wheel + master 的 `rule.py` 里 `Cooldown|RateLimit|bucket` 命中数为 0）；`koishi-plugin-rate-limit@2.0.4` 的状态只挂在 `user` 上（**没有每群维度**）。
+
+`src/maisaka/reply_effect/scoring.py` → **回复效果 ASI**（把「她说完之后群里什么反应」量化）：
+`asi = clamp(0.45*behavior + 0.35*relational + 0.20*(1 - friction)) * 100`，其中 `behavior = clamp(0.30*continue_2turns + 0.25*next_user_sentiment + 0.20*user_expansion + 0.15*no_correction + 0.10*no_abort)`，`friction = clamp(0.40*explicit_negative + 0.30*repair_loop + 0.30*uncanny_risk)`，词表包含「你没懂/不是这个意思/算了/无语」「我是说/重新说/你理解错」「谢谢/懂了/有用」三类。**证据权重分源**：后续消息来自**被回复的那个人**时权重 1.0，来自群内其他人降到 **0.65**，无后续则 `evidence_source = "no_followup"`。——这正好解决「群友插话被误当成对她上一句的评价」。**其分数是否回流影响后续说话决策：未定位到消费点，未验证。**
+
+**补充核实（子代理用 `main` HEAD `6584214` 的全仓 tarball 逐文件检索，685 个 `.py`）**：
+
+1. **MaiBot 没有「回复冷却」，也没有「连续发言条数上限」**。全仓检索：`min_interval` 无一条作用于发言时机（只有配置热重载 1.0s、记忆注入 180s）；`src/maisaka/` 下三个 `consecutive` 计数器分别是 wait 次数、空闲轮数、打断次数，**都不是发言条数**；`cooldown|冷却` 命中全是 WebUI HTTP 限流/插件熔断/记忆强化冷却/`focus_cool_time`。**频率控制完全通过「攒够几条消息才入队」实现**（`pending_count` vs `trigger_threshold`）。→ 唯一「说太多 → 降低再次发言意愿」的量化机制就是上面那条**存在感惩罚**。
+2. **它的「用户回复了 bot」判定其实比我们弱**：入站引用只以 `ReplyComponent.target_message_id` 表达，**全仓唯一把 quote id 与自己的 message_id 比较的地方**是 reply 工具的「是否已经引用回过这条」去重（`builtin_tool/reply.py::_find_recent_reply_to_target`），**不是**判断用户是否在回复它。它认「用户在回复 bot」靠的是**昵称子串**（引用被渲染成 `[回复了X的消息: Y]`，而剥离正则不覆盖这个新格式，于是被引用者昵称——甚至**被引用原文里出现 bot 昵称**——都会让 `is_mentioned=True`）。→ **有假阳性，且依赖昵称唯一性**。对比：我们的 `is_reply_to_bot` 是真比较 message_id（`attention_gate_service.py:234`、`qq_open_plat` 侧），**这一点我们领先，不要照抄它**。
+3. **`is_at` 的赋值点**：`runtime._update_message_trigger_state`（L1171-1192）——`detected_at → message.is_at = True`；强制回复条件 `reply_probability_boost >= 1.0 or (is_at and inevitable_at_reply) or (is_mentioned and mentioned_bot_reply)`。旧 heartflow 层的计算已注释掉，注释原文：`# 2. 计算at信息 （现在转移给Adapter完成）`。
+4. **门控编排顺序**（`turn_scheduler.py:63-132`，逐字）：① Focus 未持槽 → 直接不调度 → ② `_STATE_WAIT` 期间群聊不打断（私聊则结束等待）→ ③ 去重 → ④ `pending<=0` 返回 → ⑤ 频率=0 → 静默消费 → ⑥ **`_has_forced_turn_trigger()`（@/提及）→ 绕过阈值** → ⑦ `idle_backoff.should_delay()` → ⑧ 必要性触发 → ⑨ 频率阈值门。**⑥ 在 ⑦ 之前 ⇒ @/提及同时绕过阈值与空闲退避**（`_arm_forced_turn` 里已 `reset()` 退避）。这与我们「被 @ 必须听见」的取舍一致，但代价是**没有任何冷却兜底**——这正是我们要补的部分。
+5. **唯一的「主动插话」外部入口**：插件能力 `maisaka.proactive.trigger` → `enqueue_proactive_task`（`task_id = "proactive:{plugin_id}:{ms}"`，意图文本 `插件请求你主动处理一轮聊天：{intent}`）→ 同样走 forced turn，**绕过频率阈值**。
+6. **硬前提**：`is_bot_self(platform, user_id)` 依赖 `global_config.bot.qq_account` 非空（`""`/`"0"` 视为未配置）——**未配置时结构化 @ 组件与 `@<名:QQ号>` 文本两条分支全部静默失效**，只剩昵称子串。→ 移植时 bot 账号必须显式配置。（我们不存在这个问题：`self_id` 来自连接层。）
+7. 子代理标注仍未验证：`mention_bot` 分段分支疑似死代码、`additional_config["at_bot"]` 在真实 OneBot 适配器里的形态、`event_helpers.py` 引用了全仓不存在的符号（疑似死模块）、以及**全部结论都未运行时验证**（未跑过 MaiBot，真实群里的假阳性率未测）。
 
 ---
 
@@ -338,10 +397,11 @@ B3. **判定流程（建议顺序，规则只做短路，不做终判）**：
    4. **结构特征**（HeterMPC/MPC-BERT 证明这是净收益最大的信号）：把「谁回谁」做成计数状态而不是布尔——`reply_to_bot_count_60s`、`human_pair_count_60s`（同一对 A→B 的连续接话轮数）、`last_non_self_speaker`、`speaker_turn_count`；
    5. **会话越长越保守**：参与人数/窗口长度作为置信度衰减因子（文献：Acc 80.31→52.59、p@1 63.5→54.97）；
    6. 通过后仍未到概率闸/注意力倍率 → 走 §阶段 A1 的频率闸。
-B4. **节流与自愈（照抄 MaiBot + Bocchy，替代固定突发闸）**：
-   - **空闲退避**：连续 N 次「无需回复」（建议起点 2）后，下一次检查前等待 `15s`，随后按连续次数放大，上限 `300s`；**等待期间积压消息达到 6 条立刻重新处理**（`no_action_backoff_bypass_pending_count`）。这比我们的 60s/3 条突发闸更符合「对话频率自适应」。
-   - **动态频率乘子**：每 ≥160 秒且 ≥20 条消息，用一次轻量 LLM 调用判「过于频繁 / 正常 / 过少」→ 该群频率 `×0.8 / ×1.0 / ×1.2`，钳制 `[0.1, 1.5]`，最终 `random() < base_talk_value × multiplier`。
-   - **热度分档冷却**（可选，先做 A/B）：excitement 9–10→20s；7–8→60s；5–6→120s；1–4→300s。
+B4. **节流与自愈（照抄 §5.6 的常数，替代固定突发闸）**：
+   - **必要性评分**（`reply_necessity`）：按 §5.6 的配比给每条候选算分——强相关（@=100/提及=80/私聊=40/focus=40/普通=0）+ 内容（问题+15、请求+20、征询+20、长文+5/+10、**纯短反应批次−25**）+ 积压压力（阈值内 `50*ratio²`、阈值外对数增长，上限 100）− **存在感惩罚**（近 300s 自己发言占比 >0.25 起扣、0.60 扣满 25），再乘 `0.5 + 0.5*freq`，**阈值 80**。@/提及可直接短路（我们已经是这样）。
+   - **空闲退避**：`min(300, 15 × 2^(连续未接次数−2))`；积压 ≥6 条**绕过**退避；私聊与 focus 激活时重置。
+   - **空窗补偿**：沉默时间折算成虚拟消息数（上限硬扣在 `threshold−1`，且 `pending==0` 绝不自我唤醒），不足时用 `delay = max(0, (threshold−pending)×avg_interval − idle)` 定时回查；平均间隔取最近 30 分钟样本，**间隔 <5s 的连发不计入样本**，下限 30s。
+   - **升级式封禁（可选，来自 `koishi-plugin-group-control`）**：超限先只 **warn** 一次，再超则 `blockDur = base × expBase^(blockCount−1)`（默认 300s、指数 2、窗口 3600s 内累计），并设 **`blocked-silent` 状态**——静默不提示，靠 `blockNotifyCooldown`（60s）节流提示本身，避免限流提示自己刷屏。
    - **焦点自愈**：连续 5 次「无需发言」主动释放焦点并禁止回抢（MaiBot `FOCUS_NO_ACTION_EXIT_THRESHOLD`），取代固定 90s 锁。
 B5. **把「接话反馈」写回评分**：`msgs_after_bot_reply == 0` → 注意力回落加速（她插了话没人理）；`>=3` → 提升该群焦点分（话题在我们这边）。对应 Heartflow 的两句注入（`（上次回复后群里进行了热烈讨论）` / `（上次回复后无人接话）`）与 MaiBot 的 retro review。
 B6. **给模型一条「等一下」的出路**：引入 `wait(seconds)` / `no_action` 式节奏动作（MaiBot Timing Gate），`wait` 语义取「**等待期间不因新消息提前恢复**」，并设 `max_consecutive_wait_count = 3` 上限。我们现在只有「回 / 不回」二值。
@@ -367,7 +427,7 @@ C4. 引入 `wait` 式节奏工具（MaiBot Timing Gate）：让模型能选「�
 8. **纯文本群聊没有公开可用的时间阈值**：语音侧有 200ms/500ms 量级的扎实研究（Heldner & Edlund 2010；Azure Voice Live），但文本侧的两次尝试（UMN 的 IM turn-taking 论文为图片型 PDF、CNKI 微信研究需付费）**都没拿到数字**。我们的 60s 阈值只能靠自家数据标定，**不能引用文献当依据**。
 9. **`Preceding` 基线的数值在两篇论文间不一致**（Le 2019 自报 p@1 63.50；MPC-BERT/GIFT 引用版为 55.73），指标口径不同——**跨论文比较数值不安全**，本方案只引用同篇内趋势。
 10. 学术结论全部来自子代理读 PDF 原文，其中 Akker & Traum 2009、Duncan 1972、Stivers et al. 2009 的具体数字**未验证**；Inner Thoughts 论文自述的开源地址 `liubruce.me/inner_thoughts` **实测 404**；MPC-BERT 仓库存在性**未验证**（GitHub TLS 在本机被阻断）。
-11. MaiBot 的「Dynamic Frequency Control」（160s/20 条、×0.8/×1.2、钳制 [0.1,1.5]）与 Bocchy 的热度冷却映射来自 **DeepWiki 自动生成文档（二手）**，本轮**未读原仓库源码复核**。
+11. ~~MaiBot 的「Dynamic Frequency Control」（160s/20 条、×0.8/×1.2、钳制 [0.1,1.5]）来自 DeepWiki~~ → **已证伪**：子代理用 `main` HEAD 全仓 tarball 复核，`frequency_control.py` 只有 `talk_frequency_adjust` 的存取与 `max(0.1, min(5.0, value))`（**钳制是 0.1–5.0，不是 1.5**），**没有任何 LLM 判定逻辑**；该「过于频繁/正常/过少 → 0.8/1.2」在本次调研的任何 ref 都**找不到**。本文档早期草稿引用过它，现已删除并更正为真实机制（`reply_necessity` 评分 + 空闲退避 + 存在感惩罚）。**教训：DeepWiki 是 LLM 自动生成的二手文档，与源码冲突时一律以源码为准。**
 12. **修正上一轮的一处错误**：本文档早期草稿（以及我此前的口头结论）把 MaiBot 的仓库写成 `DrSmoothl/MaiBot`，且提到过 `src/plugins/chat/willing_manager.py`。实际情况是：现行仓库为 `Mai-with-u/MaiBot`，`willing_manager.py` 在**当前 main 上不存在**（属于 0.x 架构，只存于 GitLab 旧 commit）；两个 slug 在 jsDelivr 上都能取到但内容新旧不同，**引用行号前必须先确认 slug**。
 
 ---
