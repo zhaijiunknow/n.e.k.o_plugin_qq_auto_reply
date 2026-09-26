@@ -432,14 +432,7 @@ class QQAttentionService:
 
     # ── 相位推进 ──
 
-    def _fatigue_rate_scale(self, fatigue: float) -> tuple[float, float]:
-        """疲劳 → (rise 减速系数, fall 加速系数)。疲劳 0→(1.0,1.0)，100→(0.0,2.0)。"""
-        fatigue = max(0.0, float(fatigue or 0.0))
-        rise_scale = max(0.0, 1.0 - fatigue / 100.0)
-        fall_scale = 1.0 + fatigue / 100.0
-        return rise_scale, fall_scale
-
-    def _advance_phase(self, state: QQGroupAttentionState, now: int, *, fatigue: float = 0.0) -> None:
+    def _advance_phase(self, state: QQGroupAttentionState, now: int) -> None:
         """按当前相位推进注意力，处理相位切换。幂等：基于 last_decay_at 差分。"""
         last = int(state.last_decay_at or state.last_message_at or state.last_boost_at or now)
         dt = max(0, now - last)
@@ -447,18 +440,17 @@ class QQAttentionService:
             return
         state.last_decay_at = now
         emo = self._emotion_multiplier(state.emotion)
-        rise_scale, fall_scale = self._fatigue_rate_scale(fatigue)
 
         if state.phase == "fall":
-            # 回落：正向情绪跌得慢，疲劳跌得快
-            rate = self._fall_rate() * max(0.05, 1.0 - emo) * fall_scale
+            # 回落：正向情绪跌得慢
+            rate = self._fall_rate() * max(0.05, 1.0 - emo)
             state.attention_score = max(0.0, state.attention_score - rate * dt)
             # 回落满 T2 → 回升
             if now - state.phase_started_at >= self._fall_seconds():
                 state.phase = "rise"
                 state.phase_started_at = now
         else:
-            # 上升：正向情绪涨得快，疲劳涨得慢。
+            # 上升：正向情绪涨得快。
             #
             # 自然增长的上限是 **max_score 而不是焦点线**。
             #
@@ -473,7 +465,7 @@ class QQAttentionService:
             #
             # 注意：高于焦点线的分数**绝不砍掉**（旧注释保留这条约束）：
             # min(焦点线, 高分) 会把 @bot 抢来的高注意力瞬间蒸发。
-            rate = self._rise_rate() * self._frequency_scale(state, now) * (1.0 + emo) * rise_scale
+            rate = self._rise_rate() * self._frequency_scale(state, now) * (1.0 + emo)
             if state.attention_score < self._max_attention():
                 state.attention_score = min(
                     self._max_attention(), state.attention_score + rate * dt,
@@ -673,11 +665,6 @@ class QQAttentionService:
         #
         # 去掉之后 fall 仍然在退潮（时间衰减还在，净增速约 −0.3/30s），只是不再是
         # 「致命抽干」。让位的压力交给时间衰减与焦点竞争，而不是把回血掐断。
-        # 疲劳减慢回升：高疲劳时消息增益被压缩
-        fatigue_svc = getattr(self.plugin, "fatigue_service", None)
-        if fatigue_svc:
-            rise_scale, _ = self._fatigue_rate_scale(fatigue_svc.calculate_fatigue(f"group:{group_id}"))
-            boost *= rise_scale
         state.attention_score = min(self._max_attention(), state.attention_score + boost)
         state.last_boost_at = now
 
@@ -696,10 +683,6 @@ class QQAttentionService:
         now = self._current_time()
         state = self._apply_decay(self._load_state(normalized_group_id), now, is_focus=(normalized_group_id == focus_group_id))
         gain = max(0, int(message_count or 0)) * self._message_gain()
-        fatigue_svc = getattr(self.plugin, "fatigue_service", None)
-        if fatigue_svc:
-            rise_scale, _ = self._fatigue_rate_scale(fatigue_svc.calculate_fatigue(f"group:{normalized_group_id}"))
-            gain *= rise_scale
         state.attention_score = min(self._max_attention(), state.attention_score + gain)
         state.last_focus_reason = "message_recovery"
         state.last_boost_at = now
@@ -743,10 +726,10 @@ class QQAttentionService:
 
     # ── 相位推进（幂等）──
 
-    def _apply_decay(self, state: QQGroupAttentionState, now: int, *, is_focus: bool = False, fatigue: float = 0.0) -> QQGroupAttentionState:
+    def _apply_decay(self, state: QQGroupAttentionState, now: int, *, is_focus: bool = False) -> QQGroupAttentionState:
         if now <= 0:
             now = self._current_time()
-        self._advance_phase(state, now, fatigue=fatigue)
+        self._advance_phase(state, now)
         return self._normalize_state(state)
 
     # ── 排序 ──
@@ -1154,14 +1137,12 @@ class QQAttentionService:
             return
         now = self._current_time()
         old_focus_id = self._get_top_group_id()
-        fatigue_svc = getattr(self.plugin, "fatigue_service", None)
         for group_id in self._normalized_groups():
             state = self._load_state(group_id)
             # emotion_display 到期 → 重置为 calm
             if now > state.emotion_display_until and state.emotion_display != "calm":
                 state.emotion_display = "calm"
-            fatigue = float(fatigue_svc.calculate_fatigue(f"group:{group_id}") or 0.0) if fatigue_svc else 0.0
-            state = self._apply_decay(state, now, fatigue=fatigue)
+            state = self._apply_decay(state, now)
             self._decay_emotion(state, now)
             self._write_state(state)
         # 检查焦点是否变化，自动设置 focus_acquired_at（蜜月计时起点）

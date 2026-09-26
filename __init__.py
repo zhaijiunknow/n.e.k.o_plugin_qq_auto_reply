@@ -50,7 +50,6 @@ from .dashboard_service import QQDashboardService
 from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
-from .fatigue_service import QQFatigueService
 from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
 from .group_permission import GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
@@ -92,6 +91,7 @@ from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
 from .targets import QQAutoReplyTargetsMixin
 from .targets import QQAutoReplyValidationError as QQAutoReplyValidationError
+from .time_context import build_time_context
 from .voice_reply_service import QQVoiceReplyService
 
 # 本地依赖（vendored lib/）由 _lib_bootstrap 在模块加载时放入 sys.path；此处记录目录，
@@ -174,7 +174,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         )
         self.deploy_service = QQDeployService(self)
         self.backlog_service = QQBacklogService(self)
-        self.fatigue_service: Optional[QQFatigueService] = None
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
@@ -752,7 +751,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.settings_service.rebuild_permission_managers(settings)
         self.settings_service.apply_runtime_settings(settings)
         await self.attention_service.load_cached_state()
-        self.fatigue_service = QQFatigueService(self)
         self.reply_buffer_service = QQReplyBufferService(self)
         # 群友复读 → 跟着复读一次（判定要按人去重、跨消息累积，所以单独一个服务；
         # 规则与理由见 repeat_echo_service 的模块 docstring）。
@@ -1544,8 +1542,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                     effective_text = str(found[1] or "")
                 else:
                     effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
-            if lid == "time" and self.fatigue_service:
-                effective_text = self.fatigue_service.get_dynamic_time_context()
+            if lid == "time":
+                effective_text = build_time_context()
             layers.append({
                 "id": lid,
                 "i18n_key": i18n_key,

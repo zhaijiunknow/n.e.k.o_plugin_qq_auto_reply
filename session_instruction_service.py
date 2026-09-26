@@ -39,6 +39,7 @@ from .scene_prompt_templates import (
     SCENE_PRIVATE_CHAT,
     SCENE_SHARED_GROUP,
 )
+from .time_context import build_time_context  # noqa: E402  (由 ruff --fix 归位)
 
 
 def _apply_role_placeholders(*args: Any, **kwargs: Any) -> str:
@@ -178,10 +179,8 @@ class QQSessionInstructionService:
             pass
 
     def _resolve_time_section(self, locale: str) -> str:
-        """解析时间层：优先使用动态时间上下文，回退静态模板。"""
-        fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue:
-            return fatigue.get_dynamic_time_context()
+        """解析时间层：动态时间上下文（当前时间/星期/时段 + 时间表达提示）。"""
+        return build_time_context()
         return self._resolve_static_layer("time_prompt_section", TIME_PROMPT_SECTION, locale, time_str=self._format_current_time())
 
     def _resolve_static_layer(self, i18n_key: str, default_template: str, locale: str = "", **format_kwargs) -> str:

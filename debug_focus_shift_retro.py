@@ -118,7 +118,6 @@ def build_facade(data_dir: Path, tmp_dir: Path, config: dict) -> SimpleNamespace
     )
     facade.runtime_service = SimpleNamespace(record_pipeline_outcome=lambda *a, **k: None)
     facade.reply_buffer_service = None
-    facade.fatigue_service = None
     facade.qq_client = SimpleNamespace(needs_attention=True)
     facade.captured = captured
     return facade

@@ -54,10 +54,8 @@ class QQAttentionGateService:
         pass
 
     def _mark_active(self, group_id: str) -> None:
-        """标记群活跃（回复后调用，更新疲劳计时）。"""
-        fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue:
-            fatigue.mark_active(f"group:{group_id}")
+        """保留接口兼容性——原先只用于更新疲劳计时，疲劳系统已删除。"""
+        pass
 
     # ── 冷场破冰：焦点反复落到同一群但无人发言时触发 ──
 
@@ -93,11 +91,6 @@ class QQAttentionGateService:
             if self.plugin.reply_buffer_service.has_pending(gkey):
                 self._logger.info("[Icebreaker] 群有缓冲回复待交付，跳过")
                 return False
-        # 疲劳检查（过高则跳过破冰）
-        fatigue = getattr(self.plugin, "fatigue_service", None)
-        if fatigue and fatigue.calculate_fatigue(f"group:{group_id}") > 60:
-            self._logger.info("[Icebreaker] 疲劳过高，跳过")
-            return False
         topic = self._pick_proactive_topic()
         if not topic:
             return False

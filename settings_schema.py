@@ -54,7 +54,7 @@ class SettingSpec:
     kind: str                      # int | float | bool | str | list | dict
     #: 默认值。可变类型（list/dict）在生成时会 deepcopy，调用方拿到的是独立对象。
     default: Any
-    #: 是否进保存白名单与参数页。False = 只认配置文件（如 fatigue_* 的细调项）。
+    #: 是否进保存白名单与参数页。False = 只认配置文件（不进 UI 的细调项）。
     saveable: bool = False
     floor: float | None = None
     ceiling: float | None = None
@@ -297,23 +297,6 @@ PACING = (
                            hint="ui.pacing.buffer_max_count.hint")),
 )
 
-#: 疲劳系统参数（KiraAI-style 动态行为约束）。
-#: ``fatigue_enabled`` 此前是死键（默认值里有、保存/校验/界面都有、运行时没人读）。
-FATIGUE = (
-    SettingSpec("fatigue_enabled", "bool", True, saveable=True,
-                description="save：疲劳系统总开关（关掉后不再影响注意力涨跌与破冰）",
-                ui=UIInput("cfg-fatigue-enabled", kind="checkbox",
-                           label="ui.fatigue.enable")),
-    SettingSpec("fatigue_circadian_peak_hour", "int", 15, floor=0, ceiling=23,
-                description="昼夜节律峰值时间（24 小时制）"),
-    SettingSpec("fatigue_circadian_low_hour", "int", 3, floor=0, ceiling=23,
-                description="昼夜节律低谷时间"),
-    SettingSpec("fatigue_session_per_reply", "float", 5.0, floor=0.0,
-                description="每条回复增加的会话疲劳"),
-    SettingSpec("fatigue_awake_idle_timeout", "float", 10.0, floor=0.0,
-                description="已废弃（疲劳没有睡眠状态机，从未被读取）"),
-)
-
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
 MISC = (
     # ── 连接 ──
@@ -477,7 +460,7 @@ MISC = (
     SettingSpec("group_prompts", "dict", {}, description="按群自定义提示词"),
 )
 
-SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + FATIGUE + MISC
+SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + MISC
 
 BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SETTINGS}
 
@@ -570,7 +553,6 @@ __all__ = [
     "ATTENTION_NEW",
     "BY_KEY",
     "DEFAULT_EMOTION_MULTIPLIERS",
-    "FATIGUE",
     "HANDLED_KEYS",
     "MISC",
     "PACING",

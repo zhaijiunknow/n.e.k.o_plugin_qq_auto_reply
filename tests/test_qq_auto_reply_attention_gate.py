@@ -71,7 +71,6 @@ def _plugin(attention) -> SimpleNamespace:
         _emit_log=lambda *a, **k: None,
         _run_with_session_lock=None,
         reply_buffer_service=None,
-        fatigue_service=None,
         session_memory_service=None,
         reply_pipeline=None,
         runtime_service=None,

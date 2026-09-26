@@ -687,9 +687,6 @@ class QQMessageDispatcher:
                     await self.plugin.attention_service.update_on_message(message)
         self.plugin._emit_log("INFO", f"收到消息: type={message.get('message_type')} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 消息活动 → SSE 通知前端刷新状态
-        # ── 疲劳全局消息计数（睡眠判断已移入 attention_gate_service）──
-        if getattr(self.plugin, "fatigue_service", None):
-            self.plugin.fatigue_service.record_incoming_message()
         message_type = message.get("message_type")
         sender_id = str(message.get("user_id") or "").strip()
         message_text = self.plugin._sanitize_message_text(

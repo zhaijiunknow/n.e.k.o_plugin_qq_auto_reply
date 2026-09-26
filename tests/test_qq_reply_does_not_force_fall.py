@@ -49,7 +49,6 @@ def _service() -> tuple[QQAttentionService, list[int]]:
         backlog_store=None,
         group_permission_mgr=None,
         permission_mgr=None,
-        fatigue_service=None,
         _emit_log=lambda *a, **k: None,
         logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
     )

@@ -59,7 +59,6 @@ def _service(groups=("A", "B")):
         _qq_settings=dict(LIVE),
         backlog_store=None,          # 落盘不是本文件被测对象
         permission_mgr=None,
-        fatigue_service=None,
         _emit_log=lambda *a, **k: None,
         logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
     )

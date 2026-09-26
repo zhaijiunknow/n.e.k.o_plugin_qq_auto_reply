@@ -71,11 +71,6 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "group_buffer_enabled": True,
     "private_buffer_enabled": True,
     "auto_start_on_launch": False,
-    "fatigue_enabled": True,
-    "fatigue_circadian_peak_hour": 15,
-    "fatigue_circadian_low_hour": 3,
-    "fatigue_session_per_reply": 5.0,
-    "fatigue_awake_idle_timeout": 10.0,
     "group_memory_enabled": False,
     "group_member_memory_enabled": False,
     "private_participant_memory_enabled": False,
@@ -168,7 +163,7 @@ BASE = pathlib.Path(__file__).resolve().parents[1]
 
 #: 纯管道模块 —— 它们**必然**出现键名（声明/归一/白名单/快照），所以不算"被读过"。
 #: 一个键如果只在这几个文件里出现，那它就是死键（`retroactive_review_max_reply`
-#: 和 `fatigue_enabled` 都曾如此：默认值/保存/校验/界面全都有，运行时没人读）。
+#: 都曾如此：默认值/保存/校验/界面全都有，运行时没人读）。
 _PLUMBING = {
     "settings_schema.py",
     "config_store.py",
@@ -220,7 +215,7 @@ def test_every_saveable_key_is_actually_read():
 
     这条是本轮重构的核心护栏。参数页上多一个能改、能存、能回显、却对行为毫无影响的
     旋钮，比没有这个旋钮更糟 —— 用户会以为自己调了。历史上真的发生过两次
-    （``retroactive_review_max_reply``、``fatigue_enabled``），而当时没有任何测试
+    （``retroactive_review_max_reply`` 等），而当时没有任何测试
     能发现。加键时若这条红了：要么去业务代码里真的读它，要么进 ``_UI_ONLY`` 并写明理由。
     """
     sources = _business_sources()

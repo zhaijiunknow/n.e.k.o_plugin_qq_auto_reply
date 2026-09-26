@@ -135,7 +135,8 @@ class QQAutoReplyConfigStore:
     #: 只在 ``business_config.json`` 里留尸的键：schema、前端、任何 .py 都不再
     #: 认识它们（实测全仓 0 命中），但因为 ``load()``/``save()`` 的 update 语义
     #: 会一直随文件传递。不删就等于「配置里有一半注意力旋钮是假的」。
-    _LEGACY_ATTENTION_ZOMBIE_KEYS = (
+    #: 后半批是疲劳/作息系统整体删除后的遗留键。
+    _LEGACY_ZOMBIE_KEYS = (
         "group_attention_decay_per_second",
         "group_attention_focus_cooldown_seconds",
         "group_attention_focus_lock_seconds",
@@ -143,6 +144,12 @@ class QQAutoReplyConfigStore:
         "group_attention_keyword_boost_scale",
         "group_attention_message_recovery",
         "group_attention_reply_penalty",
+        # 疲劳/作息系统整体删除后留下的键（schema/前端/运行时都不再认识）。
+        "fatigue_enabled",
+        "fatigue_circadian_peak_hour",
+        "fatigue_circadian_low_hour",
+        "fatigue_session_per_reply",
+        "fatigue_awake_idle_timeout",
     )
 
     @classmethod
@@ -156,7 +163,7 @@ class QQAutoReplyConfigStore:
             # 新名缺失才搬运旧值，避免把用户调过的参数悄悄退回默认。
             if new not in settings:
                 settings[new] = legacy_value
-        for zombie in cls._LEGACY_ATTENTION_ZOMBIE_KEYS:
+        for zombie in cls._LEGACY_ZOMBIE_KEYS:
             settings.pop(zombie, None)
     def default_config(self) -> dict[str, Any]:
         """全部默认值。**唯一真相在 ``settings_schema.SETTINGS``**。

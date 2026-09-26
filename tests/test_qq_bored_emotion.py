@@ -71,7 +71,6 @@ def _service(groups=("A", "B"), *, emotion_table=None):
         _qq_settings=settings,
         backlog_store=None,
         permission_mgr=None,
-        fatigue_service=None,
         _emit_log=lambda *a, **k: None,
         logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
     )
