@@ -16,6 +16,7 @@ from typing import Any
 
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import backlog_sender_label
+from .reply_necessity import DEFAULT_TRIGGER_SCORE, GroupSpeechTracker, IdleBackoff, NecessitySignals, score_necessity
 
 
 class GateDecision:
@@ -56,6 +57,45 @@ class QQAttentionGateService:
     def _mark_active(self, group_id: str) -> None:
         """保留接口兼容性——原先只用于更新疲劳计时，疲劳系统已删除。"""
         pass
+
+    def _necessity_threshold(self) -> float:
+        """阈值来自设置（``reply_necessity_threshold``）；0 = 关闭这一关。
+
+        ⚠️ 不能用 ``or`` 兜底：配置成 0 是「关闭」的合法值，``0 or 默认`` 会把它吃掉。
+        """
+        raw = (self.plugin._qq_settings or {}).get("reply_necessity_threshold", DEFAULT_TRIGGER_SCORE)
+        return DEFAULT_TRIGGER_SCORE if raw is None else max(0.0, float(raw))
+
+    def _evaluate_necessity(
+        self, *, group_id: str, sender_id: str, message_text: str, is_reply_to_bot: bool, now: float,
+    ):
+        """组装信号并打分。信号全部来自本进程已有的状态，不额外查库。"""
+        threshold = self._necessity_threshold()
+        pending = self._speech.pending_count(group_id, now=now)
+        attention = self.plugin.attention_service
+        frequency = 1.0
+        if attention:
+            try:
+                frequency = min(1.0, float(attention.get_group_multiplier(group_id) or 1.0))
+            except Exception:
+                frequency = 1.0
+        signals = NecessitySignals(
+            message_text=message_text,
+            is_group=True,
+            focus_active=True,
+            is_reply_to_bot=is_reply_to_bot,
+            pending_count=max(1, pending),
+            pending_threshold=self._pending_threshold(),
+            self_ratio=self._speech.self_ratio(group_id, now=now),
+            idle_reached_average=self._speech.last_gap_seconds(group_id, now=now) >= 30.0,
+        )
+        return score_necessity(signals, threshold=threshold, frequency=frequency)
+
+    def _pending_threshold(self) -> int:
+        """积压压力的参照条数。跟着缓冲上限走：缓冲越容易合并，参照越高。"""
+        value = (self.plugin._qq_settings or {}).get("buffer_max_count")
+        base = 17 if value is None else max(1, int(value))
+        return max(1, min(10, base - 1))
 
     # ── 冷场破冰：焦点反复落到同一群但无人发言时触发 ──
 
@@ -145,6 +185,9 @@ class QQAttentionGateService:
         self._digest_tasks: set[asyncio.Task] = set()
         self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
         self._reply_timestamps: dict[str, list[int]] = {}  # 群 → 最近回复时间戳列表
+        # 「这句该不该接」的两个状态机（内存态，重启即失）
+        self._speech = GroupSpeechTracker()
+        self._backoff = IdleBackoff()
         self._logger = plugin.logger
 
     def _check_reply_burst(self, group_id: str, now: int) -> bool:
@@ -168,6 +211,11 @@ class QQAttentionGateService:
     # ==========================================
     # 消息评估
     # ==========================================
+
+    #: 「这句该不该接」的状态：近期发言窗口（积压 + 存在感）与空闲退避。
+    #: 内存态、重启即失 —— 与调研里各家的同类状态一致（见 docs/GROUP-CHAT-RESPONSE-MECHANISMS.md）。
+    _speech: GroupSpeechTracker
+    _backoff: IdleBackoff
 
     async def evaluate(
         self,
@@ -229,6 +277,9 @@ class QQAttentionGateService:
             and quoted_message_id in getattr(self.plugin.qq_client, "sent_message_ids", {})
         )
 
+        # 1.5 记录到「近期发言窗口」：积压压力与存在感惩罚都吃它。
+        self._speech.record(normalized_group_id, now=float(timestamp or attention._current_time()), speaker=sender_id)
+
         # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
         #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。
         if is_at_bot and not is_reply_to_bot:
@@ -239,6 +290,7 @@ class QQAttentionGateService:
             attention.lock_group(normalized_group_id)
             attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
+            self._backoff.reset(normalized_group_id)   # 被点名 = 她必须回来，退避作废
             return GateDecision("reply", reason="at_bot", force_reply=True)
 
         # 3. 黑名单 → 不处理
@@ -271,12 +323,14 @@ class QQAttentionGateService:
         if category and category != "chat":
             attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
+            self._backoff.reset(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
         # 7. 焦点群：回复 bot 的消息 → 等同于被点名，强制回复
         if is_reply_to_bot:
             attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
+            self._backoff.reset(normalized_group_id)
             return GateDecision("reply", reason="reply_to_bot", force_reply=True)
 
         # 8. 焦点群：回复频率门控：60秒内超过3条回复 → 强制静默
@@ -284,6 +338,42 @@ class QQAttentionGateService:
         if not is_at_bot and self._check_reply_burst(normalized_group_id, now_ts):
             self.plugin._emit_log("INFO", f"[Gate] 群{normalized_group_id} 回复过于频繁，强制静默")
             return GateDecision("ignore", reason="reply_burst_limit")
+
+        # 8.5 「这句到底该不该接」——只作用于 trusted 群。
+        #     normal 群不在这里拦：它们本来就不回复，只按概率转发给主人；
+        #     若在这里返回 ignore，转发也会被 dispatcher 一起跳过（那是功能回退）。
+        group_level = ""
+        permission_mgr = getattr(self.plugin, "group_permission_mgr", None)
+        if permission_mgr:
+            group_level = str(permission_mgr.get_group_level(normalized_group_id) or "")
+        if group_level == "trusted":
+            now_ts = float(timestamp or attention._current_time())
+            # 先看空闲退避：连续「决定不接」之后她会主动从这个群退开一段时间
+            # （指数放长到 300s）。积压到 BYPASS_PENDING 条则绕过退避重新评估——
+            # 否则群聊热起来她会因为退避而错过。@ / 引用她已在上面短路，不受退避影响。
+            pending_now = self._speech.pending_count(normalized_group_id, now=now_ts)
+            delay = self._backoff.delay_seconds(normalized_group_id, now=now_ts, pending_count=pending_now)
+            if delay > 0:
+                self.plugin._emit_log(
+                    "INFO",
+                    f"[Gate] 群{normalized_group_id} 空闲退避中（剩余 {delay:.0f}s，积压 {pending_now}）",
+                )
+                return GateDecision("ignore", reason=f"necessity_backoff({delay:.0f}s)")
+            verdict = self._evaluate_necessity(
+                group_id=normalized_group_id,
+                sender_id=sender_id,
+                message_text=message_text,
+                is_reply_to_bot=is_reply_to_bot,
+                now=now_ts,
+            )
+            if verdict.decision != "trigger":
+                backoff = self._backoff.record_wait(normalized_group_id, now=now_ts)
+                self.plugin._emit_log(
+                    "INFO",
+                    f"[Gate] 群{normalized_group_id} 必要性不足，本轮不接 ({verdict.reason}, 退避 {backoff:.0f}s)",
+                )
+                return GateDecision("ignore", reason=verdict.reason)
+            self._backoff.reset(normalized_group_id)
 
         # 9. 焦点群普通消息 → LLM 自行判断是否回复
         self._mark_active(normalized_group_id)
@@ -304,6 +394,9 @@ class QQAttentionGateService:
             now = int(__import__("time").time())
         self._mark_active(group_id)
         self._record_reply(str(group_id or "").strip(), now)
+        # 她说话了 → 存进「近期发言窗口」（存在感惩罚的来源），并清掉空闲退避
+        self._speech.record_self(group_id, now=float(now))
+        self._backoff.reset(group_id)
 
     async def check_focus_shift(self) -> FocusShiftResult | None:
         """检测焦点群是否切换"""

@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import QQReplyRequest
+from .reply_necessity import classify_addressee
 
 #: 开放平台通道的观测值。真相在 ``QQOpenPlatformConnection.CHANNEL``，这里抄一
 #: 份而不是 import，是为了不把 websockets / httpx 拖进本模块的导入链；两者相
@@ -424,6 +425,16 @@ class QQMessageDispatcher:
 
     @staticmethod
     def _looks_like_human_followup(message_text: str) -> bool:
+        """兼容包装：真正的判定在 ``reply_necessity.classify_addressee``。
+
+        以前这里是一段只看长度/前缀/问号的内联启发式（「像不像接话」只有一个是/否）。
+        现在它返回**结构化指向**（接话/提问/短反应/长文），本方法只取其中的布尔位，
+        以便老调用点与既有测试继续按原契约工作。
+        """
+        return classify_addressee(message_text).is_likely_human_followup
+
+    @staticmethod
+    def _legacy_looks_like_human_followup(message_text: str) -> bool:
         normalized = str(message_text or "").strip()
         if not normalized:
             return False
