@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：1068 passed**（见 §4.0p…§4.0ah）。
+**最新：1072 passed**（见 §4.0p…§4.0ah）。
 
 | 主题 | 状态 |
 |---|---|
@@ -2464,6 +2464,16 @@ Plugin writer_power_analysis runtime_auto_start overridden by user preference: F
 中文被按 GBK 解码再按 UTF-8 写回，**不可逆**（混进 `\ufeff`、私用区字符与 `?`），
 47 行无法还原，只能整份重写。仓库里早就写着这条，这次是我犯的。
 
+> **同一天我又犯了第二次（18:0x）**，对象正是**写上面这段话的这份文档**：只是想改一行
+> `**最新：NNN passed**`，又用了 `(Get-Content -Raw) -replace … | Set-Content -NoNewline`。
+> 结果 2788 行被读成 GBK 再写成 UTF-8 —— 全文变乱码、行数掉到 1806、混进 3280 个私用区
+> 字符。这次能救是因为**文件在 git 里**：`git checkout -- docs/SESSION-HANDOFF.md`
+> 整份还原（丢掉的只是还没提交的那一段，重新用编辑工具贴回去即可），损失可控。
+> 教训再加一条：**改这类文件只有两个安全动作 —— 用编辑工具做定点替换，或者用显式
+> `encoding="utf-8"` 的脚本；PowerShell 的 `Get-Content`/`Set-Content` 一律不碰。**
+> 还有一条更实用的：**动手前先 `git status` 确认它是干净的**（有未提交改动时，
+> 还原就等于把那些改动一起丢掉 —— 这次就差一点）。
+
 **测试基线：991 passed / 0 failed**（CI 里另有 1 条按设计 skip，见 §4.0aa）。这轮新加的
 看门狗：桥本体 `tests/test_qq_plugin_tool_bridge.py`、分片上传 `test_qq_open_platform_media.py`、
 私聊图 `test_qq_private_image_delivery.py`、语音闸 `test_qq_voice_channel_gate.py`、
@@ -2586,6 +2596,31 @@ Plugin writer_power_analysis runtime_auto_start overridden by user preference: F
 （新增"界面退回按年龄判新鲜"、"界面查询改回读缓存"）。
 
 ---
+
+#### 顺带：`[Config] save 丢弃了 1 个不可识别的键: ['_ctx']` 是什么（使用者 17:59 贴的）
+
+那不是宿主报错，是**本插件自己**打的（`_config_save` 的白名单过滤 + 留痕）。`_ctx` 是**宿主
+塞进来的信封**，两个注入点：
+
+* `plugin/server/application/plugins/ui_query_service.py:1756-1762` —— hosted UI action 触发
+  entry 时加 `_ctx`（含 `run_id`）；
+* `brain/task_executor.py:2329-2348` —— agent 派发调用时加 `_ctx`
+  （含 `lanlan_name` / `conversation_id` / `latest_user_request` / `entry_timeout`）。
+
+**它不是故障**：丢掉的是信封，不是设置项（真设置项照常保存）。只有一个可识别键都没有时
+才会返回 `INVALID_INPUT: save 没收到任何可识别的设置项`。
+
+但它有两个毛病，都修了：
+
+1. **噪音**：宿主每次调用都塞信封 → 每次保存都报一条警告，正好把这条日志存在的意义
+   （抓 `proactive_topics` 这类走错入口的键）淹掉。现在下划线开头的信封键不进"不可识别"
+   名单；只有信封、没有真手滑时**一声不响**；报警时也不再把它列进去。
+2. **查不到**：它以前只走 `_emit_log`（只进界面 ring、重载即清空）—— 所以我在文件日志里
+   `grep` 不到它，只能靠使用者贴过来。现在**双写文件日志**（复用 `emit_bridge_log`）。
+
+证据：`test_qq_settings_save_chain.py` 新增 4 条看门狗（信封不报警 / 真手滑仍报警且不混入
+信封 / 只有信封时仍报错且点名 / 警告进文件日志）；`verify_save_chain_fail_to_pass.py`
+扩到 **5/5**（新增"把 `_ctx` 重新算成不可识别键"这条文件级注入）。
 
 #### 顺带修掉的**假阳性**（真机任务帮我发现的）
 

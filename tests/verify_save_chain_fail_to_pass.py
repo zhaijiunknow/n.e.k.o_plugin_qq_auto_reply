@@ -142,6 +142,43 @@ def main() -> int:
         results.append((label, ok, f"exit={code} 期望红"))
         print(f"[{'OK  ' if ok else 'MISS'}] {label}: exit={code}  源码已恢复={restored}")
 
+    # ── 第 5 项：把宿主注入的信封键（`_ctx`）重新算成"不可识别的键" ──────
+    # 真机 17:59:37 那条警告就是这么来的：宿主每次都塞 `_ctx`，于是每次保存都报一条，
+    # 噪音正好把真正的手滑键名淹掉。还原它 → 那条看门狗必须红。
+    entry_py = PLUGIN / "__init__.py"
+    entry_source = entry_py.read_text(encoding="utf-8")
+    envelope_aware = (
+        '        dropped = sorted(\n'
+        '            k for k in kw\n'
+        '            if k not in self._CONFIG_SAVE_KEYS and k != "action" and not k.startswith("_")\n'
+        '        )'
+    )
+    envelope_blind = (
+        '        dropped = sorted(\n'
+        '            k for k in kw\n'
+        '            if k not in self._CONFIG_SAVE_KEYS and k != "action"\n'
+        '        )'
+    )
+    label = "还原：宿主的 `_ctx` 信封又被算成「不可识别的键」（每次保存都报警）"
+    if envelope_aware not in entry_source:
+        results.append((label, False, "找不到待替换文本"))
+        print(f"[MISS] {label}: 找不到待替换文本，本项结论无效")
+    else:
+        try:
+            entry_py.write_text(entry_source.replace(envelope_aware, envelope_blind, 1), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", TEST_FILE, "-q", "--no-header"],
+                cwd=str(ROOT), capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+            )
+            code = proc.returncode
+        finally:
+            entry_py.write_text(entry_source, encoding="utf-8")
+        restored = entry_py.read_text(encoding="utf-8") == entry_source
+        ok = code == 1 and restored
+        results.append((label, ok, f"exit={code} 期望红"))
+        print(f"[{'OK  ' if ok else 'MISS'}] {label}: exit={code}  源码已恢复={restored}")
+
     print()
     missed = [name for name, ok, _ in results if not ok]
     if missed:

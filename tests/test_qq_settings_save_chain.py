@@ -264,6 +264,79 @@ def test_all_unknown_keys_still_error_and_name_them():
     )
 
 
+# ── 宿主注入的信封键（`_ctx`）不是"手滑" ─────────────────────────────
+#
+# 真机 17:59:37 那条：`[Config] save 丢弃了 1 个不可识别的键: ['_ctx']`。
+# `_ctx` 是**宿主自己塞的**（两条路径：hosted UI action 加 run_id；agent 派发加
+# lanlan_name/conversation_id/latest_user_request/entry_timeout）。把它算成"不可识别"
+# 会让每次保存都报一条警告 —— 噪音正好毁掉这条日志存在的意义。
+
+def test_host_envelope_keys_are_not_reported_as_unrecognized():
+    _result, logs, forwarded = _config_save(
+        {"action": "save", "_ctx": {"run_id": "x", "lanlan_name": "皖萱"},
+         "onebot_url": "ws://0.0.0.0:6199"}
+    )
+
+    assert forwarded and forwarded[0].get("onebot_url") == "ws://0.0.0.0:6199", "正常键没存下去"
+    assert "_ctx" not in forwarded[0], "信封键不该被转发给服务层"
+    assert not [msg for level, msg in logs if level == "WARNING"], (
+        f"宿主信封被当成手滑键报警了: {logs!r}"
+    )
+
+
+def test_a_real_typo_still_warns_even_alongside_an_envelope():
+    """信封要和真手滑**分开**：报警时只点真手滑那个，别把 `_ctx` 也列进去。"""
+    _result, logs, forwarded = _config_save(
+        {"action": "save", "_ctx": {"run_id": "x"},
+         "onebot_url": "ws://0.0.0.0:6199", "proactive_topics": ["a"]}
+    )
+
+    assert forwarded, "白名单键没被转发"
+    warnings = [msg for level, msg in logs if level == "WARNING"]
+    assert warnings, "真手滑键反而没报警"
+    assert "proactive_topics" in warnings[0]
+    assert "_ctx" not in warnings[0], f"报警里混进了宿主的信封键: {warnings[0]!r}"
+
+
+def test_a_save_with_only_an_envelope_still_errors_and_names_it():
+    """只有信封、没有任何设置项时仍要报错（不能静默成功），且错误里带上键名。"""
+    result, _logs, forwarded = _config_save({"action": "save", "_ctx": {"run_id": "x"}})
+
+    assert not forwarded
+    assert "_ctx" in str(result), f"错误没说清收到了什么: {result!r}"
+
+
+def test_the_dropped_key_warning_is_written_to_the_file_log_too():
+    """这条警告必须**双写** —— 使用者就是从界面日志里看到它的，而文件日志里查不到
+    （`_emit_log` 只进 ring，ring 在重载时清空）。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    emitted: list[tuple[str, str]] = []
+    logged: list[str] = []
+
+    async def _fake_save_settings(**kw):
+        return {"persisted": True}
+
+    stub = SimpleNamespace(
+        _CONFIG_SAVE_KEYS={"onebot_url"},
+        _emit_log=lambda level, msg: emitted.append((level, msg)),
+        logger=SimpleNamespace(
+            info=lambda msg, *a, **k: logged.append(str(msg)),
+            warning=lambda msg, *a, **k: logged.append(str(msg)),
+        ),
+        dashboard_service=SimpleNamespace(save_settings=_fake_save_settings),
+    )
+    asyncio.run(QQAutoReplyPlugin._config_save(
+        stub, {"action": "save", "onebot_url": "ws://x", "proactive_topics": ["a"]},
+    ))
+
+    assert emitted, "界面日志（ring）里没有这条警告"
+    assert any("proactive_topics" in line for line in logged), "文件日志里没有这条警告"
+
+
 def test_locale_is_connected_end_to_end():
     """界面语言偏好必须真的存得下来 —— 三条链缺一条它就只有 localStorage 生效。
 

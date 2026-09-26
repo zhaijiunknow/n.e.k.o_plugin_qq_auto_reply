@@ -60,7 +60,11 @@ from .message_dispatcher import QQMessageDispatcher
 from .napcat_service import QQNapcatService
 from .permission import PermissionManager
 from .plugin_tool_followup_service import QQPluginToolFollowupService
-from .plugin_tool_service import PLUGIN_TOOL_MAX_MOUNTED, QQPluginToolService
+from .plugin_tool_service import (
+    PLUGIN_TOOL_MAX_MOUNTED,
+    QQPluginToolService,
+    emit_bridge_log,
+)
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
 from .relay_service import QQRelayService
@@ -2010,14 +2014,31 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         调试脚本、`proactive_topics` 这种走错了入口的键）以为保存成功，实际
         整键消失且没有任何痕迹可查。丢弃本身是必须的（不能撞到服务层），
         但"丢了什么"必须留痕。
+
+        **但宿主塞进来的信封键不算"手滑"**：调用插件 entry 的那两条宿主路径都会
+        往参数里加一个下划线开头的信封 ——
+
+        * `plugin/server/application/plugins/ui_query_service.py:1756-1762`：
+          hosted UI action 触发时加 `_ctx`（含 `run_id`）；
+        * `brain/task_executor.py:2329-2348`：agent 派发调用时加 `_ctx`
+          （含 `lanlan_name` / `conversation_id` / `latest_user_request` / `entry_timeout`）。
+
+        它们以前会被算进"不可识别的键"，于是**每次保存都报一条警告**
+        （真机 17:59:37 那条 `丢弃了 1 个不可识别的键: ['_ctx']`）—— 噪音会把真正的
+        手滑键名淹掉，正好毁掉这条日志存在的意义。所以下划线开头的信封键不进 `dropped`；
+        只有信封、没有真手滑时**一声不响**。
         """
         payload = {k: v for k, v in kw.items() if k in self._CONFIG_SAVE_KEYS}
+        envelopes = sorted(k for k in kw if k.startswith("_"))
         dropped = sorted(
             k for k in kw
-            if k not in self._CONFIG_SAVE_KEYS and k != "action"
+            if k not in self._CONFIG_SAVE_KEYS and k != "action" and not k.startswith("_")
         )
         if dropped:
-            self._emit_log(
+            # 双写：ring 给界面看，文件日志给事后复盘（`_emit_log` 只进 ring，
+            # 而 ring 在插件重载时清空 —— 这条警告就这么"查不到"过一次）。
+            emit_bridge_log(
+                self,
                 "WARNING",
                 f"[Config] save 丢弃了 {len(dropped)} 个不可识别的键: {dropped}"
                 f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个；"
@@ -2027,7 +2048,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(
                 "INVALID_INPUT: save 没收到任何可识别的设置项"
                 f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个，见 config 入口的 input_schema）"
-                + (f"；被丢弃的键: {dropped}" if dropped else "")))
+                + (f"；被丢弃的键: {dropped + envelopes}"
+                   if (dropped or envelopes) else "")))
         return await self.dashboard_service.save_settings(**payload)
 
     async def _deploy_ensure(self, kw: dict[str, Any]):
