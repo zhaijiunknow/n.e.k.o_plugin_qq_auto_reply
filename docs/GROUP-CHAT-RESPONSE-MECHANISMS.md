@@ -324,6 +324,9 @@ else: delay_seconds = max(0.0, (trigger_threshold - pending_count) * average_mes
 5. **唯一的「主动插话」外部入口**：插件能力 `maisaka.proactive.trigger` → `enqueue_proactive_task`（`task_id = "proactive:{plugin_id}:{ms}"`，意图文本 `插件请求你主动处理一轮聊天：{intent}`）→ 同样走 forced turn，**绕过频率阈值**。
 6. **硬前提**：`is_bot_self(platform, user_id)` 依赖 `global_config.bot.qq_account` 非空（`""`/`"0"` 视为未配置）——**未配置时结构化 @ 组件与 `@<名:QQ号>` 文本两条分支全部静默失效**，只剩昵称子串。→ 移植时 bot 账号必须显式配置。（我们不存在这个问题：`self_id` 来自连接层。）
 7. 子代理标注仍未验证：`mention_bot` 分段分支疑似死代码、`additional_config["at_bot"]` 在真实 OneBot 适配器里的形态、`event_helpers.py` 引用了全仓不存在的符号（疑似死模块）、以及**全部结论都未运行时验证**（未跑过 MaiBot，真实群里的假阳性率未测）。
+8. **关系值/好感度在 main 上已被上游删除**：`person_info.py`（601 行）对 `attitude|relationship|relation|好感|印象` 命中数为 **0**，`Person` 只剩 `nickname / person_name / name_reason / know_times / know_since / last_know / memory_points / group_cardname_list`；`relationship_manager.py` 在 `main` 已不存在（只在 `e6d7de72` 有）。旧 `mode_mxp.py` 里有注释 `# 移除关系值相关代码`。→ **「数值型关系/好感」这条路没有现成参考实现可抄，而且它是被上游主动废弃的设计**（理由：关系系统重构）。更要紧的是：**这些 per-person 状态没有任何一项被 `reply_necessity` / `turn_gates` / `idle_backoff` 读取**——MaiBot main 的「该不该说话」**完全不依赖用户画像**。
+9. **ASI（回复效果分）是只写不读的观测功能，不是闭环**：`reply_effect/tracker.py` 全部方法只做 record → judge → score → **save JSON 文件**；`storage.py` 只有写与裁剪，**仓内无读回消费点**；`runtime.py` 里所有 `reply_effect` 引用只 import/构造/调用，**从无 ASI 消费**；整个子系统还由 `debug.enable_reply_effect_tracking` 门控（面向看板）。→ 公式值得移植，但**别以为 MaiBot 用它调整过行为**；把它接成真正的反馈闭环（`msgs_after_bot_reply` 回灌注意力/频率）是我们可以做的真实增量。
+10. **移植陷阱：`reply_necessity.py` 里硬编码了 bot 名字「麦麦」**（`if not is_direct_context and "麦麦" not in text: return ""`、`re.search(r"(?:你|麦麦).{0,6}怎么看|怎么看.{0,6}(?:你|麦麦)", text)`），而不是读 `global_config.bot.nickname`。后果：**改名后「征询意见」这一整类 +20 分静默失效且不报错**。我们抄它的评分表时必须把所有字面量换成 `self_id`/昵称 + 别名列表（我们已有 `_self_id`，本来就该这么做）。
 
 ---
 
