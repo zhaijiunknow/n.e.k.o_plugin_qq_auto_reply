@@ -48,7 +48,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.status.tag">自动化</span>
         </a>
-        <a class="card" href="napcat.html?v=9" onclick="go('napcat'); return false;">
+        <a class="card" href="napcat.html?v=10" onclick="go('napcat'); return false;">
             <div class="icon">N</div>
             <h2>NapCat</h2>
             <p>
@@ -59,7 +59,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
         </a>
-        <a class="card" href="open_platform.html?v=11" onclick="go('open_platform'); return false;">
+        <a class="card" href="open_platform.html?v=12" onclick="go('open_platform'); return false;">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -93,7 +93,7 @@ function go(mode) {
         return;
     }
     localStorage.setItem('qq_connection_mode', mode);
-    location.href = mode === 'napcat' ? 'napcat.html?v=9' : 'open_platform.html?v=11';
+    location.href = mode === 'napcat' ? 'napcat.html?v=10' : 'open_platform.html?v=12';
 }
 </script>
 </body>

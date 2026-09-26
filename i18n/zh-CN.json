@@ -630,6 +630,7 @@
   "ui.shared.toast.upload_success": "上传成功",
   "ui.shared.topbar.connected": "已连接",
   "ui.shared.topbar.disconnected": "未连接",
+  "ui.shared.topbar.back_index": "返回首页",
   "ui.shared.topbar.loading": "点击刷新加载",
   "ui.shared.topbar.no_data": "暂无记录",
   "ui.shared.topbar.no_logs": "点击刷新加载日志",

@@ -630,6 +630,7 @@
   "ui.shared.toast.upload_success": "Upload successful~",
   "ui.shared.topbar.connected": "Connected",
   "ui.shared.topbar.disconnected": "Disconnected",
+  "ui.shared.topbar.back_index": "Home",
   "ui.shared.topbar.loading": "Click to refresh...",
   "ui.shared.topbar.no_data": "No records",
   "ui.shared.topbar.no_logs": "Click to load logs...",
