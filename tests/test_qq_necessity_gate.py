@@ -74,12 +74,18 @@ class _FakeAttention:
 def _plugin(*, level: str = "trusted", settings: dict | None = None, attention=None) -> SimpleNamespace:
     base = {"backlog_labels": [], "buffer_max_count": 17}
     base.update(settings or {})
+    file_lines: list[str] = []
     return SimpleNamespace(
         attention_service=attention or _FakeAttention(),
         qq_client=SimpleNamespace(needs_attention=True, _sent_message_ids={}),
         permission_mgr=None,
         group_permission_mgr=SimpleNamespace(get_group_level=lambda gid: level),
-        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        # 收集「文件日志」：门控决策必须走 logger.info，不能只进内存环
+        _file_lines=file_lines,
+        logger=SimpleNamespace(
+            info=lambda msg, *a, **k: file_lines.append(str(msg)),
+            warning=lambda *a, **k: None,
+        ),
         _qq_settings=base,
         _emit_log=lambda *a, **k: None,
         _run_with_session_lock=None,
@@ -205,3 +211,42 @@ def test_her_own_replies_count_towards_presence():
         gate._speech.record_self(GROUP, now=995 + i)
     decision = _evaluate(plugin, gate, timestamp=1005)
     assert decision.action == "ignore"
+
+
+def test_decision_goes_to_the_file_logger_not_only_the_ring():
+    """决策必须同时写**文件日志**。
+
+    历史上这些行只走 `_emit_log`（内存环，maxlen 500），插件一重载就没了 ——
+    于是「她为什么这一轮没接」事后无法回查，live 验证也没有凭据。
+    """
+    plugin = _plugin(level="trusted")
+    decision = _evaluate(plugin, _gate(plugin), message_text="哈哈哈")
+
+    assert decision.action == "ignore"
+    lines = [ln for ln in plugin._file_lines if "[Necessity]" in ln]
+    assert lines, f"没有写进文件日志：{plugin._file_lines}"
+    assert "本轮不接" in lines[-1]
+    assert "score=" in lines[-1]
+
+
+def test_backoff_line_goes_to_the_file_logger():
+    plugin = _plugin(level="trusted")
+    gate = _gate(plugin)
+    _evaluate(plugin, gate, timestamp=1000, message_text="哈哈哈")
+    _evaluate(plugin, gate, timestamp=1001, message_text="哈哈哈")
+    decision = _evaluate(plugin, gate, timestamp=1002, message_text="哈哈哈")
+
+    assert decision.reason.startswith("necessity_backoff(")
+    assert any("空闲退避中" in ln for ln in plugin._file_lines), plugin._file_lines
+
+
+def test_pass_line_goes_to_the_file_logger():
+    """通过也要留痕：否则「她接了」与「她没被这一关拦」分不清。"""
+    plugin = _plugin(level="trusted")
+    gate = _gate(plugin)
+    for i in range(10):
+        gate._speech.record(GROUP, now=990 + i, speaker=f"u{i}")
+    decision = _evaluate(plugin, gate)
+
+    assert decision.action == "reply"
+    assert any("接（score=" in ln for ln in plugin._file_lines), plugin._file_lines

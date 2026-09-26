@@ -58,6 +58,18 @@ class QQAttentionGateService:
         """保留接口兼容性——原先只用于更新疲劳计时，疲劳系统已删除。"""
         pass
 
+    def _log_decision(self, message: str) -> None:
+        """门控决策双写：**文件日志**（可事后核对、重启不丢）+ 内存环（前端实时看）。
+
+        只给「为什么这一轮没接」这类判定用 —— 它们正是 live 验证要核对的凭据。
+        历史上这些行只走 ``_emit_log``，插件一重载就没了，等于无法回查。
+        """
+        try:
+            self._logger.info(message)
+        except Exception:
+            pass
+        self.plugin._emit_log("INFO", message)
+
     def _necessity_threshold(self) -> float:
         """阈值来自设置（``reply_necessity_threshold``）；0 = 关闭这一关。
 
@@ -354,9 +366,8 @@ class QQAttentionGateService:
             pending_now = self._speech.pending_count(normalized_group_id, now=now_ts)
             delay = self._backoff.delay_seconds(normalized_group_id, now=now_ts, pending_count=pending_now)
             if delay > 0:
-                self.plugin._emit_log(
-                    "INFO",
-                    f"[Gate] 群{normalized_group_id} 空闲退避中（剩余 {delay:.0f}s，积压 {pending_now}）",
+                self._log_decision(
+                    f"[Necessity] 群{normalized_group_id} 空闲退避中（剩余 {delay:.0f}s，积压 {pending_now}）"
                 )
                 return GateDecision("ignore", reason=f"necessity_backoff({delay:.0f}s)")
             verdict = self._evaluate_necessity(
@@ -368,12 +379,15 @@ class QQAttentionGateService:
             )
             if verdict.decision != "trigger":
                 backoff = self._backoff.record_wait(normalized_group_id, now=now_ts)
-                self.plugin._emit_log(
-                    "INFO",
-                    f"[Gate] 群{normalized_group_id} 必要性不足，本轮不接 ({verdict.reason}, 退避 {backoff:.0f}s)",
+                self._log_decision(
+                    f"[Necessity] 群{normalized_group_id} 本轮不接（score={verdict.score} < 阈值，"
+                    f"依据={verdict.breakdown.reasons}，退避 {backoff:.0f}s）"
                 )
                 return GateDecision("ignore", reason=verdict.reason)
             self._backoff.reset(normalized_group_id)
+            self._log_decision(
+                f"[Necessity] 群{normalized_group_id} 接（score={verdict.score} ≥ 阈值，依据={verdict.breakdown.reasons}）"
+            )
 
         # 9. 焦点群普通消息 → LLM 自行判断是否回复
         self._mark_active(normalized_group_id)
