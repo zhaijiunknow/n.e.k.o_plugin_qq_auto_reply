@@ -74,6 +74,9 @@ CANDIDATES_TTL_SECONDS = 60.0
 #: 界面那条读路径最多等多久（秒）。
 UI_WAIT_SECONDS = 2.0
 
+#: 可选参数最多列几个名字（只列名，不列类型/说明）。
+OPTIONAL_PARAMS_MAX_NAMES = 4
+
 #: 每个 entry 在工具描述里占的字符上限。工具定义**每轮都进 system 段**，而一个插件
 #: 可能有十几个 entry —— 不封顶就会把预算吃光。截断留省略号，看得见被砍过。
 ENTRY_HINT_MAX_CHARS = 140
@@ -274,10 +277,15 @@ class QQPluginToolService:
                 continue
             text = str(entry.get("description") or entry.get("name") or "").strip()
             required = QQPluginToolService._required_params(entry)
+            optional = QQPluginToolService._optional_params(entry)
+            parts = []
             if required:
-                text = f"{text}（必填参数：{'、'.join(required)}）" if text else (
-                    f"必填参数：{'、'.join(required)}"
-                )
+                parts.append(f"必填 {'、'.join(required)}")
+            if optional:
+                parts.append(f"可选 {'、'.join(optional)}")
+            if parts:
+                params_text = "；".join(parts)
+                text = f"{text}（{params_text}）" if text else params_text
             if text:
                 if len(text) > ENTRY_HINT_MAX_CHARS:
                     text = text[:ENTRY_HINT_MAX_CHARS] + "…"
@@ -293,6 +301,27 @@ class QQPluginToolService:
         if not isinstance(required, list):
             return []
         return [str(name) for name in required if str(name or "").strip()]
+
+    @staticmethod
+    def _optional_params(entry: dict[str, Any]) -> list[str]:
+        """非必填参数名（最多列几个）。
+
+        真机教训（`writer_power_analysis:analyze_text`）：它有一个 `use_neko_model`
+        可选参数 —— 缺 api_key 时**用它就能跑**。只列必填参数的话，模型看不到它，
+        于是照样按缺 key 的默认路走，任务当场失败。可选参数名值得那几十个字符。
+        """
+        schema = entry.get("input_schema")
+        if not isinstance(schema, dict):
+            return []
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return []
+        required = {name.lower() for name in QQPluginToolService._required_params(entry)}
+        names = [
+            str(name) for name in properties
+            if str(name or "").strip() and str(name).lower() not in required
+        ]
+        return names[:OPTIONAL_PARAMS_MAX_NAMES]
 
     # ── 分级（配置） ────────────────────────────────────────────────
 
@@ -403,6 +432,12 @@ class QQPluginToolService:
             self.tool_name(row["plugin_id"]): set(row.get("entries") or [])
             for row, _tier in mounted
         }
+        #: 每个工具对应的"查异步任务"的 entry（同一插件里 id 含 status 的那个）。
+        pollers: dict[str, str] = {}
+        for row, _tier in mounted:
+            poller = self._find_poller_entry(row)
+            if poller:
+                pollers[self.tool_name(row["plugin_id"])] = poller
 
         async def _handle(tool_call: Any) -> Any:
             call_id = getattr(tool_call, "call_id", "") or ""
@@ -426,27 +461,80 @@ class QQPluginToolService:
             if not isinstance(params, dict):
                 params = {}
             plugin_id = name[len(_TOOL_PREFIX):]
-            output = await self.call_plugin_entry(
+            output, payload = await self.call_plugin_entry_with_payload(
                 plugin_id, entry_id, params, session_key=session_key,
+            )
+            output += self._async_followup_note(
+                payload, plugin_id=plugin_id, poller=pollers.get(name, ""),
             )
             return ToolResult(call_id=call_id, name=name, output=output)
 
         return _handle
 
+    @staticmethod
+    def _find_poller_entry(candidate: dict[str, Any]) -> str:
+        """同一插件里"按 task_id 查状态"的那个 entry（有就用它引导模型去查）。"""
+        for entry_id in candidate.get("entries") or []:
+            lowered = str(entry_id).lower()
+            if "status" in lowered or lowered.startswith("get_") or "query" in lowered:
+                return str(entry_id)
+        return ""
+
+    @staticmethod
+    def _find_task_id(payload: Any) -> tuple[str, str]:
+        """从结果里认出"这是个异步任务"：返回 ``(字段名, 值)``。"""
+        if not isinstance(payload, dict):
+            return "", ""
+        for key, value in payload.items():
+            name = str(key or "")
+            if name == "task_id" or name.endswith("_task_id"):
+                text = str(value or "").strip()
+                if text:
+                    return name, text
+        return "", ""
+
+    def _async_followup_note(self, payload: Any, *, plugin_id: str, poller: str) -> str:
+        """异步任务要**当场把"下一步"告诉模型**。
+
+        真机教训（`writer_power_analysis:analyze_text`）：结果里只有
+        `{"task_id": …, "status": "queued"}`，模型于是对用户说"等结果出来我第一时间
+        告诉你"—— 而**这条承诺根本没法兑现**：插件会话一轮只走一次工具轮，
+        没有任何东西会再回来喂结果。所以这里明写：本轮没有结果、不要承诺主动通知、
+        对方再问时用哪个 entry 带哪个字段去查。
+        """
+        field, value = self._find_task_id(payload)
+        if not field:
+            return ""
+        where = f"{plugin_id}:{poller}" if poller else f"{plugin_id} 里查状态的那个 entry"
+        return (
+            "\n（这是**异步任务**，本轮拿不到结果。不要承诺「结果出来我主动告诉你」——"
+            f"你没有办法再回来喂结果。请让对方稍后再问一次，那时用 {where} 带上 "
+            f"{field}={value} 去查。）"
+        )
+
     async def call_plugin_entry(
         self, plugin_id: str, entry_id: str, params: dict[str, Any], *, session_key: str = "",
     ) -> str:
-        """跨插件调用，并把结果压成给模型看的短文本。"""
+        """跨插件调用，返回给模型看的短文本。"""
+        text, _payload = await self.call_plugin_entry_with_payload(
+            plugin_id, entry_id, params, session_key=session_key,
+        )
+        return text
+
+    async def call_plugin_entry_with_payload(
+        self, plugin_id: str, entry_id: str, params: dict[str, Any], *, session_key: str = "",
+    ) -> tuple[str, Any]:
+        """同上，但把**原始结果**一起给出来（分发器要靠它认出异步任务的 task_id）。"""
         plugins = getattr(self.plugin, "plugins", None)
         call_entry = getattr(plugins, "call_entry", None)
         if not callable(call_entry):
-            return "当前宿主没有提供跨插件调用接口。"
+            return "当前宿主没有提供跨插件调用接口。", None
         target = f"{plugin_id}:{entry_id}"
         try:
             result = await call_entry(target, params, timeout=CALL_TIMEOUT_SECONDS)
         except Exception as exc:
             self.plugin.logger.warning(f"调用插件 {target} 失败: {exc}")
-            return f"调用 {target} 失败：{type(exc).__name__}"
+            return f"调用 {target} 失败：{type(exc).__name__}", None
         is_err = getattr(result, "is_err", None)
         failed = bool(callable(is_err) and is_err())
         self.plugin._emit_log(
@@ -456,8 +544,9 @@ class QQPluginToolService:
         )
         if failed:
             error = getattr(result, "error", result)
-            return self.render_result(str(error), ok=False)
-        return self.render_result(getattr(result, "value", result), ok=True)
+            return self.render_result(str(error), ok=False), None
+        payload = getattr(result, "value", result)
+        return self.render_result(payload, ok=True), payload
 
     @staticmethod
     def render_result(payload: Any, *, ok: bool) -> str:

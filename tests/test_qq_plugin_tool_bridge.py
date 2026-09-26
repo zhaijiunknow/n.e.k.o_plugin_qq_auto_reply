@@ -388,15 +388,23 @@ def test_the_tool_description_names_the_required_params():
     assert "list_reminders：列出所有待触发的提醒" in definition.description
 
 
-def test_the_hint_carries_required_params_and_is_capped():
-    """`_entry_hints` 自己要从 input_schema 里把必填参数名抠出来，并且整行封顶。"""
+def test_the_hint_carries_required_and_optional_params_and_is_capped():
+    """`_entry_hints` 要从 input_schema 里抠出必填/可选参数名，并且整行封顶。
+
+    可选参数名不是装饰：`analyze_text` 的 `use_neko_model` 在缺 api_key 时能救场 ——
+    只列必填的话模型看不到它，就会照着缺 key 的默认路走然后当场失败（真机踩过）。
+    """
     long_text = "说明" * 200
     item = {
         "entries": [
             {
                 "id": "add_reminder",
                 "description": "排期一个提醒",
-                "input_schema": {"type": "object", "required": ["time", "message"], "properties": {}},
+                "input_schema": {
+                    "type": "object",
+                    "required": ["time", "message"],
+                    "properties": {"time": {}, "message": {}, "repeat": {}, "max_count": {}},
+                },
             },
             {"id": "list_reminders", "description": "", "input_schema": {"type": "object"}},
             {"id": "long_one", "description": long_text, "input_schema": {"required": ["x"]}},
@@ -404,10 +412,60 @@ def test_the_hint_carries_required_params_and_is_capped():
     }
     hints = QQPluginToolService._entry_hints(item)
 
-    assert "必填参数：time、message" in hints["add_reminder"]
-    assert "list_reminders" not in hints, "没有说明也没有必填参数时不该硬造一行"
+    assert "必填 time、message" in hints["add_reminder"]
+    assert "可选 repeat、max_count" in hints["add_reminder"]
+    assert "list_reminders" not in hints, "没有说明也没有参数时不该硬造一行"
     assert hints["long_one"].endswith("…"), "超长没被截断"
     assert len(hints["long_one"]) <= ENTRY_HINT_MAX_CHARS + 1, len(hints["long_one"])
+
+
+def test_optional_params_are_names_only_and_capped():
+    """可选参数只列名字，且数量有上限（工具描述每轮都发，不能无限膨胀）。"""
+    entry = {
+        "input_schema": {
+            "required": ["a"],
+            "properties": {**{f"p{i}": {} for i in range(10)}, "a": {}},
+        },
+    }
+    optional = QQPluginToolService._optional_params(entry)
+    assert len(optional) == 4, optional
+    assert "a" not in optional, "必填参数不该出现在可选里"
+
+
+# ── 4b. 异步任务：当场把"下一步"告诉模型 ─────────────────────────────
+
+def test_an_async_result_gets_a_followup_note_naming_the_poller():
+    """真机教训：`analyze_text` 只回 `{task_id, status}`，模型于是承诺"我第一时间告诉你"，
+    而这条承诺没法兑现（一轮只走一次工具轮）。所以要当场写明：本轮没结果、别承诺、
+    对方再问时用哪个 entry 带哪个字段去查。"""
+    plugin = _plugin()
+    service = plugin.plugin_tool_service
+    note = service._async_followup_note(
+        {"task_id": "c5d013ade5dd", "status": "queued"},
+        plugin_id="writer_power_analysis",
+        poller="get_analysis_status",
+    )
+
+    assert "异步任务" in note
+    assert "writer_power_analysis:get_analysis_status" in note
+    assert "task_id=c5d013ade5dd" in note
+    assert "不要承诺" in note
+
+
+def test_a_sync_result_gets_no_note():
+    service = _plugin().plugin_tool_service
+    for payload in ({"ok": True}, "纯文本", None, {"task_id": ""}, [1, 2]):
+        assert service._async_followup_note(payload, plugin_id="p", poller="q") == ""
+
+
+def test_the_poller_entry_is_picked_from_the_plugin_entries():
+    service = _plugin().plugin_tool_service
+    assert service._find_poller_entry({"entries": ["analyze_text", "get_analysis_status"]}) == (
+        "get_analysis_status"
+    )
+    # 搜索那两个都不是"查状态"的 entry —— 认不出来就返回空（宁可不说，也别瞎指一个）
+    assert service._find_poller_entry({"entries": ["search", "search_summary"]}) == ""
+    assert service._find_poller_entry({"entries": []}) == ""
 
 
 def test_tool_names_stay_inside_the_host_name_rule():

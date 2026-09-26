@@ -2328,6 +2328,58 @@ writer 750+409），每轮都发且免费线没有 prompt caching。它**不进*
 而且它的描述是写给前端看的（"前端轮询 `get_analysis_status`"）。放进 `all` 档等于
 群里任何被认得的成员都能让她动使用者的配置 —— 建议归到 `admin` 档。
 
+#### 4.0ag-1 「结果呢？」—— 异步 entry 的第一课（真机 15:00）
+
+使用者问「用文本分析插件分析一下」，她回「分析已经提交啦，等结果出来我第一时间告诉你~」，
+然后结果永远没来。**查清了三件事**：
+
+1. **任务当场就失败了**（`writer_power_analysis` 自己的日志）：
+
+   ```
+   14:55:31 Analysis task c5d013ade5dd started
+   14:55:31 node.exit name=input.validate status=error error=缺少 API key：请在插件配置 …
+   14:55:31 WARNING Analysis task c5d013ade5dd failed: 缺少 API key
+   ```
+
+   而**我这边的桥返回的是 `ok`** —— 那条 entry 确实成功"排期"了，失败发生在插件内部的
+   异步队列里。**"工具调用成功"不等于"事情做成了"**，异步 entry 尤其如此。
+
+2. **那句承诺兑现不了**：插件会话一轮只走一次工具轮（`max_tool_iterations=1`），
+   没有任何东西会再回来喂结果。而且 `writer_power_analysis` **自己是有完成推送的**
+   （`ctx.push_message(..., target_lanlan=…)`，`event_type=writer_analysis_completed`）
+   —— 但那条推送去的是**本体自己的对话**，不是 QQ 这条会话，所以就算成功也到不了这里。
+
+3. 已顺手做掉的两处（都在桥里，不改别的插件）：
+
+   * **工具描述现在带可选参数名**：`analyze_text（必填 article_text；可选 mode、model、
+     api_key、use_neko_model）`。这次要是看到 `use_neko_model`，模型本可以走"用 Neko 当前
+     模型"那条路而不是缺 key 的默认路 —— 只列必填参数是这次失败的直接成因之一。
+     （可选只列名字、最多 4 个：`OPTIONAL_PARAMS_MAX_NAMES`。）
+   * **异步结果当场给出"下一步"**：结果里认出 `task_id`（或 `*_task_id`）就追加一段——
+     「这是异步任务，本轮拿不到结果；**不要承诺"结果出来我主动告诉你"**；让对方稍后再问，
+     那时用 `<plugin>:<查状态的 entry>` 带上 `task_id=…` 去查」。查状态的 entry 从同一插件
+     的 entry 列表里认（id 含 `status` / 以 `get_` 开头 / 含 `query`），认不出就不瞎指。
+
+**仍未做（下一步可做）**：**桥侧异步完成 → 回投到 QQ**。做法是记住 `task_id` 与查询 entry，
+后台轮询到 `done/error` 后合成一轮（`source_kind="plugin_tool_result"`）让她说出来，
+走既有的合成轮 + 投递那条路。那之后"我第一时间告诉你"才是真的 —— 现在它是空话，
+所以本轮的修法是**让她别说**。
+
+#### 4.0ag-2 宿主重启后，手动启动的插件会从候选里消失（这是设计，但要记得）
+
+15:15:54 宿主插件服务重启，日志写明：
+
+```
+Plugin writer_power_analysis runtime_auto_start overridden by user preference: False
+```
+
+于是重启后只有 `qq_auto_reply`（自启）在跑，`/plugins` 只剩 1 项 —— 候选表跟着变回 0。
+这正是"**只带已经启动的插件**"这条闸在起作用（使用者定的规则），不是 bug；
+但**每次重启都会静默丢掉这些工具**，所以想让某个插件一直在，就得在插件管理里把它的
+`auto_start` 打开。
+
+---
+
 #### 顺带记一条教训（这轮我自己踩的）
 
 **绝不拿 PowerShell 管道往返改非 ASCII 文本文件**。我用
