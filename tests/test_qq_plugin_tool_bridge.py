@@ -827,6 +827,39 @@ def _page_text() -> str:
     return _PAGE.read_text(encoding="utf-8")
 
 
+def test_the_page_has_its_own_sidebar_entry():
+    """独立一页（像表情包那样）：配置页里塞不下 —— 可添加的插件一多，列表底部的卡片
+    根本拖不到右侧分区去。"""
+    text = _page_text()
+    assert 'data-page="plugintools"' in text, "侧边栏没有「插件」这一项"
+    assert 'id="page-plugintools"' in text, "没有对应的页面容器"
+    assert "loadPluginTools()" in text, "切到这页不会去加载数据"
+    # 面板必须在新页里，而不是还留在配置页那一栏
+    assert text.index('id="page-plugintools"') < text.index('id="pt-zone-available"'), (
+        "拖拽区还在配置页那一栏里"
+    )
+
+
+def test_available_cards_carry_tier_buttons():
+    """一多起来纯拖拽没法用 → 每张卡片自己带档位按钮（可靠路径），拖拽只是加速器。
+
+    原来那个「添加」按钮是坏的（点了传空串，等于撤销一个还没加的插件，什么也不发生），
+    使用者要求去掉 —— 现在两个按钮直接就是档位，语义与结果一致。
+    """
+    text = _page_text()
+    assert "ptSetTier('${pid}','${want}')" in text, "卡片上的按钮没有把档位写进去"
+    assert "btn('all'" in text and "btn('admin'" in text, "卡片上没有两个档位按钮"
+    assert "ui.openplat.plugintools.btn_add" not in text, "那个没用的「添加」按钮还在"
+
+
+def test_the_available_list_is_scrollable_and_filterable():
+    """长列表要能滚能筛，且右侧档位区 sticky（否则滚动时落点跑出视野）。"""
+    text = _page_text()
+    assert 'id="pt-search"' in text, "没有搜索框"
+    assert "max-height:46vh" in text and "overflow-y:auto" in text, "可添加列表没有自己的滚动区"
+    assert "position:sticky" in text, "档位区没有 sticky"
+
+
 def test_the_page_has_the_three_drop_zones():
     """可用区 + 两个档位区，各自带 data-tier（空串 = 撤销/未添加）。"""
     text = _page_text()
@@ -864,5 +897,6 @@ def test_every_plugin_tools_label_exists_in_both_bundles():
     assert set(keys) == {key for key in en if key.startswith("ui.openplat.plugintools.")}, (
         "两个语种的键集合不一致"
     )
-    for required in ("title", "tier_all", "tier_admin", "btn_add", "btn_remove", "saved"):
+    for required in ("title", "tier_all", "tier_admin", "tier_all_short", "tier_admin_short",
+                     "search_placeholder", "btn_remove", "saved"):
         assert f"ui.openplat.plugintools.{required}" in zh, f"缺键 {required}"

@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：980 passed**（见 §4.0p…§4.0ag）。
+**最新：991 passed**（见 §4.0p…§4.0ag）。
 
 | 主题 | 状态 |
 |---|---|
@@ -52,6 +52,7 @@
 | 附件/长消息**逐字进记忆** → bootstrap 回灌 → 每轮 prompt 涨一份（实测 +12.7k/次） | ✅ 已修（§4.0ae）：同步单条截断 4k + 留痕；现场复测增量为 +3.5k；**归因未拆开**（宿主也有单条上限） |
 | 「以文件形式发来的图片」被当成二进制 → 她回「这个文件打不开欸」 | ✅ **真机已通**（§4.0af）：按 magic bytes 认图 → 提升成图片附件走多模态（`images: 0 → 1`） |
 | 插件工具桥：她能不能调**别的插件**（按分级、按通道） | ✅ **真机已通**（§4.0ag）：3 个插件挂载成功 + 两次真实调用 `-> ok`（web_search / writer_power_analysis）。未测：群里那条分级对照 |
+| 插件配置界面：长列表里**底部卡片拖不进档位区**、「添加」按钮点了没反应 | ✅ 落地（§4.0ag-3）：独立「插件」页 + 每卡两个档位按钮 + 可添加区自滚 + 搜索/计数；Playwright 15 插件场景验证 |
 | 记忆段封顶（可省最多 ~4.4k 字符/轮） | ⏸ 未做（使用者：「这个先不管」），实测值记在 §4.0u |
 | 群聊场景段（i18n 副本）与代码模板已漂移；改 Python 模板对线上无效 | ⏸ 已知，待定 |
 | 深色模式 | ⏸ **做不了**：宿主没给静态插件页传主题的通道（见 §4.0n） |
@@ -2282,7 +2283,7 @@ GET {USER_PLUGIN_BASE}/plugins
 上，不能每轮都去问一次宿主；调用方只读缓存，过期就踢一次后台刷新、先用手里的（有测试
 钉"读路径不许 await 宿主"）。
 
-#### 界面（`static/open_platform.html`，配置页「用户」子页）
+#### 界面（`static/open_platform.html`，配置页「用户」子页；**4.0ag-3 起搬去独立「插件」页**，见下）
 
 `插件工具` 卡片：左边「可添加的插件」= 已启动的非 QQ 插件；右边两个拖拽区
 「所有人都可以用」「只有管理员可以用」。卡片 `draggable`，**拖到哪个区就立刻保存**
@@ -2401,12 +2402,43 @@ Plugin writer_power_analysis runtime_auto_start overridden by user preference: F
 
 ---
 
+#### 4.0ag-3 「插件」独立成页 + 每张卡自带档位按钮（使用者 15:3x 拍板的重设计）
+
+使用者原话：**「现在的页面分级有点不科学，如果可添加的插件的数量很多，我拖动最下面的卡片
+是无法放到所有人都用的区块里的」** + 「在侧边栏开一个插件页，专门用来配置插件，和表情包
+一样」+ 「可添加的插件的添加按钮好像没有用，干脆去掉就好了」。
+
+三个问题各自的根因与改法：
+
+| 现象 | 根因 | 改法 |
+|---|---|---|
+| 列表底部的卡片拖不到右侧分区 | 三栏 flex 并排、各自不限高：可添加区一长，右侧两个 `drop-zone` 被顶出屏幕 | 布局改**左列表自带滚动**（`max-height:46vh;overflow-y:auto`）+ 右档位区 `position:sticky` |
+| 配置页里塞不下 | 面板挂在「配置 → 用户」子页里，和信任名单/身份认领挤在一栏 | **独立一页** `#page-plugintools` + 侧边栏「插件」（和表情包同级） |
+| 「添加」按钮没反应 | 它的 `onclick` 传的是空档位（`ptSetTier(id,'')`）→ 等于"撤销一个还没加的插件"，什么都不发生 | 按钮**语义改成档位本身**：每张卡两个按钮「所有人 / 仅管理员」（点一下就配好），拖拽保留为加速器 |
+
+另外：可添加区加了**搜索框**（长列表要能筛）、三个区都显示**计数**；配了但目录里已没有的
+插件仍留一张卡（否则没法撤销）。`list_started_candidates` 那次改名之后，
+`ui.openplat.plugintools.btn_add` 这个键也一并删掉（没人用了）。
+
+**浏览器验证**（`.dsh-artifacts/verify-plugin-page-layout.py`，Playwright 走 file:// +
+路由全 abort，不碰宿主）：灌 15 个假插件后 —— 15 张卡都在、**可添加区确实自己滚**
+（scrollHeight > clientHeight）、**两个档位区完整落在视口内**（拖拽落点始终可达）、
+点「所有人」发出的请求是 `config {action: save, qq_open_plugin_tools: {demo_plugin_00: "all"}}`、
+搜索 `demo_plugin_1` 命中 5 张、无 JS 报错。
+
+---
+
 #### 顺带记一条教训（这轮我自己踩的）
 
 **绝不拿 PowerShell 管道往返改非 ASCII 文本文件**。我用
 `(Get-Content -Raw) -replace … | Set-Content -Encoding utf8` 改测试文件，
 中文被按 GBK 解码再按 UTF-8 写回，**不可逆**（混进 `\ufeff`、私用区字符与 `?`），
 47 行无法还原，只能整份重写。仓库里早就写着这条，这次是我犯的。
+
+**测试基线：991 passed / 0 failed**（CI 里另有 1 条按设计 skip，见 §4.0aa）。这轮新加的
+看门狗：桥本体 `tests/test_qq_plugin_tool_bridge.py`、分片上传 `test_qq_open_platform_media.py`、
+私聊图 `test_qq_private_image_delivery.py`、语音闸 `test_qq_voice_channel_gate.py`、
+附件 `test_qq_attachment_files.py`、记忆截断 `test_qq_memory_sync_truncation.py`。
 
 ---
 
