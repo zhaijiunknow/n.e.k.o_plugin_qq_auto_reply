@@ -3628,3 +3628,61 @@ qq_open_platform_media` 会让**整个副本包 import 失败**（宿主没带�
 `test_provenance_records_which_patches_are_live`，钉住那一列与两行真机证据）；
 全量 **1195 passed**（上一轮 1194 + 1）；ruff All checks passed；
 变异取证扩到 **7/7**（新增"差异表不写生效面"与"抹掉真机证据"两处变异）。
+
+---
+
+## 17. 从 index 进子页：版本号改成运行时生成（`static/nav.js`）
+
+使用者要求：「在 index 打开子级页面的时候能不能刷新一次。」
+
+### 17.1 病因
+
+插件 UI 的静态文件响应头是 `public, max-age=3600`（**强缓存 1 小时**，实测：index /
+napcat / open_platform / status / old / theme.css / i18n.js 全是这一条）。原来的办法是
+手写 `?v=N` 击穿，`index.html` 的注释就写着「以后改了这几个页面记得 +1」—— 那个数字散在
+**三处**（index 的卡片、index 的 `go()`、两页互相切换的按钮），忘一处就看到
+「新页面配旧缓存」的混合版本，而且现象是"改了没生效"，很难查。使用者的诉求本质就是
+**别让我再记这个数**。
+
+### 17.2 改法
+
+新增 `static/nav.js`（与既有 `ui-sse.js` 同一种小共享脚本的做法）：把版本号改成
+**点击那一刻生成**的 `?v=<Date.now()>`，于是每次进子页都是**新的 URL**，浏览器必然重新取一份。
+
+- 控件只写 `data-nav="napcat.html"`（可选的 `data-nav-mode` 仍写
+  `localStorage.qq_connection_mode`，即原来 `index.go()` 那半，行为不变）；
+- nav.js 加载时自己 wire（各页脚本都在 body 尾部），并对已 wire 的元素打标记，
+  重复 wire 不会叠出两次跳转；
+- `href` 保留原样：无 JS / 中键新标签页仍可用，既有看门狗断言的 `href="index.html"` 也在；
+- **回程同样带版本号**（返回首页、status.html 的返回、两页互切的按钮）—— `index.html`
+  自己也是强缓存的，回程不带的话改完 index 仍会看到旧的一份；
+- index 里手写的 `?v=11/10/12/3` 与 `go()` 全部退休。
+
+### 17.3 验证
+
+- 看门狗 `tests/test_qq_console_page_navigation.py` 重写：原来的「?v= 数字三处一致」
+  换成「每个页面间跳转都必须挂 `data-nav` + 所在页真的加载了 nav.js 标签 +
+  不许再出现 `.html?v=<数字>` + 版本号必须来自 `Date.now()`」；
+- **行为取证**（本地 node v24，`.dsh-artifacts/nav-js-behavior.js`）：把真实的 nav.js 装进
+  最小 DOM 桩，按真实 HTML 里的 9 个 `data-nav` 控件逐个模拟点击 —— 9/9 都跳到
+  `<目标>?v=<时间戳>`；隔 5ms 再点同一个控件 URL 又变了；`fresh()` 对带查询串
+  (`?tab=1&v=…`) 与带 hash (`?v=…#top`) 都拼对；`data-nav-mode` 仍写
+  `qq_connection_mode`。CI 上没有 node，所以仓库里留的是源码扫描，这份是本地行为证据；
+- 实机核对（插件服务器 `GET /plugin/qq_auto_reply/ui/*`）：五页都是 200，`data-nav` 与
+  磁盘一致，**零个**写死的 `.html?v=<数字>`；`nav.js` 200；
+- 变异取证 `tests/verify_page_nav_freshness_fail_to_pass.py` **6/6**：五处变异（卡片退回
+  写死版本号 / 卡片少 data-nav / napcat 不加载 nav.js / **nav.js 把 Date.now() 改成常量**
+  / status 的返回少 data-nav）→ 目标全红、控制组全绿、逐字节还原。
+  其中第三处第一版**没红**：我的变异文本里带了 "nav.js" 三个字，而断言当时是
+  `"nav.js" in html` —— 于是把断言收紧成认 `<script … src="…nav.js">` 这个**标签**，
+  再把变异文本去掉那三个字，才成为合格的必要条件证据；
+- 全量 **1196 passed**（上一轮 1195 + 1：这个文件从 3 条变 4 条 —— 两条旧守卫保留、
+  「?v= 数字一致」换成两条新守卫）；
+  ruff（E4/E7/E9/F/I）All checks passed。
+
+### 17.4 仍然手写的版本号（有意保留）
+
+`theme.css?v=6` / `i18n.js?v=2` / `ui-sse.js?v=1|2` / `script.js?v=3` / `assets/*?v=1`
+这些**资源**的版本号还在，改它们时仍要 +1。它们是"被多页引用的资源"，靠运行时时间戳
+会让每次进页都重新下载（theme.css 10KB、i18n.js 4KB，纯浪费）；而 .html 页面才是
+"改了就希望立刻看到"的那类。这是有意的分工，不是漏改。

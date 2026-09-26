@@ -27,7 +27,7 @@ PAGE = PLUGIN / "static" / "status.html"
 TEST_FILE = Path(__file__).resolve().parent / "test_qq_status_refresh_reachable.py"
 
 REFRESH_BTN = '<button class="ghost" id="btn-refresh" data-i18n="ui.status.refresh">刷新</button>'
-BACK_LINK = '<a class="btn" href="index.html" style="text-decoration:none" data-i18n="ui.status.back">返回</a>'
+BACK_LINK = '<a class="btn" href="index.html" data-nav="index.html" style="text-decoration:none" data-i18n="ui.status.back">返回</a>'
 
 #: (说明, 原文, 替换成)
 MUTATIONS: list[tuple[str, str, str]] = [

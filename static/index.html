@@ -39,7 +39,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
     <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
     <div class="wrap">
-        <a class="card" href="status.html?v=11">
+        <a class="card" href="status.html" data-nav="status.html">
             <div class="icon">◉</div>
             <h2 data-i18n="ui.index.status.title">一键部署</h2>
             <p>
@@ -48,7 +48,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.status.tag">自动化</span>
         </a>
-        <a class="card" href="napcat.html?v=10" onclick="go('napcat'); return false;">
+        <a class="card" href="napcat.html" data-nav="napcat.html" data-nav-mode="napcat">
             <div class="icon">N</div>
             <h2>NapCat</h2>
             <p>
@@ -59,7 +59,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
         </a>
-        <a class="card" href="open_platform.html?v=12" onclick="go('open_platform'); return false;">
+        <a class="card" href="open_platform.html" data-nav="open_platform.html" data-nav-mode="open_platform">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -70,7 +70,7 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.openplat.tag">轻量 · 指令式</span>
         </a>
-        <a class="card" href="old.html?v=3" onclick="go('legacy'); return false;">
+        <a class="card" href="old.html" data-nav="old.html" data-nav-mode="legacy">
             <div class="icon">M</div>
             <h2 data-i18n="ui.index.legacy.title">旧版控制中心</h2>
             <p>
@@ -82,19 +82,13 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
     </div>
 </div>
 <script src="i18n.js?v=2"></script>
+<script src="nav.js?v=1"></script>
 <script>
 function t(key,fallback){return window.I18n&&typeof window.I18n.t==='function'?window.I18n.t(key,fallback):(fallback||key)}
-function go(mode) {
-    // ?v= 版本号：击穿浏览器对旧 napcat.html / open_platform.html / old.html 的
-    // 强缓存（之前 max-age=3600 缓存 1 小时，改代码后仍看到旧页面）。以后改了
-    // 这几个页面记得 +1。
-    if (mode === 'legacy') {
-        location.href = 'old.html?v=3';
-        return;
-    }
-    localStorage.setItem('qq_connection_mode', mode);
-    location.href = mode === 'napcat' ? 'napcat.html?v=10' : 'open_platform.html?v=12';
-}
+/* 卡片跳转由 nav.js 接管：每张卡片带 data-nav，点击时**追加此刻的时间戳**再跳。
+   这些静态页的响应头是 public,max-age=3600（强缓存 1 小时），以前靠手写 ?v=N
+   击穿 —— 那个数散落在三处、忘了改就看到旧页面。现在改成运行时生成，从 index 进
+   子页必然是新的 URL（nav.js 顶部写了来龙去脉）。 */
 </script>
 </body>
 </html>
