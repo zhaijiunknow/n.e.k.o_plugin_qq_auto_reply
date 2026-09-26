@@ -41,6 +41,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Callable
 
@@ -85,6 +86,71 @@ ENTRY_HINT_MAX_CHARS = 140
 EXCLUDED_ID_PREFIXES = ("qq",)
 
 _TOOL_PREFIX = "plugin_"
+
+#: 结果里"这段是密钥"的键名判据（按**后缀**也算：`access_token` / `client_secret` …）。
+#: 只认这些，不认"包含"——`token_count` 这种正常字段不该被掩掉。
+_SECRET_KEY_SUFFIXES = (
+    "_key", "_token", "_secret", "_password", "_passwd", "_credential", "_apikey",
+)
+_SECRET_KEY_NAMES = frozenset({
+    "api_key", "apikey", "api key", "token", "secret", "password", "passwd",
+    "authorization", "credential", "client_secret", "access_token", "refresh_token",
+})
+
+#: 文本里的密钥形状。都取**保守**的写法：宁可漏掉一个奇怪的格式，也不要掩掉正常内容。
+_SECRET_TEXT_PATTERNS = (
+    re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._\-]{8,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"),
+    # 脱敏后的尾巴（`****149a`）：真机上宿主就是这样回显 key 的
+    re.compile(r"\*{2,}[0-9A-Za-z]{2,}"),
+    re.compile(
+        r"(?i)\b(api[\s_\-]?key|access[\s_\-]?token|client[\s_\-]?secret|password)\b"
+        r"(\s*[:=]\s*[\"']?)([A-Za-z0-9._\-+/=]{6,})"
+    ),
+)
+
+#: 失败时给模型的一句"别说原文"（错误里可能有账号、端点、内部 id）。
+_FAILURE_MANNER_HINT = (
+    "（这是**内部错误原文**：不要把它念给对方，也不要在群里复述；"
+    "用你自己的话简短说一句「刚才那个没成功」就行。）"
+)
+
+
+def _is_secret_key(name: Any) -> bool:
+    key = str(name or "").strip().lower().replace("-", "_")
+    if key in _SECRET_KEY_NAMES:
+        return True
+    return any(key.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
+
+
+def redact_payload(value: Any, *, _depth: int = 0) -> Any:
+    """把结果里**键名像密钥**的字段掩掉（递归，深度有限）。"""
+    if _depth > 4:
+        return value
+    if isinstance(value, dict):
+        masked: dict[Any, Any] = {}
+        for key, item in value.items():
+            if _is_secret_key(key) and item not in (None, "", [], {}):
+                masked[key] = "（已隐藏）"
+            else:
+                masked[key] = redact_payload(item, _depth=_depth + 1)
+        return masked
+    if isinstance(value, list):
+        return [redact_payload(item, _depth=_depth + 1) for item in value]
+    return value
+
+
+def redact_text(text: str) -> str:
+    """把文本里的密钥形状掩掉（`sk-…` / `Bearer …` / `api key: …` / `****149a`）。"""
+    out = str(text or "")
+    for pattern in _SECRET_TEXT_PATTERNS:
+        if pattern.groups >= 3:
+            out = pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}（已隐藏）", out)
+        elif pattern.groups == 1:
+            out = pattern.sub(lambda m: f"{m.group(1)} （已隐藏）", out)
+        else:
+            out = pattern.sub("（已隐藏）", out)
+    return out
 
 
 class QQPluginToolService:
@@ -614,19 +680,30 @@ class QQPluginToolService:
 
     @staticmethod
     def render_result(payload: Any, *, ok: bool) -> str:
-        """结果 → 模型可读文本（带长度上限，绝不把长文整段塞回去）。"""
+        """结果 → 模型可读文本（带长度上限，绝不把长文整段塞回去）。
+
+        两条与"她会把这段念出来"直接相关的处理：
+
+        * **密钥脱敏**：别的插件的错误/设置里常带 `api key: ****149a`、
+          `sk-…`、`Bearer …` 这类字样（真机上 `writer_power_analysis:list_models`
+          就是因为 key 失效报的错，原文里带着 key 尾号与 request_id）。这段文本会进
+          她的上下文，而她可能正站在群里 —— 所以先按**键名**和**形状**掩掉。
+        * **失败要她别说原文**：错误原文里有账号/端点/内部 id，不该由她复述。
+        """
+        if isinstance(payload, dict):
+            payload = redact_payload(payload)
         if isinstance(payload, str):
-            text = payload
+            text = str(payload)
         else:
             try:
                 text = json.dumps(payload, ensure_ascii=False, default=str)
             except Exception:
                 text = str(payload)
-        text = str(text or "").strip()
+        text = redact_text(str(text or "").strip())
         if not text:
             text = "（插件没有返回内容）" if ok else "（调用失败，没有更多信息）"
         if not ok:
-            text = "调用失败：" + text
+            text = "调用失败：" + text + _FAILURE_MANNER_HINT
         if len(text) > RESULT_MAX_CHARS:
             text = text[:RESULT_MAX_CHARS] + f"…（结果过长，已截断 {len(text) - RESULT_MAX_CHARS} 字）"
         return text

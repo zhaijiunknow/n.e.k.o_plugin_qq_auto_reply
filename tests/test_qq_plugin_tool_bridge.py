@@ -615,6 +615,53 @@ def test_a_plugin_without_call_entry_says_so():
     assert "跨插件调用接口" in output
 
 
+# ── 6b. 密钥脱敏 + 失败措辞：她会把这段念出来（真机先例） ──────────────
+#
+# 真机（16:51）`writer_power_analysis:list_models` 因为 key 失效报错，错误原文长这样：
+#   Authentication Fails, Your api key: ****149a is invalid (request_id: 01179f4a-…)
+# 这段文本会进她的上下文，而她可能正站在群里。所以：**键名像密钥的字段**与
+# **文本里的密钥形状**都要掩掉，并且明确告诉她失败原文不要复述。
+
+def test_secret_shaped_fields_are_masked():
+    """**按键名**掩：值是密钥但长得不像密钥（没有 `sk-` 前缀）也要掩。
+
+    特意用一个"没有形状"的值，好把这条判据与"文本形状"那条分开钉住。
+    """
+    out = QQPluginToolService.render_result(
+        {"api_key": "plainkey123456", "access_token": "deadbeefcafe", "model": "x", "token_count": 5},
+        ok=True,
+    )
+
+    assert "plainkey123456" not in out, "api_key 的值还露着"
+    assert "deadbeefcafe" not in out, "access_token 的值还露着"
+    assert "（已隐藏）" in out
+    assert "token_count" in out and "5" in out, "正常字段被误伤了（只该掩键名像密钥的）"
+
+
+def test_secret_shapes_inside_text_are_masked():
+    """别人插件的错误文本里写着 key 的形状 —— 也要掩，不能只认键名。"""
+    real = QQPluginToolService.render_result(
+        "Authentication Fails, Your api key: ****149a is invalid "
+        "(request_id: 01179f4a-6819-415d-85ca-4999c5c48825)",
+        ok=False,
+    )
+    assert "149a" not in real, "脱敏后的 key 尾号还留着"
+    assert "Authentication Fails" in real, "别把有用的原因也一起掩掉"
+
+    assert "abcdefgh12345678" not in QQPluginToolService.render_result(
+        "Authorization: Bearer abcdefgh12345678", ok=True,
+    )
+    assert "sk-live-abcdefghijkl" not in QQPluginToolService.render_result(
+        "key is sk-live-abcdefghijkl", ok=True,
+    )
+
+
+def test_a_failed_call_tells_her_not_to_quote_the_error():
+    """失败原文里有账号/端点/内部 id：告诉她用大白话说一句，别复述。"""
+    assert "不要把它念给对方" in QQPluginToolService.render_result("boom", ok=False)
+    assert "不要把它念给对方" not in QQPluginToolService.render_result("fine", ok=True)
+
+
 def test_result_rendering_never_leaks_a_raw_object():
     """渲染必须是文本：把非字符串对象直接塞回去会让工具结果不可读。"""
     text = QQPluginToolService.render_result({"a": 1, "b": [1, 2]}, ok=True)

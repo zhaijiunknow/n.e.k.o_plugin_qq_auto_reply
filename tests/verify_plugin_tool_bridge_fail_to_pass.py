@@ -86,6 +86,26 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         """            if entry_id not in entries:""",
         """            if False:""",
     ),
+    (
+        "plugin_tool_service.py",
+        "结果不再脱敏（别的插件的 key 尾号/密钥形状会进她的嘴）",
+        """        if isinstance(payload, dict):
+            payload = redact_payload(payload)""",
+        """        if False:
+            payload = redact_payload(payload)""",
+    ),
+    (
+        "plugin_tool_service.py",
+        "文本里的密钥形状不再掩（`****149a` / `sk-…` / `Bearer …` 照样念出去）",
+        """        text = redact_text(str(text or "").strip())""",
+        """        text = str(text or "").strip()""",
+    ),
+    (
+        "plugin_tool_service.py",
+        "失败时不再嘱咐她别说原文（她会把内部错误念给群里听）",
+        """            text = "调用失败：" + text + _FAILURE_MANNER_HINT""",
+        """            text = "调用失败：" + text""",
+    ),
 ]
 
 

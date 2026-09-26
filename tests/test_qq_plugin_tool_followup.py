@@ -219,6 +219,26 @@ def test_extract_result_is_capped():
     assert "已截断" in text
 
 
+def test_the_followup_result_is_masked_before_it_reaches_her_prompt(tmp_path):
+    """回投的结果会进她的 prompt，她随后当着群里的人说 —— 密钥形状先掩掉。"""
+    plugin = _plugin(tmp_path, poll_results=[_ok({
+        "status": "done",
+        "result": {"api_key": "sk-abcdef123456", "summary": "节奏太慢"},
+    })])
+    _remember(plugin)
+
+    _tick_sync(plugin, 2)
+
+    text = plugin.requests[0].message_text
+    assert "abcdef123456" not in text, "密钥被塞进她的 prompt 了"
+    assert "节奏太慢" in text, "正文还在"
+
+
+def test_extract_result_masks_secret_shapes_in_text():
+    assert "149a" not in extract_result({"result": "your api key: ****149a is invalid"})
+    assert "invalid" in extract_result({"result": "your api key: ****149a is invalid"})
+
+
 # ── 闸 1：开关 ──────────────────────────────────────────────────────
 
 def test_the_switch_defaults_to_on(tmp_path):

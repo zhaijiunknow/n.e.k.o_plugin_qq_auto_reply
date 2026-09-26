@@ -135,7 +135,15 @@ def extract_result(payload: Any) -> str:
 
 
 def render_payload(value: Any) -> str:
-    """结果 → 文本（含长度上限）。"""
+    """结果 → 文本（含长度上限，且**先脱敏**）。
+
+    回投是把结果直接塞进她的 prompt，而她随后会当着群里的人说 —— 所以密钥形状
+    （`sk-…` / `Bearer …` / `api key: …` / `****149a`）与"键名像密钥"的字段都要在
+    进 prompt 之前掩掉（与工具桥同一套判据，见 `plugin_tool_service`）。
+    """
+    from .plugin_tool_service import redact_payload, redact_text
+
+    value = redact_payload(value)
     if isinstance(value, str):
         text = value
     else:
@@ -143,7 +151,7 @@ def render_payload(value: Any) -> str:
             text = json.dumps(value, ensure_ascii=False, default=str)
         except Exception:
             text = str(value)
-    text = str(text or "").strip()
+    text = redact_text(str(text or "").strip())
     if len(text) > PROMPT_RESULT_MAX_CHARS:
         text = text[:PROMPT_RESULT_MAX_CHARS] + f"…（原文过长，已截断 {len(text) - PROMPT_RESULT_MAX_CHARS} 字）"
     return text
