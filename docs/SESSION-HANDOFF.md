@@ -3864,3 +3864,59 @@ DOM（这台机器上没有 Electron 进程、宿主也没开调试端口）。�
   说明连重建都失败（那要看服务端 `/ui-api/events`）。
 - 另有一类"延迟"**不是刷新慢**：表情包上传要等 VLM 自动描述（实测每张 3~10 秒，
   日志里能看到 `[VLM] 表情包自动描述` 紧跟 `上传表情包`），那是上传本身耗时。
+
+---
+
+## 20. 只有 trusted 群参与注意力竞争（normal 群走「回 / 转达」）
+
+### 20.1 起因：normal 群的转达路径被门控第 4 步吃掉了
+
+问「现在的注意力是如何的」时顺手用测试桩跑了张对照表（`.dsh-artifacts/probe-normal-group-gate.py`），
+发现门控第 4 步（非焦点群 → ignore）**对所有群一视同仁**：
+
+| 情形 | normal 群 | trusted 群 |
+|---|---|---|
+| 不是焦点群 + 普通消息 | `ignore (non_focus)` | `ignore (non_focus)` |
+| 恰好是焦点群 | `reply` → 下游转 relay | `reply` → 进 LLM |
+| 被 @ | `reply (at_bot)` | `reply (at_bot)` |
+
+也就是说 normal 群的「按概率转达给主人」**只在它恰好持有焦点时**才会发生，其余时候消息
+在第 4 步就被丢掉 —— 下游 `reply_decision_node` 里那个 `normal → relay` 分支形同摆设。
+necessity 那段的注释担心的正是这件事（「若在这里返回 ignore，转发也会被 dispatcher 一起
+跳过（那是功能回退）」），只守住了自己那一步。
+
+使用者拍板：**改得更彻底 —— normal 群不参与注意力竞争。**
+
+### 20.2 改法（四处接线，缺一不可）
+
+1. `attention_service.participates_in_attention(group_id)`：单一真源，**只有 `trusted` 参与**
+   （`normal` / `none` 不参与；**没有权限管理器时一律按参与** —— 单测桩与旧宿主保持既有语义）。
+2. `_choose_focus_state()`：把非参与者从候选里剔掉 —— 否则被降级（trusted → normal）的群
+   会凭残留分数继续占着焦点，而它的消息现在直接放行，等于把 trusted 群静音到分数自然衰减完
+   （实测要二十来分钟）。
+3. 门控第 1 / 1.5 步：非参与者**不计分、不进近期发言窗口**（那两样只服务 trusted 那条路）。
+4. 门控第 3.5 步（新增，紧接黑名单之后）：非参与者直接
+   `GateDecision("reply", reason="normal_group_passthrough")` 放行给下游，由权限层决定
+   「被 @/引用她 → 回」还是「按概率转达」；被 @ 时照旧必回，但**不上锁不抢焦点**。
+
+黑名单仍对**所有**群生效（它是全局过滤，放在放行分支之前）。
+
+### 20.3 验证
+
+- 探针复跑（同一张表）：normal 群三种情形全部 `reply`（非焦点时是
+  `normal_group_passthrough`、被 @ 时是 `at_bot`），trusted 群**一点没变**
+  （非焦点 → `non_focus`，焦点 → `focus_group`）。
+- 新看门狗 `tests/test_qq_group_participation.py`（7 条）：放行而非 non_focus、
+  不计分、@ 时不上锁不抢焦点、trusted 行为不变、级别判定、无权限管理器时按参与、
+  **normal 群哪怕 9.0 分也当不上焦点**。
+- `test_qq_necessity_gate.py` 里那条 normal 用例的期望从 `focus_group` 改成
+  `normal_group_passthrough`（它的本意——"这一关只对 trusted 生效"——没有变）。
+- 变异取证 `tests/verify_group_participation_fail_to_pass.py` **5/5**。
+- 全量 **1211 passed**；ruff All checks passed。
+
+### 20.4 线上影响
+
+当前两个群（`985066274`、`1048307485`）**都是 trusted**，配上 `enable_group_attention=true`，
+所以行为与改动前一致；而且此刻连的是开放平台（`needs_attention=false`），门控整条短路。
+真正变的是「以后新增/降级成 normal 的群」：它们不再抢焦点、不再被静默丢弃，
+而是走回/转达那条路。

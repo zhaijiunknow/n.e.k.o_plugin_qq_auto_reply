@@ -141,14 +141,15 @@ def test_trusted_group_ignores_pure_short_reaction():
 
 
 def test_normal_group_is_not_touched_by_necessity_gate():
-    """normal 群要靠后面 relay 转发给主人；在这里 ignore 会把转发一起吃掉。
+    """normal 群靠下游 relay 转发给主人；在这一关 ignore 会把转发一起吃掉。
 
-    用短反应（默认 40 档下必然 necessity_wait）来证明：这一关只对 trusted 生效。
+    用短反应（默认 40 档下 trusted 必然 necessity_wait）来证明：这一关只对 trusted 生效。
+    normal 群连注意力竞争都不参与，因此走的是更早的放行分支（2026-09-27 起）。
     """
     plugin = _plugin(level="normal")
     decision = _evaluate(plugin, _gate(plugin), message_text="哈哈哈")
     assert decision.action == "reply"
-    assert decision.reason == "focus_group"
+    assert decision.reason == "normal_group_passthrough"
 
 
 def test_threshold_zero_disables_the_gate():

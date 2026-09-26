@@ -555,6 +555,34 @@ class QQAttentionService:
             ),
         )
 
+    # ── 谁参与注意力竞争 ──
+
+    def participates_in_attention(self, group_id: str) -> bool:
+        """这个群参不参与注意力竞争 —— **只有 trusted 群参与**（使用者 2026-09-27 拍板）。
+
+        normal / none 群本来就不回复（只按 @ / 引用她回，其余按概率转达给主人）。
+        把她们计进竞争有两个副作用，一起消掉：
+
+        1. 她们会**抢焦点**，把 trusted 群挤成 non_focus（于是该 trusted 群的消息全被
+           门控拦下）；
+        2. 她们自己又会被焦点门控在第 4 步丢掉，于是"按概率转达给主人"这条路
+           **永远走不到**（`reply_decision_node` 里那个 normal → relay 分支成了摆设）。
+
+        没有权限管理器时（单测桩、旧宿主）一律按**参与**处理，保持既有语义。
+        """
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id:
+            return False
+        manager = getattr(self.plugin, "group_permission_mgr", None)
+        if manager is None:
+            return True
+        try:
+            level = str(manager.get_group_level(normalized_group_id) or "").strip()
+        except Exception:
+            return True
+        # 空串 = 拿不到级别 → 当作参与（宁可多算一个群，也别把该回的群静音）
+        return level in ("", "trusted")
+
     def _choose_focus_state(
         self,
         states: list[QQGroupAttentionState],
@@ -564,6 +592,12 @@ class QQAttentionService:
     ) -> QQGroupAttentionState | None:
         if not states:
             return None
+        # 只有 trusted 群参与竞争：非参与者连**持有焦点**的资格都没有，
+        # 否则被降级（trusted → normal）的群会凭残留分数继续占着焦点，
+        # 而它的消息现在直接放行（不参与门控），等于把 trusted 群静音到分数自然衰减。
+        participants = [state for state in states if self.participates_in_attention(state.group_id)]
+        if participants:
+            states = participants
         # ── 优先级 1：锁（`@猫娘` / 唤醒词）────────────────────────────
         # 锁内该群独占焦点，其余群不参与竞争。这是「有人点名叫我，我必须回头
         # 应对」；分数则表达「没人叫我时我自己看哪」。两者是独立信号，锁必须

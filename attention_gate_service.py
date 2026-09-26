@@ -103,6 +103,26 @@ class QQAttentionGateService:
         )
         return score_necessity(signals, threshold=threshold, frequency=frequency)
 
+    def _participates_in_attention(self, group_id: str) -> bool:
+        """这个群参不参与注意力竞争（只有 trusted 群参与）。
+
+        单一真源在 `attention_service.participates_in_attention()`；这里先问它，
+        拿不到（单测桩 / 旧宿主）再退回权限管理器，最后兜底"参与"——
+        宁可多算一个群，也别把该回的群静音。"""
+        checker = getattr(self.plugin.attention_service, "participates_in_attention", None)
+        if callable(checker):
+            try:
+                return bool(checker(group_id))
+            except Exception:
+                return True
+        manager = getattr(self.plugin, "group_permission_mgr", None)
+        if manager is None:
+            return True
+        try:
+            return str(manager.get_group_level(group_id) or "").strip() in ("", "trusted")
+        except Exception:
+            return True
+
     def _pending_threshold(self) -> int:
         """积压压力的参照条数。跟着缓冲上限走：缓冲越容易合并，参照越高。"""
         value = (self.plugin._qq_settings or {}).get("buffer_max_count")
@@ -263,6 +283,10 @@ class QQAttentionGateService:
             return GateDecision("ignore", reason="attention_disabled")
 
         normalized_group_id = str(group_id or "").strip()
+        # 只有 trusted 群参与注意力竞争（使用者 2026-09-27 拍板）。非参与者：不计分、
+        # 不抢焦点、不被焦点门控拦 —— 直接放行给下游，由 reply_decision_node 决定
+        # "回"还是"按概率转达给主人"。
+        participates = self._participates_in_attention(normalized_group_id)
 
         # 0. 记录消息时间（用于主动发言检测）
         self._touch_group(normalized_group_id)
@@ -273,15 +297,16 @@ class QQAttentionGateService:
         #    会被放行进 LLM 而非返回 non_focus——破坏焦点优先规则。
         focus_group = attention.get_focus_group()
 
-        # 1. 消息更新注意力（非焦点群也要累计，等待成为焦点）
-        await attention.update_on_message({
-            "group_id": normalized_group_id,
-            "user_id": sender_id,
-            "content": message_text,
-            "message_id": message_id,
-            "timestamp": timestamp or attention._current_time(),
-            "is_at_bot": is_at_bot,
-        })
+        # 1. 消息更新注意力（非焦点群也要累计，等待成为焦点）—— 只对参与竞争的群。
+        if participates:
+            await attention.update_on_message({
+                "group_id": normalized_group_id,
+                "user_id": sender_id,
+                "content": message_text,
+                "message_id": message_id,
+                "timestamp": timestamp or attention._current_time(),
+                "is_at_bot": is_at_bot,
+            })
 
         # 连接层 is_reply_to_bot 优先（含 API 兜底），弱链缓存重算仅作兜底
         is_reply_to_bot = is_reply_to_bot or bool(
@@ -289,8 +314,10 @@ class QQAttentionGateService:
             and quoted_message_id in getattr(self.plugin.qq_client, "sent_message_ids", {})
         )
 
-        # 1.5 记录到「近期发言窗口」：积压压力与存在感惩罚都吃它。
-        self._speech.record(normalized_group_id, now=float(timestamp or attention._current_time()), speaker=sender_id)
+        # 1.5 记录到「近期发言窗口」：积压压力与存在感惩罚都吃它（也只服务 trusted 那条路）。
+        if participates:
+            self._speech.record(normalized_group_id, now=float(timestamp or attention._current_time()),
+                                speaker=sender_id)
 
         # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
         #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。
@@ -299,16 +326,29 @@ class QQAttentionGateService:
             # mark_focus / wake_boost 仍保留（它们管分数与保持线），但独占语义由
             # lock 承担 —— 分数是「我多想聊这个群」，锁是「有人点名叫我」。
             # 见 docs/attention-redesign-draft.md §2「锁与归属是两条并行规则」。
-            attention.lock_group(normalized_group_id)
-            attention.mark_focus(normalized_group_id)
-            attention.wake_boost(normalized_group_id)
-            self._backoff.reset(normalized_group_id)   # 被点名 = 她必须回来，退避作废
+            # 不参与竞争的群照旧必回，但**不上锁不抢焦点**（它本来就不在竞争里）。
+            if participates:
+                attention.lock_group(normalized_group_id)
+                attention.mark_focus(normalized_group_id)
+                attention.wake_boost(normalized_group_id)
+                self._backoff.reset(normalized_group_id)   # 被点名 = 她必须回来，退避作废
             return GateDecision("reply", reason="at_bot", force_reply=True)
 
-        # 3. 黑名单 → 不处理
+        # 3. 黑名单 → 不处理（对**所有**群生效，含不参与竞争的群：这是全局过滤）
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
         if QQFeedbackClassifier.is_blacklisted(message_text, label_defs):
             return GateDecision("ignore", reason="blacklist")
+
+        # 3.5 不参与注意力竞争的群（normal / none）：直接放行给下游。
+        #     它们本来就不回复，下游 `reply_decision_node` 会决定"被 @/引用她 → 回"，
+        #     其余消息按概率转达给主人（relay）。以前这里会走到第 4 步被当成
+        #     non_focus 丢掉 —— relay 那条路因此永远走不到。
+        if not participates:
+            self._mark_active(normalized_group_id)
+            self.plugin._emit_log(
+                "INFO", f"[Gate] 群{normalized_group_id} 不参与注意力竞争，放行给下游（回/转达由权限层决定）",
+            )
+            return GateDecision("reply", reason="normal_group_passthrough")
 
         # 4. 焦点门控前置：非焦点群 → block（注意力已在步骤 1 累计），
         #    输出跳过原因。关键词/回复猫娘的消息同样在此被拦下。
