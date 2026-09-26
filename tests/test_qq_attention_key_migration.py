@@ -150,3 +150,21 @@ def test_frontend_attention_control_ids_all_registered_in_schema():
     assert html_ids, "没在前端解析到任何注意力控件，测试本身失效了"
     missing = sorted(html_ids - schema_ids)
     assert not missing, f"前端控件在 schema 里没有注册：{missing}"
+
+
+@pytest.mark.asyncio
+async def test_unknown_legacy_prefixed_keys_are_dropped(tmp_path):
+    """前缀兜底：没列进名单、但同前缀的残留键也必须被丢掉。
+
+    这条是被真机打脸后加的：``fatigue_tiers`` 只存在于**真机配置文件**里，
+    repo 内 0 命中，靠逐个列名字根本对不出来。改成前缀规则后，同类漏网不再可能。
+    """
+    _write_config(tmp_path, {
+        "fatigue_some_future_key": 1,
+        "group_attention_whatever": 2,
+        "reply_mode": "text",
+    })
+    loaded = await _store(tmp_path).load()
+
+    assert "fatigue_some_future_key" not in loaded, "fatigue* 前缀残留未被清掉"
+    assert "group_attention_whatever" not in loaded, "group_attention_* 前缀残留未被清掉"

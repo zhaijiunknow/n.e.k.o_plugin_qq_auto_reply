@@ -2947,11 +2947,62 @@ git apply .dsh-artifacts/bm25-threshold-floor.patch
 
 ### 9.5 队列（用户已定的后续动作）
 
-1. 删疲劳/作息（含 `fatigue_service.py`、看板字段、i18n 键）——⚠️ `get_dynamic_time_context()`
-   寄生在该文件里，**必须先救出来**（它给提示词注入当前时间/星期/时段）。
+1. ~~删疲劳/作息~~ → **已完成**，见 §10。
 2. 权限收敛：删 `open` 级，只留 `normal`（只在被 @ 或引用她时回）/`trusted`（走注意力）；
    1048307485 由 open 升 trusted；私聊保持一律回；概率键随之清理。
 3. 合并 `neko_scene` / `neko_dynamic` 两个策略模式。
 4. 注意力 B 档：砍状态字段（`total_interactions`、`emotion_display*`、4 个 `dimension_*`/`recompute_score` 兼容层已核实无生产消费者）。
+
+---
+
+## 10. 删疲劳/作息系统（已完成）+ 两条真机事实
+
+### 10.1 关键动作：先把「时间层」救出来
+
+`fatigue_service.get_dynamic_time_context()` **与疲劳无关**——它是提示词的时间层
+（当前时间/星期/时段 + 「结合当前时间理解『刚刚』『昨天』『下周』」）。
+整文件删掉会让猫娘**静默失去时间感**，而记忆召回正依赖它。
+已迁到新模块 `time_context.py`（输出逐字节不变），两处消费点改为调用它：
+`session_instruction_service._resolve_time_section` 与 `__init__` 的提示词编辑器 `time` 层。
+
+### 10.2 删除面
+
+源码 32 处 + 前端/i18n/测试 5 处：`fatigue_service.py` 整文件；`__init__` 的
+import/属性/构造；`attention_gate_service` 的 mark_active 接线（方法保留为兼容空实现，
+与旁边 `_touch_group` 同款）与破冰时的「疲劳 >60 跳过」；`attention_service` 的
+`_fatigue_rate_scale`、`_advance_phase`/`_apply_decay` 的 fatigue 参数与三处 boost/gain
+缩放；`message_dispatcher` 的全局计数；`runtime_service` 的疲劳快照与看板字段；
+`settings_schema` 的 FATIGUE 组（5 键）；`dashboard_service` 的 `fatigue_enabled`；
+i18n 各 3 键；`napcat.html` 的疲劳卡片/开关/`loadFatigue`/填表/存表条目。
+
+### 10.3 验证
+
+- 全量回归 **1102 passed**（删掉 11 例疲劳测试 + 新增 19 例），CI 门禁 ruff 通过。
+- 新增 `tests/test_qq_time_context.py`：14 个时段边界 + 3 行格式 + **全仓无 fatigue 字样**
+  看门狗（允许名单：僵尸键名单、时间层文档、迁移测试）+ 疲劳键加载后消失。
+- 变异验证 2/2：时段边界 6→7 → 边界测试红；测试里塞回 fatigue 字样 → 看门狗红；均还原后全绿。
+
+### 10.4 被真机打脸一次：`fatigue_tiers`
+
+我按 repo 检索列了 5 个疲劳键，真机配置文件里其实有 **6 个**——`fatigue_tiers` 在 repo 内
+0 命中，只活在用户配置里，**靠逐个列名字永远对不出来**。已改为**前缀兜底**
+（`_LEGACY_ZOMBIE_PREFIXES = ("group_attention_", "fatigue")`）：映射表先跑，之后凡是这两个
+前缀的残留键一律丢弃。配套加了 `test_unknown_legacy_prefixed_keys_are_dropped`。
+
+**教训：清理「历史键」要用前缀/规则，不要逐个列名字。**
+
+### 10.5 真机事实（本轮观测）
+
+1. **用户已切到 NapCat**：真机 `qq_connection_mode = napcat`（`strategy_mode` 仍是 `neko_dynamic`）。
+   这意味着注意力门控链重新可达——`needs_attention=True`，`memory_dispatcher` 会调
+   `update_on_message`，概率闸/突发闸/关键词/回溯补回都活过来了。
+2. **插件当前跑的是编辑前的代码**：进程 00:18:49 启动，而删疲劳的编辑在 00:25 之后，
+   所以疲劳删除**尚未真机验证**，需要下一次插件重载。A 档改名倒是已经被运行中的插件
+   自我验证过：配置在 00:19:48 被重新保存成新键名、僵尸键全部消失（写入者就是它自己）。
+3. **宿主侧有一条连接报错**（不在我改动范围内）：`utils/connection/onebot/qq_open_plat.py:928`
+   `_get_gateway_url` 里 `AttributeError: 'NoneType' object has no attribute 'get'`
+   （00:18:53，`start_auto_reply` 期间）。之后 `get_group_list` 返回 ok，说明连接后来是通的，
+   但这条报错值得单独查。
+
 
 

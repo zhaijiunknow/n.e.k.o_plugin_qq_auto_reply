@@ -150,7 +150,14 @@ class QQAutoReplyConfigStore:
         "fatigue_circadian_low_hour",
         "fatigue_session_per_reply",
         "fatigue_awake_idle_timeout",
+        "fatigue_tiers",
     )
+
+    #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现
+    #: 在真机配置文件里，repo 内 0 命中，纯靠肉眼对不出来）。历史上发生过两类：
+    #: 整代配置被改名（``group_attention_*``）与整块功能被删除（``fatigue*``）。
+    #: 映射表先跑，所以 ``group_attention_*`` 里那 5 个活键已被搬走，这里只会清残留。
+    _LEGACY_ZOMBIE_PREFIXES = ("group_attention_", "fatigue")
 
     @classmethod
     def _migrate_attention_keys(cls, settings: dict[str, Any]) -> None:
@@ -165,6 +172,9 @@ class QQAutoReplyConfigStore:
                 settings[new] = legacy_value
         for zombie in cls._LEGACY_ZOMBIE_KEYS:
             settings.pop(zombie, None)
+        for key in [k for k in settings if str(k).startswith(cls._LEGACY_ZOMBIE_PREFIXES)]:
+            settings.pop(key, None)
+
     def default_config(self) -> dict[str, Any]:
         """全部默认值。**唯一真相在 ``settings_schema.SETTINGS``**。
 

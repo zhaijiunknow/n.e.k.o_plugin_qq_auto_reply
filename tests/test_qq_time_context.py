@@ -18,8 +18,15 @@ from plugin.plugins.qq_auto_reply.time_context import build_time_context
 
 PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 
-#: 允许出现 "fatigue" 字样的文件：僵尸键名单（要认得旧键才能删）与本文档化的救出模块。
-ALLOWED_FATIGUE_MENTIONS = {"config_store.py", "time_context.py"}
+#: 允许出现 "fatigue" 字样的文件：
+#: - ``config_store.py``：僵尸键名单 + 前缀兜底（必须认得旧键才能删掉它们）
+#: - ``time_context.py``：文档，记录这段代码是从哪里救出来的
+#: - ``test_qq_attention_key_migration.py``：迁移测试必须写出键名才能断言它们被丢掉
+ALLOWED_FATIGUE_MENTIONS = {
+    "config_store.py",
+    "time_context.py",
+    "test_qq_attention_key_migration.py",
+}
 
 
 @pytest.mark.parametrize(
@@ -99,6 +106,7 @@ def test_fatigue_config_keys_are_listed_as_zombies():
         "fatigue_circadian_low_hour",
         "fatigue_session_per_reply",
         "fatigue_awake_idle_timeout",
+        "fatigue_tiers",
     ):
         assert key in zombies, f"{key} 应列入僵尸键名单"
 
