@@ -298,6 +298,30 @@ class QQSessionMemoryService:
             len(user_data.get("pending_settle_buckets") or {}),
         )
 
+    #: 同步给 Memory Server 的**单条消息**上限（字符）。
+    #:
+    #: 为什么必须有 —— 2026-09-26 真机实测（私聊、开放平台）。用户把一个 13981 字符的
+    #: 文件发给猫娘，链路是：
+    #:
+    #:   附件正文并进消息正文 → 会话历史里是一条 human 行 → **逐字**同步给
+    #:   Memory Server → 服务端 bootstrap 的"最近对话"块**逐字**回灌 → 进
+    #:   system prompt 的「核心记忆」段
+    #:
+    #: 每发一次文件就多一份，而且**跨重启存活**（在服务端）。当时用临时插桩量到的
+    #: 分段时间线（`system_instruction_service` 每段长度，见 §4.0ae）：
+    #:
+    #:   13:06:21  total=12550  核心记忆= 4505
+    #:   13:06:35  total=12596  核心记忆= 4514   ← 刚收到那个文件
+    #:   13:07:01  total=25303  核心记忆=17221   ← +12707，**全在核心记忆这一段**
+    #:
+    #: 同样的动作做三次就把每轮 prompt 从 12.5k 抬到 50.7k，而每一轮都在为同一段
+    #: 文本付费。记忆要的是"够提取事实"，不是原文存档，所以这里按量截断。
+    #:
+    #: **只截同步出去的那一份**：会话历史对象一个字节都不动，本轮她照样读得到全文
+    #: （`conversation_slice_to_memory_messages` 返回的是新 dict，且下面用的是局部
+    #: 变量 `text`）。
+    MEMORY_MESSAGE_MAX_CHARS = 4000
+
     def conversation_slice_to_memory_messages(
         self, conversation_history: list, start_index: int = 0,
         *, user_data: dict[str, Any] | None = None,
@@ -340,6 +364,14 @@ class QQSessionMemoryService:
                 text = _strip_internal_markup(text)
             if not text:
                 continue
+            # 单条过长就截断（见 MEMORY_MESSAGE_MAX_CHARS 的实测）。截断要留痕：
+            # 记忆里看不出"这条被砍过"的话，事后没人能解释为什么她只记得开头。
+            if len(text) > self.MEMORY_MESSAGE_MAX_CHARS:
+                dropped = len(text) - self.MEMORY_MESSAGE_MAX_CHARS
+                text = (
+                    text[:self.MEMORY_MESSAGE_MAX_CHARS]
+                    + f"\n…（本条过长，已省略后 {dropped} 字）"
+                )
             memory_messages.append({
                 "role": role,
                 "content": [{"type": "text", "text": text}],
