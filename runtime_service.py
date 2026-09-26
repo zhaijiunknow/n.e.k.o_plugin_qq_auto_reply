@@ -67,7 +67,6 @@ class QQRuntimeService:
             "target_scope": target_state["conversation_scope"],
             "target_id": target_state["conversation_id"],
             "operator_target_id": target_state["operator_target_id"],
-            "suppression_reason": str(getattr(request, "suppression_reason", "") or ""),
             **target_state,
             "summary": {},
             "traces": traces,
@@ -246,7 +245,6 @@ class QQRuntimeService:
             "result_kind": self._derive_result_kind(action=action, traces=traces),
             "delivery_mode": self._derive_delivery_mode(action=action, delivery_target_id=delivery_target_id),
             "response_length": len(response_text),
-            "suppression_reason": str(entry.get("suppression_reason") or ""),
         }
 
     def _derive_result_kind(self, *, action: str, traces: list[dict[str, Any]]) -> str:

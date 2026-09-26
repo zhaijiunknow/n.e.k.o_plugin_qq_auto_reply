@@ -5,7 +5,6 @@ from typing import Any, Optional
 
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import QQReplyRequest
-from .reply_necessity import classify_addressee
 
 #: 开放平台通道的观测值。真相在 ``QQOpenPlatformConnection.CHANNEL``，这里抄一
 #: 份而不是 import，是为了不把 websockets / httpx 拖进本模块的导入链；两者相
@@ -423,70 +422,6 @@ class QQMessageDispatcher:
                     return True
         return False
 
-    @staticmethod
-    def _looks_like_human_followup(message_text: str) -> bool:
-        """兼容包装：真正的判定在 ``reply_necessity.classify_addressee``。
-
-        以前这里是一段只看长度/前缀/问号的内联启发式（「像不像接话」只有一个是/否）。
-        现在它返回**结构化指向**（接话/提问/短反应/长文），本方法只取其中的布尔位，
-        以便老调用点与既有测试继续按原契约工作。
-        """
-        return classify_addressee(message_text).is_likely_human_followup
-
-    @staticmethod
-    def _legacy_looks_like_human_followup(message_text: str) -> bool:
-        normalized = str(message_text or "").strip()
-        if not normalized:
-            return False
-        compact = "".join(normalized.split())
-        if len(compact) >= 36:
-            return False
-        followup_prefixes = (
-            "不是", "对", "行", "那", "所以", "为啥", "为什么", "你这", "他这", "她这", "这样", "那你", "那他", "那她", "可是", "但是",
-        )
-        if compact.startswith(followup_prefixes):
-            return True
-        if compact.endswith(("?", "？", "!", "！")) and len(compact) <= 24:
-            return True
-        return len(compact) <= 12
-
-    async def _detect_group_interjection_suppression(
-        self,
-        *,
-        group_id: str,
-        sender_id: str,
-        message_text: str,
-        is_at_bot: bool,
-        current_message_id: str,
-        quoted_message_id: str,
-        mentions_other_user: bool,
-        message_timestamp: int,
-    ) -> str:
-        if is_at_bot:
-            return ""
-        if quoted_message_id:
-            return "reply_other_user"
-        if mentions_other_user:
-            return "mention_other_user"
-        if not self._looks_like_human_followup(message_text):
-            return ""
-        recent_messages = await self.plugin.backlog_store.get_recent_group_messages(
-            group_id,
-            limit=4,
-            exclude_message_id=current_message_id,
-        )
-        for recent in reversed(recent_messages):
-            recent_sender_id = str(recent.get("sender_id") or "").strip()
-            if not recent_sender_id or recent_sender_id == sender_id:
-                continue
-            if bool(recent.get("is_at_bot")):
-                continue
-            recent_timestamp = int(recent.get("timestamp") or 0)
-            if message_timestamp and recent_timestamp and message_timestamp - recent_timestamp > 60:
-                return ""
-            return "recent_human_followup"
-        return ""
-
     async def process_messages(self):
         while self.plugin._running:
             try:
@@ -691,11 +626,9 @@ class QQMessageDispatcher:
                 )
                 return
         await self.plugin.backlog_service.record_message(message)
-        if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
-            if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
-                # neko_dynamic 下由 attention_gate_service.evaluate() 统一更新注意力，此处跳过避免双倍计数
-                if self.plugin._strategy_mode != "neko_dynamic":
-                    await self.plugin.attention_service.update_on_message(message)
+        # 注意力的逐条更新统一由 attention_gate_service.evaluate() 负责（消息进管线时
+        # 调用），这里不再自己更新一次 —— 历史上那条分支只在非 neko_dynamic 模式下跑，
+        # 模式合并后它已经不可达。
         self.plugin._emit_log("INFO", f"收到消息: type={message.get('message_type')} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 消息活动 → SSE 通知前端刷新状态
         message_type = message.get("message_type")
@@ -925,12 +858,11 @@ class QQMessageDispatcher:
                 group_speaker_permission_level_at_receipt = (
                     permission_mgr.get_permission_level(str(sender_id))
                 )
-        strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
         # 新人入群：绕过门控，必定让猫娘欢迎
         if synthetic_source == "group_join_notice":
             force_reply = True
-        elif strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
+        elif hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
                 group_id=group_id,
                 sender_id=sender_id,
@@ -968,19 +900,8 @@ class QQMessageDispatcher:
                     await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
         group_scene_mode = "directed_user" if is_at_bot else "shared_context"
-        # 猫娘动态模式下跳过插话抑制检测（由注意力门控替代）
-        suppression_reason = ""
-        if strategy_mode != "neko_dynamic":
-            suppression_reason = await self._detect_group_interjection_suppression(
-                group_id=group_id,
-                sender_id=sender_id,
-                message_text=message_text,
-                is_at_bot=is_at_bot,
-                current_message_id=current_message_id,
-                quoted_message_id=quoted_message_id,
-                mentions_other_user=mentions_other_user,
-                message_timestamp=message_timestamp,
-            )
+        # 插话抑制已退役：它只在 neko_scene 下可达，而「该不该接」现在由
+        # reply_necessity 的必要性判定统一负责（见 docs/SESSION-HANDOFF.md §12）。
         group_memory_enabled = group_memory_at_receipt
         request = QQReplyRequest(
             message_text=message_text,
@@ -1000,10 +921,9 @@ class QQMessageDispatcher:
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
             reply_context=reply_context,
-            reply_message_id=current_message_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
-            at_user_id=sender_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
+            reply_message_id="",
+            at_user_id="",
             fallback_to_text_on_voice_failure=True,
-            suppression_reason=suppression_reason,
             force_reply=force_reply,
             use_memory_context=group_memory_enabled,
             persist_memory=group_memory_enabled,
@@ -1031,32 +951,22 @@ class QQMessageDispatcher:
                 await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
         # 焦点群/近焦点群：输出 LLM 自行判断的结果
-        if strategy_mode == "neko_dynamic" and not is_at_bot:
+        if not is_at_bot:
             if outcome.action == "reply" and outcome.reply_text:
                 self.plugin._emit_log("INFO", f"[LLM自判] 决定回复: {outcome.reply_text[:40]}")
             else:
                 self.plugin._emit_log("INFO", "[LLM自判] 决定不回复")
 
-        # neko_dynamic + NapCat: 回复后消耗注意力
-        if strategy_mode == "neko_dynamic" and outcome.action == "reply" and outcome.reply_text:
+        # NapCat: 回复后消耗注意力
+        if outcome.action == "reply" and outcome.reply_text:
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
                 if hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service:
                     await self.plugin.attention_gate_service.on_reply_sent(group_id)
 
-        # neko_scene: 原有 attention 更新逻辑
-        if strategy_mode != "neko_dynamic":
-            if getattr(self.plugin, "attention_service", None) and outcome.action == "reply" and outcome.reply_text:
-                await self.plugin.attention_service.update_on_reply(
-                    group_id,
-                    reply_message_id=str(request.reply_message_id or request.current_message_id or ""),
-                    at_user_id=str(request.at_user_id or ""),
-                )
-
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 
-        # neko_dynamic: 检查焦点切换，触发回溯补回
-        if strategy_mode == "neko_dynamic":
-            await self._run_focus_shift_check()
+        # 检查焦点切换，触发回溯补回
+        await self._run_focus_shift_check()
 
     async def _run_focus_shift_check(self) -> None:
         """neko_dynamic 下推进焦点切换并触发回溯补回。

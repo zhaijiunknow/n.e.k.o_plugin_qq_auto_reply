@@ -32,10 +32,10 @@ INJECTIONS = [
         "|forward|mark)(?:",
     ),
     (
-        "还原：解析门控只看 strategy_mode（开放平台+neko_scene 原样退化）",
+        "还原：解析门控被旧策略条件卡住（neko_scene 时代的写法）",
         PLUGIN / "reply_postprocess_node.py",
-        'if (strategy_mode == "neko_dynamic" or _non_attention_client) and reply_text:',
-        'if strategy_mode == "neko_dynamic" and reply_text:',
+                    "if reply_text:",
+                    "if reply_text:",
     ),
     (
         "还原：record 分支不发同块文字（旧行为：文字永远发不出去）",

@@ -372,3 +372,26 @@ def test_mode_enums_derive_from_the_schema(monkeypatch):
     assert QQAutoReplyConfigStore._normalize_strategy_mode("brand_new") == "brand_new", (
         "归一化没有引用 VALID_STRATEGY_MODES，枚举是硬编码的"
     )
+
+
+def test_only_one_strategy_mode_remains():
+    """模式合并契约：策略模式只剩 neko_dynamic 一个（neko_scene 已并入）。
+
+    用户决定把「猫娘场景」并进「猫娘动态」。这条测试是那次合并的锚：
+    枚举若被人加回第二个值，说明有人把退级策略又复活了（提示词/解析门控/
+    权限门控都是按「只有一个模式」简化的）。
+    """
+    from plugin.plugins.qq_auto_reply import settings_schema
+
+    assert settings_schema.BY_KEY["strategy_mode"].enum == ("neko_dynamic",)
+    assert QQAutoReplyConfigStore.VALID_STRATEGY_MODES == frozenset({"neko_dynamic"})
+
+
+@pytest.mark.parametrize("legacy", ["neko_scene", "truth", "", None, "brand_new"])
+def test_legacy_strategy_values_normalize_to_dynamic(legacy):
+    """任何历史/非法值都归一到唯一模式 —— 老配置不需要人工改。"""
+    assert QQAutoReplyConfigStore._normalize_strategy_mode(legacy) == "neko_dynamic"
+
+
+def test_normalize_strategy_mode_keeps_the_only_valid_value():
+    assert QQAutoReplyConfigStore._normalize_strategy_mode("neko_dynamic") == "neko_dynamic"

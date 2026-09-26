@@ -19,7 +19,6 @@ from .prompt_fragment_templates import (
     CHAT_ENV_PROMPT_SECTION,
     CORE_MEMORY_SECTION,
     DETAIL_CONSTRAINTS_SECTION,
-    FORMAT_PROMPT_SECTION,
     FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
     FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
     OUTPUT_PROMPT_SECTION,
@@ -95,7 +94,6 @@ class QQSessionInstructionService:
         {"id": "role",                  "i18n_key": "role_prompt_section",   "required_placeholders": [],                                "format_after": False},
         {"id": "attention",             "i18n_key": "attention_prompt_section", "required_placeholders": [],                            "format_after": False},
         {"id": "format_neko_dynamic",   "i18n_key": "format_prompt_section_neko_dynamic", "required_placeholders": ["{emoji_catalog}", "{sticker_catalog}"],  "format_after": True},
-        {"id": "format_neko_scene",     "i18n_key": "format_prompt_section", "required_placeholders": [],                               "format_after": False},
         {"id": "format_open_platform",  "i18n_key": "format_prompt_section_open_platform", "required_placeholders": ["{sticker_catalog}"], "format_after": True},
         {"id": "persona_wrapper",       "i18n_key": "character_prompt_section", "required_placeholders": ["{character_prompt}"],       "format_after": True},
         {"id": "time",                  "i18n_key": "time_prompt_section",   "required_placeholders": ["{time_str}"],                   "format_after": True},
@@ -409,15 +407,13 @@ class QQSessionInstructionService:
         def t(key, default):
             return self.plugin.i18n.t(key, default=default)
 
-        strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_open_plat = self.plugin.qq_client and not self.plugin.qq_client.needs_attention if self.plugin.qq_client else False
+        # 只剩两条路：开放平台段与动态策略段 —— 两者都教标签，所以下面统一套占位符。
         if is_open_plat:
             format_section = self._resolve_static_layer("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM, user_language)
-        elif strategy_mode == "neko_dynamic":
-            format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
         else:
-            format_section = self._resolve_static_layer("format_prompt_section", FORMAT_PROMPT_SECTION, user_language)
-        if is_open_plat or strategy_mode == "neko_dynamic":
+            format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
+        if True:  # noqa: SIM103 —— 保留原缩进结构，条件已恒真（neko_scene 合并后无「不填占位符」的路径）
             format_section = format_section.format(
                 emoji_catalog=self._load_emoji_catalog(),
                 sticker_catalog=self._load_sticker_catalog(),

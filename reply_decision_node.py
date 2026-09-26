@@ -79,22 +79,5 @@ class QQReplyDecisionNode:
             kwargs["attention_gate_reason"] = "attention_gate"
             return QQReplyDecision(action="reply", **kwargs)
 
-        # N.E.K.O 退级策略：原有完整权限门控
-        group_level = self.plugin.group_permission_mgr.get_group_level(group_id) if self.plugin.group_permission_mgr else "none"
-        if group_level == "none":
-            return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="permission_none")
-        if group_level == "normal":
-            # 与 neko_dynamic 同口径：@ 或引用她 → 回，否则转发给主人。
-            if not (request.is_at_bot or request.is_reply_to_bot):
-                relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
-                return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
-            kwargs = self._decision_kwargs(request, group_level, attention)
-            kwargs["attention_gate_reason"] = "normal_at_bot"
-            return QQReplyDecision(action="reply", **kwargs)
-        if attention["enabled"] and group_id and attention["focus_group_id"] and attention["focus_group_id"] != group_id and attention["multiplier"] <= 0.0 and not request.is_at_bot:
-            return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="attention_focus_other_group")
-        if group_level == "trusted" and not request.is_at_bot:
-            if attention["enabled"] and attention["multiplier"] < 0.9:
-                return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="attention_not_focused")
-            return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="trusted_no_at")
-        return QQReplyDecision(action="reply", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="at_bot_or_explicit")
+        # neko_scene（「退级策略」）已删除：现在只有动态注意力策略这一条路，
+        # 它的判定在 _decide_group 的 neko_dynamic 分支里（上方）。

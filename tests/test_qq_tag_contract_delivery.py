@@ -7,11 +7,14 @@
    `<ark title="…" desc="…">正文</ark>` 时，标签壳不在清洗白名单里 →
    **整段原始 XML 原样发到群里**。这是泄漏，不是丢弃。
 
-2. **`open_platform` + `neko_scene` 组合下解析整段被跳过**：格式段按平台选
+2. **（已修复）`open_platform` + `neko_scene` 组合下解析整段被跳过**：格式段按平台选
    （`session_instruction_service.py:388`，`is_open_plat` 优先），解析却只按
    `strategy_mode == "neko_dynamic"` 开门。该组合下提示词教了整套标签、
    解析器一个都不认 → `<at>123456</at>` 变成裸数字 `123456`（不是 @）、
    `<reply>114514</reply>` 变成裸 ID、`<sticker>5</sticker>` 只剩数字。
+   后来判据改成镜像提示词那一处；**再后来 neko_scene 本身被合并掉**
+   （用户决定：只保留动态注意力策略），解析门控如今只剩「有没有正文」这一个条件，
+   「教了标签却不认」在结构上不可能再出现。
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
 from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryPlan, QQMessageBlock
 from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
 from plugin.plugins.qq_auto_reply.reply_postprocess_node import QQReplyPostprocessNode
@@ -146,28 +148,24 @@ def _finalize(*, strategy: str, needs_attention: bool, raw: str):
 OPEN_PLAT_STYLE_OUTPUT = "<at>820040531</at> 收到~ <reply>114514</reply>"
 
 
-@pytest.mark.parametrize("strategy", ["neko_dynamic", "neko_scene"])
-def test_open_platform_parses_tags_under_both_strategies(strategy):
-    """开放平台：两种策略都必须解析标签（提示词在两种策略下都教了标签）。"""
-    outcome = _finalize(strategy=strategy, needs_attention=False, raw=OPEN_PLAT_STYLE_OUTPUT)
-    assert outcome.blocks, f"strategy={strategy} 下没有解析出任何块 —— 标签会退化成裸文本"
+def test_open_platform_parses_tags():
+    """开放平台：标签必须被解析（提示词教了它们）。"""
+    outcome = _finalize(strategy="neko_dynamic", needs_attention=False, raw=OPEN_PLAT_STYLE_OUTPUT)
+    assert outcome.blocks, "没有解析出任何块 —— 标签会退化成裸文本"
     block = outcome.blocks[0]
-    assert block.at_user == "820040531", (
-        f"strategy={strategy} 下 @ 没解析出来，用户会看到裸 QQ 号"
-    )
-    assert block.reply_to == "114514", (
-        f"strategy={strategy} 下引用没解析出来，用户会看到裸消息 ID"
-    )
+    assert block.at_user == "820040531", "@ 没解析出来，用户会看到裸 QQ 号"
+    assert block.reply_to == "114514", "引用没解析出来，用户会看到裸消息 ID"
 
 
-def test_napcat_neko_scene_still_does_not_parse():
-    """NapCat + neko_scene 的既有行为不变：不解析，原样走纯文本。"""
-    outcome = _finalize(
-        strategy="neko_scene", needs_attention=True, raw=OPEN_PLAT_STYLE_OUTPUT
-    )
-    assert not outcome.blocks, (
-        "NapCat + neko_scene 本就不该走 XML 标签解析，这条是防回归"
-    )
+def test_napcat_also_parses_tags():
+    """NapCat 同样解析：模式合并后唯一策略就是动态注意力策略，它教标签也认标签。
+
+    历史上这里有一条「NapCat + neko_scene 不解析」的防回归断言 —— 那个组合已经
+    不存在（neko_scene 被合并掉），所以断言反过来：现在必须解析。
+    """
+    outcome = _finalize(strategy="neko_dynamic", needs_attention=True, raw=OPEN_PLAT_STYLE_OUTPUT)
+    assert outcome.blocks, "NapCat 下标签必须被解析（提示词教了它们）"
+    assert outcome.blocks[0].at_user == "820040531"
 
 
 # ── 3. `<record>` 与 `<text>` 同块：两者都要发 ───────────────────────

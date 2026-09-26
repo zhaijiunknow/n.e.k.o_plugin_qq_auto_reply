@@ -1501,18 +1501,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 if is_napcat:
                     if lid == "format_open_platform":
                         continue
-                    if lid == "format_neko_dynamic" and strategy_mode != "neko_dynamic":
-                        continue
-                    if lid == "format_neko_scene" and strategy_mode != "neko_scene":
-                        continue
+                    # neko_dynamic 是唯一策略 → format_neko_dynamic 永远显示；
+                    # format_neko_scene 层已随模式合并删除。
                 else:
                     # 开放平台只显示 format_open_platform
                     if lid != "format_open_platform":
                         continue
-            # NapCat 按策略模式过滤 scene 层
-            if is_scene and strategy_mode == "neko_dynamic":
-                if lid not in ("scene_group_dynamic",):
-                    continue
+            # NapCat：scene 层只保留 scene_group_dynamic（策略已单值）
+            if is_scene and lid not in ("scene_group_dynamic",):
+                continue
             # 开放平台跳过 scene/naming 层
             if not is_napcat and is_scene:
                 continue

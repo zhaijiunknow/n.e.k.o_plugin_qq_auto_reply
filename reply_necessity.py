@@ -126,56 +126,6 @@ def is_short_reaction_batch(text: str) -> bool:
     return True
 
 
-#: 接话前缀（原 ``_looks_like_human_followup`` 的内联表，逐字保留）。
-FOLLOWUP_PREFIXES = (
-    "不是", "对", "行", "那", "所以", "为啥", "为什么", "你这", "他这", "她这",
-    "这样", "那你", "那他", "那她", "可是", "但是",
-)
-
-#: 原内联规则的长度阈值（逐字保留，行为不变）。
-FOLLOWUP_LONG_TEXT = 36
-FOLLOWUP_SHORT_TEXT = 12
-FOLLOWUP_QUESTION_MAX = 24
-
-
-@dataclass(frozen=True, slots=True)
-class AddresseeVerdict:
-    """一条消息「大概在跟谁说话」的结构化判断。
-
-    比原先那个布尔多出来的就是 ``kind`` 与 ``reason``：排查时能看出**为什么**判成接话，
-    而不是只看到一个 True/False。
-    """
-
-    kind: str          # human_followup | short_reaction | question | long_text | plain
-    is_likely_human_followup: bool
-    reason: str
-
-
-def classify_addressee(text: str) -> AddresseeVerdict:
-    """判断这条消息是否「像是群友在跟别人接话」（而不是在对她说）。
-
-    行为与替换前的 ``_looks_like_human_followup`` **逐条一致**（长度阈值、前缀表、
-    问号结尾规则都照搬），只是把结论结构化了。调研结论已说明这条规则本身是弱基线
-    （长会话 Acc 13%，见模块 docstring），所以它现在只作为**信号之一**，
-    真正的判定交给 ``score_necessity``。
-    """
-    normalized = strip_noise(text)
-    if not normalized:
-        return AddresseeVerdict("plain", False, "空消息")
-    compact = normalized.replace(" ", "")
-    if compact.startswith(FOLLOWUP_PREFIXES):
-        return AddresseeVerdict("human_followup", True, "接话前缀")
-    if is_short_reaction_batch(compact):
-        return AddresseeVerdict("short_reaction", True, "短反应")
-    if compact.endswith(("?", "？", "!", "！")) and len(compact) <= FOLLOWUP_QUESTION_MAX:
-        return AddresseeVerdict("question", True, "短问句")
-    if len(compact) >= FOLLOWUP_LONG_TEXT:
-        return AddresseeVerdict("long_text", False, "长文")
-    if len(compact) <= FOLLOWUP_SHORT_TEXT:
-        return AddresseeVerdict("human_followup", True, "短句")
-    return AddresseeVerdict("plain", False, "普通长度")
-
-
 @dataclass(frozen=True, slots=True)
 class NecessitySignals:
     """判定输入。全部由调用方提供，模块本身不取任何数据。"""

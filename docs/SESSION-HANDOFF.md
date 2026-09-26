@@ -3265,3 +3265,79 @@ watchdog、fail-to-pass 变异证据、真机验证、文档与提交。
 2. 队列剩余：合并 `neko_scene`/`neko_dynamic`；注意力 B 档砍状态字段。
 3. 可选增强：把 `quantized` 的「接话反馈」（她说完之后群里是否有反应）回灌存在感/频率，
    形成闭环 —— 调研里 MaiBot 的同类闭环只影响「怎么说」，不影响「要不要说」。
+
+---
+
+## 13. 策略模式合并（neko_scene → neko_dynamic）+ B 档据实收窄
+
+### 13.1 做了什么
+
+用户口径：「猫娘场景和猫娘动态可以合起来」。做法是**只保留动态注意力策略**，
+配置里残留的 `"neko_scene"` 由 `_normalize_strategy_mode` 自动归一到 `neko_dynamic`
+（老配置不用人工改）。
+
+| 位置 | 改动 |
+|---|---|
+| `settings_schema` | `strategy_mode` 枚举收敛为 `("neko_dynamic",)` |
+| `message_dispatcher` | 删掉 6 处 `neko_scene` 分支：注意力逐条更新（现统一由门控负责）、门控调用条件、`reply_message_id/at_user_id` 的 directed-user 分支、回复后注意力更新、焦点切换检查改为无条件 |
+| `reply_decision_node` | 删掉整段「退级策略」（原 `neko_scene` 的完整权限门控），只剩动态这一条路 |
+| `reply_postprocess_node` | 解析门控不再看策略：`if (strategy_mode == "neko_dynamic" or _non_attention_client)` → `if reply_text:`。「提示词教了标签、解析器不认」的组合结构上不再可能 |
+| `session_instruction_service` | 删掉 `format_neko_scene` 层与不可达的兜底分支 |
+| `__init__`（提示词编辑器） | 去掉按策略过滤 `format_*` / scene 层的死分支 |
+| 前端两个 html | 策略下拉去掉 `neko_scene` 选项；`state.strategy` 固定为 `neko_dynamic` |
+| i18n 两个 bundle | 删 2 个已无引用的 neko_scene 文案键 |
+
+**顺带退役了整条插话抑制链**（它只在 `neko_scene` 下可达）：`_detect_group_interjection_suppression`、
+它的布尔启发式 `_looks_like_human_followup`、`reply_necessity` 里那个已无人调用的
+`classify_addressee`/`AddresseeVerdict`，以及 `QQReplyRequest.suppression_reason`
+字段与其全部消费者（`reply_pipeline` / `runtime_service` 的 trace）。
+「该不该接」现在统一由 §12 的必要性判定负责。
+
+**仍未收的小尾巴**（诚实列出）：`napcat.html` 里那个 `display:none` 的
+`scene-prob-card` 与 `ui.shared.card.scene_prob` 文案键、`config_store`/
+`attention_service` 注释里各提了一次 `neko_scene`（叙述历史用，保留）。
+
+### 13.2 B 档：我之前的说法被自己的审计推翻
+
+先前我说「`emotion_display*` 与 4 个兼容层都零生产消费者」。这次逐项核实（含前端与
+i18n）后发现**只对了一半**：
+
+- `emotion_display` / `emotion_display_until`：**前端 `napcat.html` 在读**（她当前心情
+  标签，停留 120s 比逻辑衰减慢）→ **不能删**。
+- `dimension_dict` / `dominant_dimension`：喂焦点快照与提示词「相位」行 → **不能删**。
+- 真正无人读的只有：`recompute_score`、`dimension_label`、`total_interactions`（只在
+  内部自增与序列化）→ 已删。
+
+教训：**「零消费者」的判定必须把前端与 i18n 一起扫**，只扫 `.py` 会得出错误结论。
+
+### 13.3 验证
+
+- 全量回归 **1167 passed**、CI 门禁 ruff 通过。
+- 新增契约测试：`test_only_one_strategy_mode_remains`（枚举单值 + `VALID_STRATEGY_MODES`
+  由真源派生）、`test_legacy_strategy_values_normalize_to_dynamic`（5 个历史/非法值）、
+  标签契约测试改为「NapCat 也必须解析标签」（旧断言「neko_scene 不解析」的前提已消失）。
+- 变异验证 **2/2**：枚举里把 `neko_scene` 加回来 → 契约测试红；解析门控改 `if False:` →
+  `test_napcat_also_parses_tags` 红；均逐字节还原后全绿。
+- 真机：`POST /plugin/qq_auto_reply/reload` 重载（第 6 次启动，02:23:19），NapCat 起、
+  无报错；配置 `strategy_mode = neko_dynamic`、信任名单与群级别完好。
+
+### 13.4 本轮三次自伤（都记下来）
+
+1. **按行号删段把定义一起吃了**：我用「从 A 到下一个 `def`」的循环删 `classify_addressee`，
+   结果把中间的 `NecessitySignals`/`NecessityBreakdown`/`NecessityVerdict` 三个 dataclass
+   一并删掉 → 全仓 ImportError。修复：`git checkout HEAD -- reply_necessity.py` 还原后
+   用**精确锚点**（到下一个 `@dataclass … NecessitySignals` 之前）重删。
+   ⚠️ 插件是**独立 git 仓库**，checkout 要在插件目录里做（我第一次写成了宿主仓库路径）。
+2. **「过滤掉所有 `@staticmethod`」误伤两个方法**：为了处理被删函数的装饰器，我写了
+   `[ln for ln in lines[:start] if not ln.strip().startswith("@staticmethod")]` ——
+   它把**前面所有** staticmethod 装饰器都删了，`_evict_stalest_claim_group` 与
+   `_resolve_open_platform_group_key` 因此变成实例方法（开放平台身份那 8 个测试全红）。
+   修复：按 HEAD 对比 `@staticmethod` 归属，补回两行。
+   **教训：永远不要写「在某个前缀区间里过滤掉某类行」的编辑**——它没有边界。
+3. **CRLF 锚点坑又踩两次**（`FORMAT_PROMPT_SECTION` 导入的删除、变异脚本的锚点）。
+   所有锚点助手都要按文件真实换行风格适配。
+
+### 13.5 队列剩余
+
+- 注意力简化 D 档（参数可调面收敛）与 C 档（门控出口合并）——用户尚未点名要做。
+- 可选：接话反馈闭环（把「她说完之后群里的反应」回灌存在感/频率）。

@@ -310,7 +310,6 @@ class QQReplyPostprocessNode:
         if raw_reply_text and not reply_text:
             self.plugin._emit_log("INFO", f"[Sanitize] {len(raw_reply_text)}字被清除: {raw_reply_text[:100]}")
 
-        strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         blocks: list[QQMessageBlock] = []
         emoji_reaction_id = ""
         feeling = ""
@@ -319,25 +318,10 @@ class QQReplyPostprocessNode:
         forward_count = 0
         mark_flag = False
 
-        # 门控必须与「提示词有没有教模型用这些标签」一致，而不是只看策略。
-        #
-        # `session_instruction_service.py:388-394` 是**按平台优先**选格式段的：
-        # 开放平台一定拿到 `FORMAT_PROMPT_SECTION_OPEN_PLATFORM`，里面完整教了
-        # `<at>/<reply>/<sticker>/<keyboard>/<ark>`。而这里以前只按
-        # `strategy_mode == "neko_dynamic"` 开门 —— 于是「开放平台 + neko_scene」
-        # 这个组合下，提示词教了一整套标签、解析器一个都不认：`<at>123456</at>`
-        # 被剥成裸数字 `123456` 发给用户（不是 @），`<reply>114514</reply>` 变成
-        # 裸 ID，`<sticker>` 只剩 ID 数字且表情包根本不发。两个开关在界面上都能选
-        # 且互不联动（`config_store.py` 的 VALID_STRATEGY_MODES、两个 html 的策略下拉）。
-        #
-        # 判据直接镜像提示词那一处（`is_open_plat or neko_dynamic`），这样两边的
-        # 条件以后不会再各自漂移。neko_scene + NapCat 的行为完全不变
-        # （`needs_attention` 为 True ⇒ 不解析，仍走纯文本）。
-        _non_attention_client = bool(
-            getattr(self.plugin, "qq_client", None)
-            and not getattr(self.plugin.qq_client, "needs_attention", True)
-        )
-        if (strategy_mode == "neko_dynamic" or _non_attention_client) and reply_text:
+        # 只要提示词教了标签就解析 —— 模式合并后这一点结构上成立：唯一策略
+        # （neko_dynamic）与开放平台都教标签，neko_scene 这个「教了标签却不认」的
+        # 组合已经不存在。
+        if reply_text:
             import re
             # --- 提取独立标签（仅限 <msg> 之外的标签，不碰块内内容）---
             # 计算 <msg> 块区间，辅助判断标签是否在块外
@@ -468,7 +452,7 @@ class QQReplyPostprocessNode:
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
                 post_tool_text=post_tool_text,
-                postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
+                postprocess_reason="reply_xml",
                 blocks=blocks,
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
                 feeling=feeling,
@@ -494,9 +478,8 @@ class QQReplyPostprocessNode:
                 forward_count=forward_count,
                 forward_mark=mark_flag,
             )
-        strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_forced = getattr(context, "force_reply", False) or context.permission_level == "admin"
-        if strategy_mode == "neko_dynamic" and not is_forced:
+        if not is_forced:
             return QQReplyOutcome(
                 action="reply",
                 reply_text=None,

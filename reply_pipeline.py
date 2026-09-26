@@ -57,7 +57,6 @@ class QQReplyPipelineRunner:
                 "group_id": str(request.group_id or ""),
                 "sender_id": request.sender_id,
                 "group_scene_mode": request.group_scene_mode,
-                "suppression_reason": request.suppression_reason,
                 "quoted_message_id": request.quoted_message_id,
                 "mentioned_user_ids": list(request.mentioned_user_ids or []),
                 "attention_enabled": decision.attention_enabled,

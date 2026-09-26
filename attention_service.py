@@ -87,16 +87,11 @@ class QQGroupAttentionState:
     #: （这正是本模块此前调不明白的原因，见 docs/attention-redesign-draft.md §4）。
     lock_until: int = 0
     last_focus_reason: str = ""
-    total_interactions: int = 0
     # ── 情绪 ──
     emotion: str = "calm"             # 取值见 _EMOTION_MULTIPLIER（唯一真源）
     emotion_updated_at: int = 0
     emotion_display: str = "calm"     # 前端展示用标签，衰减比 logic emotion 慢
     emotion_display_until: int = 0
-
-    def recompute_score(self) -> float:
-        """兼容接口：注意力即标量，无需加权计算。"""
-        return self.attention_score
 
     def dimension_dict(self) -> dict[str, float]:
         """展示用：标量 + 相位 + 情绪是否活跃。"""
@@ -105,9 +100,6 @@ class QQGroupAttentionState:
             "phase": 1.0 if self.phase == "rise" else 0.0,
             "emotion": 1.0 if self.emotion != "calm" else 0.0,
         }
-
-    def dimension_label(self, key: str) -> str:
-        return {"attention": "注意力", "phase": "相位", "emotion": "情绪"}.get(key, key)
 
     def dominant_dimension(self) -> str:
         """用于解释焦点原因：当前相位。"""
@@ -128,7 +120,6 @@ class QQGroupAttentionState:
             "steady_since": int(self.steady_since),
             "lock_until": int(self.lock_until),
             "last_focus_reason": str(self.last_focus_reason or ""),
-            "total_interactions": int(self.total_interactions),
             "emotion": str(self.emotion or "calm"),
             "emotion_updated_at": int(self.emotion_updated_at),
             "emotion_display": str(self.emotion_display or "calm"),
@@ -155,7 +146,6 @@ class QQGroupAttentionState:
             steady_since=int(data.get("steady_since") or 0),
             lock_until=int(data.get("lock_until") or 0),
             last_focus_reason=str(data.get("last_focus_reason") or ""),
-            total_interactions=int(data.get("total_interactions") or 0),
             emotion=str(data.get("emotion") or "calm"),
             emotion_updated_at=int(data.get("emotion_updated_at") or 0),
             emotion_display=str(data.get("emotion_display") or "calm"),
@@ -635,7 +625,6 @@ class QQAttentionService:
 
         state = self._apply_decay(self._load_state(group_id), now, is_focus=(group_id == focus_group_id))
         state.last_message_at = now
-        state.total_interactions = min(99999, int(state.total_interactions or 0) + 1)
 
         # 消息加速增长：@ 最强，问题次之，普通消息基础加成
         boost = self._message_boost()

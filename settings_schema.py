@@ -399,9 +399,10 @@ MISC = (
     SettingSpec("backlog_labels", "list", DEFAULT_BACKLOG_LABELS, saveable=True,
                 description="save：关键词/优先级标签表", handler="backlog_labels"),
     # ── 策略 ──
-    # "neko_dynamic" | "neko_scene" —— 主策略 / 退级策略。
+    # 只剩一个策略模式（用户决定把 neko_scene「退级策略」并入 neko_dynamic）。
+    # 配置里残留的旧值 "neko_scene" 由 config_store._normalize_strategy_mode 归一过来。
     SettingSpec("strategy_mode", "str", "neko_dynamic", saveable=True,
-                enum=("neko_dynamic", "neko_scene"), description="save：策略模式",
+                enum=("neko_dynamic",), description="save：策略模式（仅动态注意力策略）",
                 handler="strategy_mode"),
     SettingSpec("neko_dynamic_idle_timeout_seconds", "float", 10.0, floor=0.0,
                 description="已废弃（注意力系统下不再使用）"),
