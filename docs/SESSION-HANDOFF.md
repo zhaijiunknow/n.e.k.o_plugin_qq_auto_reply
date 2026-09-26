@@ -2746,6 +2746,25 @@ Plugin writer_power_analysis runtime_auto_start overridden by user preference: F
 
 ## 5. 插件外：只有一处，**未落地**
 
+> **已落地的一处环境修复（19:07，使用者批准后做的）**：本机**源码版长期没有向量模型** ——
+> `D:\NekoClaw\N.E.K.O\data\embedding_models` 整个不存在（`git ls-files data` 为空：这些资产
+> 从来不进仓库，官方做法是跑一次 `scripts/prepare_embedding_model.py`）。后果是记忆服务每次
+> 启动都 `EmbeddingService: vectors disabled (model_file_missing)`，**召回实际只有 BM25 那半**
+> （今天 17 条 `hybrid_recall` 全是 `emb passed 0`）—— 这正好解释了"宽泛问题召回不到当天的事"。
+> 历史日志对齐：打包版（Steam 自带该目录）那些天 `ready`，源码版那些天 `model_file_missing`。
+>
+> 已按官方命令装好（int8 变体，共 252.2MB；HF 直连读超时 → 脚本自动回退 `hf-mirror.com` 成功）：
+> `prepare_embedding_model.py --repo jinaai/jina-embeddings-v5-text-nano-retrieval
+> --revision ac5d898c8d382b17167c33e5c8af644a3519b47d --profile-id local-text-retrieval-v1
+> --output-root data/embedding_models --variant int8`
+>
+> 验证（`.dsh-artifacts/verify-embedding-install.py`，只读+在独立进程里加载，不碰宿主）：
+> `EmbeddingService: ready (model_id=local-text-retrieval-v1-256d-int8-mlen1024, ram=31.8GB,
+> vnni=True, avx2=True)`、`request_load -> True`、`embed() dim=256 norm=1.0000`。
+> 注意：加载是**懒**的（裸 `get_embedding_service()` 不会加载，要 `request_load()`），而且
+> 失败在进程内**粘性关闭** —— 所以必须重启记忆服务才生效；启动后 worker 会**批量回填**已有
+> 事实/反思/人设的向量。
+
 `memory/hybrid_recall.py` 的 **BM25 绝对阈值 bug**：
 
 - 现象：查询词在候选池里高频出现时 IDF 塌陷，**整侧命中一起跌破阈值 0.10，召回彻底为 0**（不是降级——embedding 不可用时 `_cosine_rank` 直接返回 `[]`）
