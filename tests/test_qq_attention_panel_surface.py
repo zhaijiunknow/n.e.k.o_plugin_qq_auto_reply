@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+"""D 档契约：面板只留 7 个行为旋钮，被冻结的 15 个键仍在、仍可改配置文件。"""
+from __future__ import annotations
+
+import pathlib
+import re
+
+PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
+
+#: 面板保留的 7 个「用户能自己推理」的行为旋钮（前端控件 id）。
+PANEL_CONTROLS = {
+    "cfg-att-focus-threshold",         # 夺冠资格线
+    "cfg-att-focus-send",              # 焦点保持线
+    "cfg-att-lock-seconds",            # @ 锁时长
+    "cfg-att-freq-target-gap",         # 目标消息间隔（频率自适应的参照）
+    "cfg-att-freq-min-mult",           # 频率倍率下限
+    "cfg-att-freq-max-mult",           # 频率倍率上限
+    "cfg-att-emotion-multipliers",     # 情绪倍率表
+}
+
+#: 被冻结（撤下面板）的键：仍在 schema 与 defaults 里，仍从配置文件读取。
+FROZEN_KEYS = (
+    "attention_max_score",
+    "attention_min_threshold",
+    "attention_batch_message_gain",
+    "attention_base_rise_rate",
+    "attention_message_boost",
+    "attention_keyword_boost_ratio",
+    "attention_honeymoon_seconds",
+    "attention_fall_seconds",
+    "attention_fall_rate",
+    "attention_consume_ratio",
+    "attention_fall_boost_attenuation",
+    "attention_at_bot_boost",
+    "attention_question_boost",
+    "attention_wake_boost_ratio",
+    "attention_decay_interval_seconds",
+)
+
+
+def _panel_ids() -> set[str]:
+    html = (PLUGIN_DIR / "static" / "napcat.html").read_text(encoding="utf-8")
+    return set(re.findall(r"""["'](cfg-att-[a-z0-9-]+)["']""", html))
+
+
+def test_panel_exposes_exactly_the_seven_behavior_knobs():
+    """面板可调面 = 7 个。多一个就说明有人把内部量又搬回界面了。"""
+    assert _panel_ids() == PANEL_CONTROLS, (
+        f"面板控件与契约不符：多了 {sorted(_panel_ids() - PANEL_CONTROLS)}，"
+        f"少了 {sorted(PANEL_CONTROLS - _panel_ids())}"
+    )
+
+
+def test_frozen_keys_still_exist_in_schema_defaults():
+    """「撤下面板」不等于删键：这些键仍在 defaults 里（否则老配置里的值会被丢弃）。"""
+    from plugin.plugins.qq_auto_reply import settings_schema
+
+    defaults = settings_schema.defaults()
+    missing = [k for k in FROZEN_KEYS if k not in defaults]
+    assert not missing, f"被冻结的键从 defaults 里消失了：{missing}"
+
+
+def test_frozen_keys_have_no_panel_control_but_stay_readable():
+    """冻结 = 没有 UIInput；键本身仍存在且可从配置文件读（可逆的简化）。"""
+    from plugin.plugins.qq_auto_reply import settings_schema
+
+    for key in FROZEN_KEYS:
+        spec = settings_schema.BY_KEY[key]
+        assert spec.ui is None, f"{key} 又被挂上面板控件了"
+        assert spec.default is not None, f"{key} 的默认值丢了"
+    # 保留的 7 个反过来必须有控件
+    for key in ("attention_focus_threshold", "attention_lock_seconds", "attention_emotion_multipliers"):
+        assert settings_schema.BY_KEY[key].ui is not None, f"{key} 的控件丢了"
+
+
+def test_frozen_defaults_keep_their_values():
+    """冻结只是不暴露，**值不能被顺手改掉** —— 这里钉住几个关键默认值。"""
+    from plugin.plugins.qq_auto_reply import settings_schema
+
+    expected = {
+        "attention_max_score": 10.0,
+        "attention_at_bot_boost": 3.0,
+        "attention_question_boost": 1.5,
+        "attention_consume_ratio": 0.1,
+    }
+    defaults = settings_schema.defaults()
+    for key, value in expected.items():
+        assert defaults[key] == value, f"{key} 的默认值被改动：{defaults[key]} != {value}"

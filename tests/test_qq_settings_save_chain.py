@@ -117,7 +117,9 @@ def test_the_parser_actually_finds_the_save_payload():
     payloads = _frontend_settings_payloads()
     assert payloads, "没解析出任何设置保存载荷，说明解析器失配了"
     biggest = max(payloads.values(), key=len)
-    assert len(biggest) >= 40, (
+    # 下限只是「证明解析器真找到了载荷」的防呆值，不是「载荷应有这么多键」。
+    # 面板在 D 档收缩后从 22 个注意力控件降到 7 个，因此下限跟着下调。
+    assert len(biggest) >= 25, (
         f"最大的载荷只有 {len(biggest)} 个键，前端保存表单应该远不止这些"
     )
     assert "onebot_url" in biggest or "reply_mode" in biggest, (

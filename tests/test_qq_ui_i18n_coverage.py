@@ -98,7 +98,9 @@ def test_no_user_visible_i18n_gap():
 def test_the_scanner_actually_scans_something():
     """先证明扫描器在干活 —— 解析失配会让上面那条空过。"""
     napcat = (STATIC / "napcat.html").read_text(encoding="utf-8")
-    assert len(_hint_keys(napcat)) >= 20, "一个 data-hint 都没扫到，解析器失配了"
+    # 防呆下限（证明正则在工作）。面板在 D 档收缩后注意力控件从 22 降到 7，
+    # hint 总数因此下降，故从 20 调到 10。
+    assert len(_hint_keys(napcat)) >= 10, "一个 data-hint 都没扫到，解析器失配了"
     # 界面代码几乎全用 `t('键','默认')` 这种带 fallback 的写法，所以"无 fallback"
     # 集合本来就该是空的 —— 用**总调用数**证明正则在工作，而不是拿这个集合卡阈值。
     total_t_calls = len(re.findall(r"\bt\(\s*['\"]", napcat))
