@@ -146,8 +146,8 @@ def test_focus_score_tracks_raw_attention_scalar():
     plugin = SimpleNamespace(
         _qq_settings={
             "enable_group_attention": True,
-            "group_attention_focus_threshold": 4,
-            "group_attention_min_threshold": 1,
+            "attention_focus_threshold": 4,
+            "attention_min_threshold": 1,
         },
         backlog_store=None,
         group_permission_mgr=None,
@@ -196,9 +196,9 @@ def test_rise_phase_does_not_clamp_above_focus_line():
             "attention_honeymoon_seconds": 60,
             "attention_fall_seconds": 240,
             "attention_fall_rate": 0.015,
-            "group_attention_max_score": 10.0,
-            "group_attention_focus_threshold": 4.0,
-            "group_attention_min_threshold": 1.0,
+            "attention_max_score": 10.0,
+            "attention_focus_threshold": 4.0,
+            "attention_min_threshold": 1.0,
         },
         backlog_store=None,
         group_permission_mgr=None,

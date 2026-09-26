@@ -145,8 +145,8 @@ async def run(data_dir: Path, messages_b: list[tuple[str, str, str]]) -> int:
         config_store = QQAutoReplyConfigStore(data_dir)
         config = await config_store.load()
         log(f"生产配置加载: {config_store.path}")
-        log(f"  焦点线 focus_threshold={config.get('group_attention_focus_threshold', 4.0)}, "
-            f"发送门控 focus_send_threshold={config.get('group_attention_focus_send_threshold', 2.0)}, "
+        log(f"  焦点线 focus_threshold={config.get('attention_focus_threshold', 4.0)}, "
+            f"发送门控 focus_send_threshold={config.get('attention_focus_hold_threshold', 2.0)}, "
             f"回溯上限 retroactive_review_max_messages={config.get('retroactive_review_max_messages', 30)}")
 
         facade = build_facade(data_dir, tmp_dir, config)
@@ -160,7 +160,7 @@ async def run(data_dir: Path, messages_b: list[tuple[str, str, str]]) -> int:
         # 3. 群 A 先成为焦点（注意力 ≥ 焦点线）
         attention.mark_focus(GROUP_A)
         _a = attention._load_state(GROUP_A)
-        _a.attention_score = float(config.get("group_attention_focus_threshold", 4.0))
+        _a.attention_score = float(config.get("attention_focus_threshold", 4.0))
         attention._write_state(_a)
         log(f"群 {GROUP_A} 成为焦点，score={_a.attention_score:.1f}")
 
@@ -179,7 +179,7 @@ async def run(data_dir: Path, messages_b: list[tuple[str, str, str]]) -> int:
         # 5. 群 B 注意力反超 → 焦点切到 B
         clock["now"] += 60
         _b = attention._load_state(GROUP_B)
-        _b.attention_score = float(config.get("group_attention_focus_threshold", 4.0)) + 2.0
+        _b.attention_score = float(config.get("attention_focus_threshold", 4.0)) + 2.0
         _b.last_message_at = clock["now"]
         attention._write_state(_b)
         gate._last_focus_group = GROUP_A  # 模拟接收时焦点是 A

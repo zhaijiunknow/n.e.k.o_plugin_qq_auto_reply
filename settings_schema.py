@@ -105,31 +105,31 @@ DEFAULT_BACKLOG_LABELS: list[dict[str, Any]] = [
 
 #: 注意力参数，按周期模型分组。
 ATTENTION = (
-    SettingSpec("group_attention_max_score", "float", 10.0, saveable=True,
+    SettingSpec("attention_max_score", "float", 10.0, saveable=True,
                 floor=1.0, ceiling=10.0, description="save：注意力分数上限",
                 ui=UIInput("cfg-att-max", min=1, max=10, step=0.5,
                            label="ui.attention.max_score", hint="ui.attention.max_score.hint")),
     # 下调焦点线时会把发送线一起收紧（见 settings_service），避免焦点群夺冠后
     # 被门控第 5 步一直拒之门外。
-    SettingSpec("group_attention_focus_threshold", "float", 4.0, saveable=True,
+    SettingSpec("attention_focus_threshold", "float", 4.0, saveable=True,
                 floor=0.1, description="save：焦点线（赢得焦点的资格线）",
                 handler="attention_focus_threshold",
                 ui=UIInput("cfg-att-focus-threshold", min=1, max=10, step=0.5,
                            label="ui.attention.focus_threshold", hint="ui.attention.focus_threshold.hint")),
     # 焦点群的「保持线」：低于焦点线、高于最低线。焦点线是夺冠资格线；发送门控若也用
     # 焦点线，焦点群回一条就跌破线被门控（见 attention_gate_service 门控第 5 步）。
-    SettingSpec("group_attention_focus_send_threshold", "float", 2.0, saveable=True,
-                floor=0.0, ceiling_key="group_attention_focus_threshold",
+    SettingSpec("attention_focus_hold_threshold", "float", 2.0, saveable=True,
+                floor=0.0, ceiling_key="attention_focus_threshold",
                 description="save：焦点发送门控线",
                 handler="attention_focus_send_threshold",
                 ui=UIInput("cfg-att-focus-send", min=0, max=10, step=0.5,
                            label="ui.attention.focus_send_threshold",
                            hint="ui.attention.focus_send_threshold.hint")),
-    SettingSpec("group_attention_min_threshold", "float", 1.0, saveable=True,
+    SettingSpec("attention_min_threshold", "float", 1.0, saveable=True,
                 floor=0.0, description="save：最低阈值（全群低于此线 = 全局休眠）",
                 ui=UIInput("cfg-att-min-threshold", min=0, max=5, step=0.5,
                            label="ui.attention.min_threshold", hint="ui.attention.min_threshold.hint")),
-    SettingSpec("group_attention_message_gain", "float", 0.25, saveable=True,
+    SettingSpec("attention_batch_message_gain", "float", 0.25, saveable=True,
                 floor=0.0, description="save：批量消息计数时每条消息的注意力增益",
                 ui=UIInput("cfg-att-msg-gain", min=0, max=3, step=0.05,
                            label="ui.attention.msg_gain", hint="ui.attention.msg_gain.hint")),

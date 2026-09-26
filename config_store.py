@@ -120,6 +120,44 @@ class QQAutoReplyConfigStore:
     def _normalize_strategy_mode(cls, value: Any) -> str:
         mode = str(value or "").strip().lower()
         return mode if mode in cls.VALID_STRATEGY_MODES else "neko_dynamic"
+
+    #: 两代注意力配置命名合并：旧 ``group_attention_*`` → 今天唯一一套
+    #: ``attention_*``。只搬运「旧名有值」的语义，搬完一律删旧名，否则
+    #: 配置文件里会长期并存两份同义键（这正是下面那批僵尸键的成因）。
+    _LEGACY_ATTENTION_KEY_MAP = {
+        "group_attention_max_score": "attention_max_score",
+        "group_attention_min_threshold": "attention_min_threshold",
+        "group_attention_focus_threshold": "attention_focus_threshold",
+        "group_attention_focus_send_threshold": "attention_focus_hold_threshold",
+        "group_attention_message_gain": "attention_batch_message_gain",
+    }
+
+    #: 只在 ``business_config.json`` 里留尸的键：schema、前端、任何 .py 都不再
+    #: 认识它们（实测全仓 0 命中），但因为 ``load()``/``save()`` 的 update 语义
+    #: 会一直随文件传递。不删就等于「配置里有一半注意力旋钮是假的」。
+    _LEGACY_ATTENTION_ZOMBIE_KEYS = (
+        "group_attention_decay_per_second",
+        "group_attention_focus_cooldown_seconds",
+        "group_attention_focus_lock_seconds",
+        "group_attention_focus_rise_seconds",
+        "group_attention_keyword_boost_scale",
+        "group_attention_message_recovery",
+        "group_attention_reply_penalty",
+    )
+
+    @classmethod
+    def _migrate_attention_keys(cls, settings: dict[str, Any]) -> None:
+        """就地合并两代注意力命名并清掉僵尸键。幂等，可反复调用。"""
+        for old, new in cls._LEGACY_ATTENTION_KEY_MAP.items():
+            if old not in settings:
+                continue
+            legacy_value = settings.pop(old)
+            # 新名已有值 ⇒ 以新名为准（它才是当前保存链路写的那个）；
+            # 新名缺失才搬运旧值，避免把用户调过的参数悄悄退回默认。
+            if new not in settings:
+                settings[new] = legacy_value
+        for zombie in cls._LEGACY_ATTENTION_ZOMBIE_KEYS:
+            settings.pop(zombie, None)
     def default_config(self) -> dict[str, Any]:
         """全部默认值。**唯一真相在 ``settings_schema.SETTINGS``**。
 
@@ -138,6 +176,9 @@ class QQAutoReplyConfigStore:
         payload = await read_json_async(self._path)
         if not isinstance(payload, dict):
             return self.default_config()
+        # 必须作用在**原始 payload** 上：下面 merged 会先用 default_config()
+        # 把新名填满，届时已无法区分「用户存过新名」与「schema 默认值」。
+        self._migrate_attention_keys(payload)
         merged = self.default_config()
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
@@ -172,6 +213,8 @@ class QQAutoReplyConfigStore:
         async with self._lock:
             normalized = self.default_config()
             normalized.update(dict(config or {}))
+            # 旧名一律丢弃、僵尸键一律不落盘（新名已在 default_config() 里）。
+            self._migrate_attention_keys(normalized)
             normalized["trusted_users"] = list(normalized.get("trusted_users") or [])
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
             # 见 load()：存量 trust 池只读透传，save 不重建、不归一。

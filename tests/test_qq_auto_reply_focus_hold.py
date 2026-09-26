@@ -22,10 +22,10 @@ def _make_service(groups=("A", "B")):
         ),
         _qq_settings={
             "enable_group_attention": True,
-            "group_attention_focus_threshold": 4.0,
-            "group_attention_focus_send_threshold": 2.0,
-            "group_attention_min_threshold": 1.0,
-            "group_attention_max_score": 10.0,
+            "attention_focus_threshold": 4.0,
+            "attention_focus_hold_threshold": 2.0,
+            "attention_min_threshold": 1.0,
+            "attention_max_score": 10.0,
         },
         _emit_log=lambda *a, **k: None,
     )

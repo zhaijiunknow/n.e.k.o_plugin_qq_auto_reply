@@ -305,7 +305,7 @@ class QQAttentionService:
 
     def _message_gain(self) -> float:
         """批量消息计数时每条消息的注意力增益。"""
-        return max(0.0, float(self._setting("group_attention_message_gain", 0.25)))
+        return max(0.0, float(self._setting("attention_batch_message_gain", 0.25)))
 
     def _honeymoon_seconds(self) -> int:
         """夺冠后继续上升的蜜月窗口（秒）。"""
@@ -324,10 +324,10 @@ class QQAttentionService:
         return min(1.0, max(0.0, float(self._setting("attention_consume_ratio", 0.10))))
 
     def _max_attention(self) -> float:
-        return float(self._setting("group_attention_max_score", 10.0))
+        return float(self._setting("attention_max_score", 10.0))
 
     def _focus_threshold(self) -> float:
-        return float(self._setting("group_attention_focus_threshold", 4.0))
+        return float(self._setting("attention_focus_threshold", 4.0))
 
     def _focus_send_threshold(self) -> float:
         """焦点群的发送门控线（默认 2.0）：低于焦点线、高于最低线。
@@ -337,10 +337,10 @@ class QQAttentionService:
         也用焦点线，焦点群回一条就跌破线、立刻被门控——焦点形同虚设。这里用
         更低的「焦点保持线」作为发送门控，让焦点群在合理注意力水平上继续回应。
         """
-        return float(self._setting("group_attention_focus_send_threshold", 2.0))
+        return float(self._setting("attention_focus_hold_threshold", 2.0))
 
     def _minimum_threshold(self) -> float:
-        return float(self._setting("group_attention_min_threshold", 1.0))
+        return float(self._setting("attention_min_threshold", 1.0))
 
     def _fall_boost_attenuation(self) -> float:
         """fall 相位里消息加成的衰减系数（0~1）：正在让位的群不会因刷屏而赖着不走。"""

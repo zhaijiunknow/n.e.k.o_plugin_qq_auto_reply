@@ -9,7 +9,7 @@
 于是**每次回复都把蜜月掐断**、逼这个群重新熬满 ``attention_fall_seconds``。
 用户配置下那是 240 秒，期间消息加成只剩 ``attention_fall_boost_attenuation``
 （0.3）、分数还按 ``attention_fall_rate`` 往下掉 —— 回复一次等于判这个群四分钟
-不说话，且分数注定跌破 ``group_attention_focus_send_threshold`` 的发送门控线，
+不说话，且分数注定跌破 ``attention_focus_hold_threshold`` 的发送门控线，
 后续消息全被 ``focus_low_attention`` 静默忽略（用户看到的就是"发一句就没有后文"）。
 
 回落本身没被删掉：它仍由 ``_advance_phase`` 依
@@ -28,10 +28,10 @@ from plugin.plugins.qq_auto_reply.attention_service import (
 
 #: 用户 business_config.json 里的实际注意力参数
 LIVE_SETTINGS = {
-    "group_attention_max_score": 10.0,
-    "group_attention_focus_threshold": 4.0,
-    "group_attention_focus_send_threshold": 2.0,
-    "group_attention_min_threshold": 1.0,
+    "attention_max_score": 10.0,
+    "attention_focus_threshold": 4.0,
+    "attention_focus_hold_threshold": 2.0,
+    "attention_min_threshold": 1.0,
     "attention_base_rise_rate": 0.02,
     "attention_message_boost": 0.15,
     "attention_honeymoon_seconds": 60,

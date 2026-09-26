@@ -20,10 +20,10 @@ from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService
 
 #: 使用真实 business_config.json 里的参数
 LIVE = {
-    "group_attention_max_score": 10.0,
-    "group_attention_focus_threshold": 4.0,
-    "group_attention_focus_send_threshold": 2.0,
-    "group_attention_min_threshold": 1.0,
+    "attention_max_score": 10.0,
+    "attention_focus_threshold": 4.0,
+    "attention_focus_hold_threshold": 2.0,
+    "attention_min_threshold": 1.0,
     "attention_base_rise_rate": 0.08,
     "attention_message_boost": 0.15,
     "attention_keyword_boost_ratio": 1.8,

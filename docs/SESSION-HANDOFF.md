@@ -2902,3 +2902,56 @@ git apply .dsh-artifacts/bm25-threshold-floor.patch
 3. **中文引号不要嵌进 f-string**（`"...「x」..."` 会提前终止字符串）。本会话犯过两次，
    都是 `SyntaxError`。改用别的引号或提前赋值。
 
+---
+
+## 9. 注意力简化 A 档：两代命名合并 + 清僵尸键（已落地）
+
+### 9.1 起因（一条被数据推翻的直觉）
+
+用户认为「注意力配置太多、太乱」。实测下来乱的不是**数量**，是**两代命名并存**：
+
+| 事实 | 证据 |
+|---|---|
+| 注意力配置键 29 个，其中 **7 个是僵尸** | 全仓（.py/.json/.md/.js/.html）搜这 7 个键 **0 命中**，但它们仍躺在 `business_config.json` 里 |
+| 僵尸键凭什么活着 | `config_store.load()`/`save()` 都是 `default_config().update(payload)`，**不认识的键会被原样带着走** |
+| 我此前据此报过一个**不存在的机制** | 「焦点锁 120s、焦点冷却 60s」读的正是这两个僵尸键；真机生效的只有 `attention_lock_seconds=90` |
+
+### 9.2 做了什么
+
+1. 5 个仍在生效的旧键改名到唯一命名空间 `attention_*`（`attention_max_score` /
+   `attention_min_threshold` / `attention_focus_threshold` /
+   `attention_focus_hold_threshold` / `attention_batch_message_gain`）。
+2. `config_store` 加 `_migrate_attention_keys()`：**作用于原始 payload**
+   （在 `default_config()` 合并之前，否则分不清「用户存过新名」与「schema 默认」），
+   旧名有值且新名缺失才搬运，然后一律删旧名；7 个僵尸键直接丢。`save()` 也过一遍。
+3. **前端补改名**：`static/napcat.html` 有「填表读键 / 存表写键 / 显示取值」三处硬编码键名
+   （11 处），只改后端会让面板静默失效。
+
+### 9.3 验证
+
+- 全量回归 **1094 passed**（基线 1088 + 新增 6 例），**零行为变化**（CI 门禁 ruff 通过）。
+- 新测试 `tests/test_qq_attention_key_migration.py`：迁移保值（用非默认值
+  6.5/3.25/8.0/0.5/0.9 断言，防「悄悄退回默认」）、新名优先、僵尸键不落盘、
+  幂等、**全仓旧名残留看门狗**、**前端 `cfg-att-*` 控件必须在 schema 注册**。
+- 变异验证 3/3 变红并逐字节还原：拿掉 `load()` 迁移 → 4 例红；前端改回旧名 → 红；
+  前端加一个未注册控件 → 红。
+- **真机只读演练**：当前 `business_config.json` 已是新名、旧名与僵尸键都为 0
+  （mtime 00:19:48，写入者未确认）。⚠️ 真机这 5 个值恰好都等于 schema 默认，
+  所以**这次真机检查证明不了「用户调过的值被保住」**——那一条只由单测覆盖。
+
+### 9.4 教训
+
+1. **配置键的「活/死」要看消费点，不能看配置文件**。配置文件里躺着的键可能早没人读了。
+2. **改配置键名必须同时查前端**（HTML 里常有硬编码键名），这次是脚本先命中才发现的。
+3. 迁移必须作用在 **payload** 上；作用在「默认值合并之后」的 dict 上会静默丢用户值。
+
+### 9.5 队列（用户已定的后续动作）
+
+1. 删疲劳/作息（含 `fatigue_service.py`、看板字段、i18n 键）——⚠️ `get_dynamic_time_context()`
+   寄生在该文件里，**必须先救出来**（它给提示词注入当前时间/星期/时段）。
+2. 权限收敛：删 `open` 级，只留 `normal`（只在被 @ 或引用她时回）/`trusted`（走注意力）；
+   1048307485 由 open 升 trusted；私聊保持一律回；概率键随之清理。
+3. 合并 `neko_scene` / `neko_dynamic` 两个策略模式。
+4. 注意力 B 档：砍状态字段（`total_interactions`、`emotion_display*`、4 个 `dimension_*`/`recompute_score` 兼容层已核实无生产消费者）。
+
+
