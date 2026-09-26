@@ -1525,41 +1525,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             i18n_key = layer_def.get("i18n_key", "")
             default_text = ""
             if not is_runtime:
-                from .prompt_fragment_templates import (
-                    ATTENTION_PROMPT_SECTION,
-                    CHARACTER_PROMPT_SECTION,
-                    DETAIL_CONSTRAINTS_SECTION,
-                    FORMAT_PROMPT_SECTION,
-                    FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
-                    FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
-                    OUTPUT_PROMPT_SECTION,
-                    ROLE_PROMPT_SECTION,
-                    TIME_PROMPT_SECTION,
-                )
-                from .scene_prompt_templates import (
-                    SCENE_COLLECTIVE_GROUP,
-                    SCENE_DIRECTED_GROUP,
-                    SCENE_KIRA_UNIFIED_GROUP,
-                    SCENE_PRIVATE_CHAT,
-                    SCENE_SHARED_GROUP,
-                )
-                default_map = {
-                    "role_prompt_section": ROLE_PROMPT_SECTION,
-                    "attention_prompt_section": ATTENTION_PROMPT_SECTION,
-                    "character_prompt_section": CHARACTER_PROMPT_SECTION,
-                    "time_prompt_section": TIME_PROMPT_SECTION,
-                    "detail_constraints_section": DETAIL_CONSTRAINTS_SECTION,
-                    "output_prompt_section": OUTPUT_PROMPT_SECTION,
-                    "format_prompt_section": FORMAT_PROMPT_SECTION,
-                    "format_prompt_section_neko_dynamic": FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
-                    "format_prompt_section_open_platform": FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
-                    "prompts.group.collective": SCENE_COLLECTIVE_GROUP,
-                    "prompts.group.directed": SCENE_DIRECTED_GROUP,
-                    "prompts.group.kira_unified": SCENE_KIRA_UNIFIED_GROUP,
-                    "prompts.group.shared_session": SCENE_SHARED_GROUP,
-                    "prompts.private.body": SCENE_PRIVATE_CHAT,
-                }
-                default_text = default_map.get(i18n_key, "")
+                # 层 → 模板的映射收口在 `prompt_fragment_templates.layer_default_templates()`：
+                # 编辑器回显与"bundle 有没有盖住模板"的看门狗共用一份真相源
+                # （内联副本漂了就等于没有闸，`core_memory_section` 那次就是这么漏的）。
+                from .prompt_fragment_templates import layer_default_templates
+
+                default_text = layer_default_templates().get(i18n_key, "")
             has_override = False
             effective_text = ""
             if not is_runtime:

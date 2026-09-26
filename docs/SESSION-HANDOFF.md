@@ -13,7 +13,7 @@
 三处"提示词承诺了但代码没接"的空链已接通；另修掉 10 处静默失效。
 
 **测试基线：681 passed / 0 failed**（本会话起点 501，全绿且无 skip/xfail）。
-**最新：1086 passed**（见 §4.0p…§4.0ai）。
+**最新：1088 passed**（见 §4.0p…§4.0ai）。
 
 | 主题 | 状态 |
 |---|---|
@@ -2740,6 +2740,32 @@ Plugin writer_power_analysis runtime_auto_start overridden by user preference: F
 
 证据：`tests/test_qq_memory_prompt_additions.py`（11 条）+ 回投那三条新测试；
 `verify_memory_prompt_additions_fail_to_pass.py` **6/6**；基线 1072 → **1086**。
+
+#### 同一条改动里挖出的坑：**bundle 文案会盖住 Python 模板**
+
+第一版改完，单测全绿、变异 6/6 —— 但**运行时一个字都没生效**。露馅的地方是去查真机的
+`prompt_editor`：`core_memory_section` 的 `effective_text` 里**没有** `{recall_hint}`。
+
+原因：`_resolve_static_layer` 的解析顺序是「用户覆盖 → **i18n bundle** → Python 默认模板」，
+而 `i18n/zh-CN.json` 与 `i18n/en.json` 里**各有一份 `core_memory_section` 的旧副本**。
+运行时用的是 bundle 那份，多出来的 `recall_hint=` 被 `str.format` **静默忽略** ——
+模板改了、`{recall_hint}` 也传了，提示词里什么都没有。这是本插件第 N 次"承诺了但没接上"，
+只是这次接缝在**本地化文案**这一层。
+
+处理：
+
+1. **补上两本 bundle** 的 `{recall_hint}`（并顺手审计：今天只有 `core_memory_section`
+   与 `prompts.group.kira_unified` 在 bundle 里有副本，后者的占位符与模板一致）；
+2. **把层 → 模板的映射收口成一份真相源**：原来它内联在 `__init__.py` 的编辑器分支里，
+   看门狗只能自己再抄一份（抄本漂了就等于没有闸）。现在统一走
+   `prompt_fragment_templates.layer_default_templates()`；
+3. **加看门狗**：凡是 bundle 里有副本的提示词层，其**占位符集合必须与 Python 模板一致**
+   （缺/多都红），并要求"至少检查到一条副本"（防止哪天所有副本被删掉、闸空转）；
+   外加一条结构检查：编辑器不许再内联 `default_map`；
+4. 变异证据扩到 **8/8**（新增两条：bundle 丢掉占位符；编辑器又内联一份映射）。
+
+**教训**：改了提示词模板/文案，**必须去真机看一眼 `prompt_editor` 的 `effective_text`**
+（或看 prompt 长度有没有真的变）—— 单测只证明"我以为的那份文本对"，证明不了"跑的是那份"。
 
 ---
 

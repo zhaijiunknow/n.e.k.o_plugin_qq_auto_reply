@@ -144,3 +144,54 @@ def test_the_pending_section_is_appended_to_the_prompt():
 
     assert "_build_pending_commitments_section(" in source
     assert "if pending_section:" in source and "sections.append(pending_section)" in source
+
+
+# ── 防漂移：bundle 文案会**盖住** Python 模板 ─────────────────────────────
+#
+# 这次踩到的坑：给 `CORE_MEMORY_SECTION` 加了 `{recall_hint}`，而 `i18n/*.json` 里各有一份
+# `core_memory_section` 的**旧副本**（没这个占位符）。`_resolve_static_layer` 的顺序是
+# 「用户覆盖 → bundle → Python 模板」，所以运行时用的是 bundle 那份，多出来的 kwarg 被
+# `format` 静默忽略 —— **改了等于没改**（真机 `prompt_editor` 的 effective_text 是这么露的）。
+# 这条看门狗把所有"bundle 里有副本"的提示词层逐一对齐占位符集合。
+
+def test_bundle_copies_of_prompt_layers_keep_the_same_placeholders():
+    import json
+    import re
+
+    from plugin.plugins.qq_auto_reply.session_instruction_service import QQSessionInstructionService
+
+    templates = tpl.layer_default_templates()
+    bundles = {
+        name: json.loads((_PLUGIN_DIR / "i18n" / f"{name}.json").read_text(encoding="utf-8"))
+        for name in ("zh-CN", "en")
+    }
+    layer_keys = {
+        layer.get("i18n_key") for layer in QQSessionInstructionService._PROMPT_LAYERS
+        if layer.get("i18n_key")
+    }
+
+    checked = 0
+    for key in sorted(layer_keys):
+        python_text = templates.get(key)
+        if python_text is None:
+            continue
+        expected = set(re.findall(r"\{([a-z_][a-z0-9_]*)\}", python_text))
+        for name, bundle in bundles.items():
+            if key not in bundle:
+                continue
+            checked += 1
+            actual = set(re.findall(r"\{([a-z_][a-z0-9_]*)\}", str(bundle[key])))
+            assert actual == expected, (
+                f"bundle[{name}]['{key}'] 的占位符与模板不一致："
+                f"缺 {sorted(expected - actual)} 多 {sorted(actual - expected)} —— "
+                f"bundle 会盖住模板，模板改了也不生效"
+            )
+    assert checked, "一个 bundle 副本都没检查到 —— 这条看门狗失去意义了"
+
+
+def test_the_editor_mapping_has_one_source_of_truth():
+    """编辑器回显与看门狗必须共用同一份层→模板映射（内联副本漂了等于没有闸）。"""
+    source = (_PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+
+    assert "layer_default_templates()" in source, "编辑器没用上那份收口的映射"
+    assert "default_map = {" not in source, "内联的 default_map 又回来了"

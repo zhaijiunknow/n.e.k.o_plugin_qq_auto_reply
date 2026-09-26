@@ -1,6 +1,6 @@
 {
   "chat_env_prompt_section": "## Chat Environment\n{chat_env}",
-  "core_memory_section": "## Core Memory\nBelow is stable memory, personality context, or bootstrapping context from the memory system. If relevant, naturally reflect it in your reply — but do not recite it verbatim or expose the internal memory structure.\n{memory_context}\n{context_ready}",
+  "core_memory_section": "## Core Memory\nBelow is stable memory, personality context, or bootstrapping context from the memory system. If relevant, naturally reflect it in your reply — but do not recite it verbatim or expose the internal memory structure.\n{memory_context}\n{context_ready}\n{recall_hint}",
   "entries.asset.description": "Read and write the sticker catalog, and read attention state.",
   "entries.asset.name": "Stickers and attention",
   "entries.config.description": "Write persisted settings and prompts. action: save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / save_topics / attention_adjust / memory_forget.",

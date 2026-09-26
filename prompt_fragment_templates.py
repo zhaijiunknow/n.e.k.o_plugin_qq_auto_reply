@@ -268,6 +268,41 @@ def pick_locale(mapping: dict[str, str], locale: str) -> str:
         return mapping.get("zh-CN") or mapping.get("zh") or mapping["en"]
     return mapping.get("en") or next(iter(mapping.values()))
 
+
+def layer_default_templates() -> dict[str, str]:
+    """层 i18n_key → Python 默认模板。
+
+    **一份真相源**：提示词编辑器回显、以及"bundle 文案有没有偷偷盖住模板"的看门狗
+    都走这里。以前这份映射内联在 `__init__.py` 的编辑器分支里，看门狗只能自己再抄一份
+    —— 抄本漂了就等于没有闸（`core_memory_section` 那次就是这么漏的：模板加了
+    `{recall_hint}` 而 bundle 里那份没有，运行时用的是 bundle，提示词里一个字都没有）。
+    """
+    from .scene_prompt_templates import (
+        SCENE_COLLECTIVE_GROUP,
+        SCENE_DIRECTED_GROUP,
+        SCENE_KIRA_UNIFIED_GROUP,
+        SCENE_PRIVATE_CHAT,
+        SCENE_SHARED_GROUP,
+    )
+
+    return {
+        "role_prompt_section": ROLE_PROMPT_SECTION,
+        "attention_prompt_section": ATTENTION_PROMPT_SECTION,
+        "character_prompt_section": CHARACTER_PROMPT_SECTION,
+        "time_prompt_section": TIME_PROMPT_SECTION,
+        "detail_constraints_section": DETAIL_CONSTRAINTS_SECTION,
+        "output_prompt_section": OUTPUT_PROMPT_SECTION,
+        "format_prompt_section": FORMAT_PROMPT_SECTION,
+        "format_prompt_section_neko_dynamic": FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
+        "format_prompt_section_open_platform": FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
+        "core_memory_section": CORE_MEMORY_SECTION,
+        "prompts.group.collective": SCENE_COLLECTIVE_GROUP,
+        "prompts.group.directed": SCENE_DIRECTED_GROUP,
+        "prompts.group.kira_unified": SCENE_KIRA_UNIFIED_GROUP,
+        "prompts.group.shared_session": SCENE_SHARED_GROUP,
+        "prompts.private.body": SCENE_PRIVATE_CHAT,
+    }
+
 LOGIN_IDENTITY_PROMPT = """\
 ## QQ 登录账号身份（Account Identity）
 {account_line}

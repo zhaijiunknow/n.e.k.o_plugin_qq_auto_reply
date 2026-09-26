@@ -79,6 +79,26 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
             items="、".join(items) if items else "（无）",
         )""",
     ),
+    (
+        "i18n/zh-CN.json",
+        "bundle 那份 core_memory_section 又缺 {recall_hint}（运行时用的是 bundle → 改了等于没改）",
+        "\"core_memory_section\": \"## 核心记忆（Core Memory）\\n"
+        "以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，"
+        "请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。\\n"
+        "{memory_context}\\n{context_ready}\\n{recall_hint}\",",
+        "\"core_memory_section\": \"## 核心记忆（Core Memory）\\n"
+        "以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，"
+        "请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。\\n"
+        "{memory_context}\\n{context_ready}\",",
+    ),
+    (
+        "__init__.py",
+        "编辑器又内联一份层→模板映射（看门狗的真相源被架空）",
+        "                from .prompt_fragment_templates import layer_default_templates\n\n"
+        "                default_text = layer_default_templates().get(i18n_key, \"\")",
+        "                default_map = {\"core_memory_section\": \"\"}\n"
+        "                default_text = default_map.get(i18n_key, \"\")",
+    ),
 ]
 
 

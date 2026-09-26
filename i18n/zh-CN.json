@@ -1,6 +1,6 @@
 {
   "chat_env_prompt_section": "## 当前聊天会话信息（Chat Environment）\n- 当前平台：QQ\n- 当前平台适配器名称：qq_auto_reply\n- 当前聊天类型：{chat_type}\n- 你的账号 ID：{self_id}\n- 当前会话标题（即群名称或用户名或自定义备注名）：{session_title}\n- 当前会话描述：{session_description}",
-  "core_memory_section": "## 核心记忆（Core Memory）\n以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。\n{memory_context}\n{context_ready}",
+  "core_memory_section": "## 核心记忆（Core Memory）\n以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。\n{memory_context}\n{context_ready}\n{recall_hint}",
   "entries.asset.description": "表情包目录的读写与注意力读数。",
   "entries.asset.name": "表情包与注意力",
   "entries.config.description": "写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / save_topics / attention_adjust / memory_forget。",
