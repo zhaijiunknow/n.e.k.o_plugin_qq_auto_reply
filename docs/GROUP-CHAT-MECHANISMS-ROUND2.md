@@ -1,7 +1,8 @@
 # 群聊环境处理：第二轮外部调研 + 与我们逐维度对比
 
 > 第一轮见 `GROUP-CHAT-RESPONSE-MECHANISMS.md`（AstrBot 9 阶段责任链、LangBot 11 阶段、
-> MaiBot `reply_necessity` 常数、学术量化依据、QQ 官方通道限制）。**本轮换角度**：
+> MaiBot `reply_necessity` 常数、学术量化依据、QQ 官方通道限制。**注**：第一轮的"LangBot 11 阶段"
+> 有误，已在本轮 §1.11 更正为 **12 阶段**）。**本轮换角度**：
 > 不看"框架抽象"，而是看**别人在群聊环境里具体装了什么旋钮、默认值多少**，
 > 然后逐条对照我们插件现在有什么（对照表的"我们"一列来自 2026-09-27 的代码/线上配置盘点）。
 
@@ -647,7 +648,8 @@ PostgreSQL + `[message_bus]`）是**两条分叉**而非版本先后，引用时
   **LangBot 是 12 阶段不是 11 阶段** —— 源码 `default_stage_order` 含
   `ConversationMessageTruncator`，而"11 阶段"来自 DeepWiki（漏了它）、官方文档根本没有阶段清单。
   引用阶段数时请以 §1.11 为准。
-- **AstrBot / LangBot 的流水线阶段与群响应规则**：待补 —— 要核的是两家"多条件取或"的具体
-  实现与阶段清单（第一轮文档给的是阶段数，本轮要落到字段）。
+- **AstrBot / LangBot 的流水线阶段与群响应规则**：已完成，落在 §1.11（第一轮只给了阶段数，
+  本轮落到字段：AstrBot 9 阶段的 `WakingCheck` 排在 `SessionStatusCheck`/`RateLimit` 之前、
+  唤醒条件取「或」；LangBot 12 阶段 + `group-respond-rules` 取「或」且 `random` 只是兜底）。
 
 （未交付的一律保持"未验证"，不用默认值外推。）
