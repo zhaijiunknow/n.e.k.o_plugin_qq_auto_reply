@@ -10,8 +10,11 @@ from typing import Any, Dict, List, Optional
 class GroupPermissionManager:
     """群聊权限管理器"""
 
-    VALID_LEVELS = {"trusted", "open", "normal"}
-    LEGACY_LEVEL_ALIASES = {"truth": "open"}
+    VALID_LEVELS = {"trusted", "normal"}
+    #: 历史别名 → 今天的两级。``open`` 级已删除（它原本表示「按概率直接回复」），
+    #: 现在的语义并入 ``trusted``（走注意力门控）——所以配置里残留的 ``"open"``
+    #: 会被**自动升为 trusted**，不需要人工改配置。
+    LEGACY_LEVEL_ALIASES = {"truth": "trusted", "open": "trusted"}
 
     def __init__(self, trusted_groups: List[Dict[str, Any]] = None):
         """
@@ -30,7 +33,6 @@ class GroupPermissionManager:
                     self._groups[group_id] = {
                         "level": self._normalize_level(level),
                         "normal_relay_probability": self._normalize_probability(group.get("normal_relay_probability")),
-                        "open_reply_probability": self._normalize_probability(group.get("open_reply_probability")),
                     }
 
     @classmethod
@@ -51,15 +53,14 @@ class GroupPermissionManager:
             return None
         return normalized
 
-    def add_group(self, group_id: str, level: str = "normal", normal_relay_probability: Any = None, open_reply_probability: Any = None):
+    def add_group(self, group_id: str, level: str = "normal", normal_relay_probability: Any = None):
         """
         添加群聊
 
         Args:
             group_id: 群号
-            level: 权限等级 (trusted, open, normal)
-            normal_relay_probability: normal 群命中后转发给主人时使用的概率
-            open_reply_probability: open 群主动回复时使用的概率
+            level: 权限等级 (trusted, normal)
+            normal_relay_probability: normal 群未被 @ 时转发给主人所使用的概率
 """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
@@ -67,7 +68,6 @@ class GroupPermissionManager:
         self._groups[normalized_group_id] = {
             "level": self._normalize_level(level),
             "normal_relay_probability": self._normalize_probability(normal_relay_probability),
-            "open_reply_probability": self._normalize_probability(open_reply_probability),
         }
 
     def remove_group(self, group_id: str):
@@ -84,7 +84,7 @@ class GroupPermissionManager:
             group_id: 群号
 
         Returns:
-            权限等级: trusted, open, normal, none
+            权限等级: trusted, normal, none
         """
         group_str = str(group_id or "").strip()
         group = self._groups.get(group_str) or {}
@@ -94,16 +94,12 @@ class GroupPermissionManager:
         group = self._groups.get(str(group_id or "").strip()) or {}
         return self._normalize_probability(group.get("normal_relay_probability"))
 
-    def get_open_reply_probability(self, group_id: str) -> Optional[float]:
-        group = self._groups.get(str(group_id or "").strip()) or {}
-        return self._normalize_probability(group.get("open_reply_probability"))
-
     def is_trusted_group(self, group_id: str) -> bool:
         """检查是否是 @ 后回复的信任群聊"""
         return self.get_group_level(str(group_id)) == "trusted"
 
     def is_allowed_group(self, group_id: str) -> bool:
-        """检查群聊是否被允许（信任、开放或普通）"""
+        """检查群聊是否被允许（信任或普通）"""
         level = self.get_group_level(str(group_id))
         return level in self.VALID_LEVELS
 
@@ -113,10 +109,7 @@ class GroupPermissionManager:
         for group_id, group in self._groups.items():
             item: Dict[str, Any] = {"group_id": group_id, "level": group.get("level", "normal")}
             normal_relay_probability = self._normalize_probability(group.get("normal_relay_probability"))
-            open_reply_probability = self._normalize_probability(group.get("open_reply_probability"))
             if normal_relay_probability is not None:
                 item["normal_relay_probability"] = normal_relay_probability
-            if open_reply_probability is not None:
-                item["open_reply_probability"] = open_reply_probability
             result.append(item)
         return result

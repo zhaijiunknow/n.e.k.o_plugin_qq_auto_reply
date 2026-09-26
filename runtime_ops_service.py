@@ -347,7 +347,7 @@ class QQProactiveMessageService:
                 group_facing=True,
                 group_scene_mode="group_collective",
                 fallback_to_text_on_voice_failure=False,
-                permission_level_override="open",
+                permission_level_override="trusted",
                 force_reply=True,
                 source_kind="proactive_group",
             )

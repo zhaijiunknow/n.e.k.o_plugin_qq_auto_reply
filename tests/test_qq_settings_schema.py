@@ -28,7 +28,6 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "trusted_groups": [],
     "speaker_trust_profiles": {},
     "normal_relay_probability": 0.1,
-    "open_reply_probability": 0.1,
     "show_onboarding": True,
     "guide_step_napcat_done": False,
     "guide_step_config_done": False,

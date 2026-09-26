@@ -227,7 +227,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._ai_turn_timeout_seconds = 60.0
         self._handler_shutdown_timeout_seconds = 10.0
         self._normal_relay_probability = 0.1
-        self._truth_reply_probability = 0.1
         self._admin_qq: Optional[str] = None
         self._strategy_mode: str = "neko_dynamic"
         # NapCat 进程/启动错误状态由连接层 napcat_service 自持，插件不再持有。
@@ -1107,7 +1106,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
             "level": {"type": "string", "description": "user_add / group_add：权限等级"},
             "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
-            "open_reply_probability": {"type": "number", "description": "group_add：开放群回复概率"},
             "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
             "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
             "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份"},
@@ -1176,7 +1174,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             group_id=group_id,
             level=str(kw.get("level") or "normal"),
             normal_relay_probability=kw.get("normal_relay_probability"),
-            open_reply_probability=kw.get("open_reply_probability"),
         )
 
     async def _trust_group_remove(self, kw: dict[str, Any]):

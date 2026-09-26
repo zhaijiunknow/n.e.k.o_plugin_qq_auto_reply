@@ -151,6 +151,9 @@ class QQAutoReplyConfigStore:
         "fatigue_session_per_reply",
         "fatigue_awake_idle_timeout",
         "fatigue_tiers",
+        # open 级删除后没人再读的概率键（群概率闸与私聊转发概率）。
+        "open_reply_probability",
+        "truth_reply_probability",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现

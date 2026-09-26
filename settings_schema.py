@@ -352,12 +352,6 @@ MISC = (
                 floor=0.0, ceiling=1.0, description="save：转发给管理员的概率",
                 handler="probability",
                 ui=UIInput("cfg-normal-prob", min=0, max=1, step=0.05)),
-    # canonical 是 open_reply_probability；UI/白名单历史上用别名 truth_reply_probability，
-    # 保存时两个键一起写（见 settings_service），读取处先读 canonical。
-    SettingSpec("open_reply_probability", "float", 0.1, saveable=True,
-                floor=0.0, ceiling=1.0, description="save：开放群回复概率 0~1",
-                handler="probability", aliases=("truth_reply_probability",),
-                ui=UIInput("cfg-truth-prob", min=0, max=1, step=0.05)),
     # ── 引导 ──
     #: 界面语言偏好。前端 `onLangChange` 一直在以 `action:'save'` 提交它，但它
     #: 不在真源里 → 被入口白名单整键丢弃（`_config_save` 的 payload 因此为空，
@@ -488,7 +482,7 @@ def input_schema_properties() -> dict[str, dict[str, Any]]:
     """入口 ``config`` 的 JSON schema properties（仅 saveable，含历史别名）。
 
     **别名必须一起生成**：入口 schema 带 ``additionalProperties: False``，而前端发的
-    是别名（``truth_reply_probability``）。漏掉别名不是"少一条文档"，是那次保存被整个拒掉。
+    是别名。漏掉别名不是"少一条文档"，是那次保存被整个拒掉。
     """
     props: dict[str, dict[str, Any]] = {}
     for spec in SETTINGS:

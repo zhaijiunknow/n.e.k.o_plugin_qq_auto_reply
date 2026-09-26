@@ -678,7 +678,6 @@ class QQSettingsService:
 
     def apply_runtime_settings(self, settings: dict[str, Any]) -> None:
         self.plugin._normal_relay_probability = float(settings.get("normal_relay_probability", 0.1) or 0.1)
-        self.plugin._truth_reply_probability = float(settings.get("open_reply_probability", settings.get("truth_reply_probability", 0.1)) or 0.1)
         self.plugin._max_concurrent_messages = max(1, int(settings.get("max_concurrent_messages", 3) or 3))
         self.plugin._message_concurrency = __import__("asyncio").Semaphore(self.plugin._max_concurrent_messages)
         self.plugin._ai_connect_timeout_seconds = max(1.0, float(settings.get("ai_connect_timeout_seconds", 10.0) or 10.0))
@@ -916,13 +915,6 @@ class QQSettingsService:
         guide_step_config_done = kwargs.get("guide_step_config_done")
         guide_step_runtime_done = kwargs.get("guide_step_runtime_done")
         normal_relay_probability = kwargs.get("normal_relay_probability")
-        # 两个名字都收：UI 走历史别名 truth_reply_probability，而表里 canonical 是
-        # open_reply_probability（saveable 两个都算，所以 dashboard 那层两个都会有
-        # 参数）。只认别名的话，直接传 canonical 名会被**静默忽略** —— 这个键带
-        # handler，通用路径会跳过它。
-        truth_reply_probability = kwargs.get("truth_reply_probability")
-        if truth_reply_probability is None:
-            truth_reply_probability = kwargs.get("open_reply_probability")
         backlog_labels = kwargs.get("backlog_labels")
 
         if onebot_url is not None:
@@ -1004,13 +996,6 @@ class QQSettingsService:
                 raise ValueError("normal_relay_probability 必须在 0 到 1 之间")
             self.plugin._qq_settings["normal_relay_probability"] = value
             self.plugin._normal_relay_probability = value
-        if truth_reply_probability is not None:
-            value = float(truth_reply_probability)
-            if value < 0.0 or value > 1.0:
-                raise ValueError("truth_reply_probability 必须在 0 到 1 之间")
-            self.plugin._qq_settings["open_reply_probability"] = value
-            self.plugin._qq_settings["truth_reply_probability"] = value
-            self.plugin._truth_reply_probability = value
         if backlog_labels is not None:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
         attention_max_score = kwargs.get("attention_max_score")

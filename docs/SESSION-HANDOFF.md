@@ -2992,7 +2992,6 @@ i18n 各 3 键；`napcat.html` 的疲劳卡片/开关/`loadFatigue`/填表/存�
 **教训：清理「历史键」要用前缀/规则，不要逐个列名字。**
 
 ### 10.5 真机事实（本轮观测）
-
 1. **用户已切到 NapCat**：真机 `qq_connection_mode = napcat`（`strategy_mode` 仍是 `neko_dynamic`）。
    这意味着注意力门控链重新可达——`needs_attention=True`，`memory_dispatcher` 会调
    `update_on_message`，概率闸/突发闸/关键词/回溯补回都活过来了。
@@ -3003,6 +3002,64 @@ i18n 各 3 键；`napcat.html` 的疲劳卡片/开关/`loadFatigue`/填表/存�
    `_get_gateway_url` 里 `AttributeError: 'NoneType' object has no attribute 'get'`
    （00:18:53，`start_auto_reply` 期间）。之后 `get_group_list` 返回 ok，说明连接后来是通的，
    但这条报错值得单独查。
+
+---
+
+## 11. 权限收敛：删 open 级 → normal 走 @、trusted 走注意力、私聊一律回（已完成）
+
+### 11.1 收敛后的语义（用户口径，唯一真源）
+
+| 场合 | 级别 | 行为 |
+|---|---|---|
+| 群聊 | `none`（不在名单） | `ignore`（`permission_none`） |
+| 群聊 | **`normal`** | **被 @ 或引用她 → reply**；其余消息按 `normal_relay_probability` **转发给主人**（relay） |
+| 群聊 | **`trusted`** | 走注意力门控（dispatcher 层已放行），放行即 reply |
+| 私聊 | 任意（含 none） | **一律 reply**，只把真实级别带下去供下游权限/记忆作用域使用 |
+
+`open` 级**已删除**（它原本表示「按概率直接回复」）。配置里残留的 `"open"` 经
+`LEGACY_LEVEL_ALIASES` **自动升为 `trusted`**，所以真机那条
+`{group_id: 1048307485, level: open}` 不需要人工改配置。
+
+⚠️ **保留了 relay（转发给主人）**：用户说的是「normal 走 @」，字面读也可能被理解成连 relay
+一起砍。本轮的取舍是**只改回复判定、不动转发能力**（relay 是独立能力，砍掉等于静默减少功能）。
+若本意是连 relay 一起删，改一处即可：`reply_decision_node` 的 normal 分支
+`action="relay"` → `action="ignore"`。
+
+### 11.2 改动面
+
+- `group_permission.py`：`VALID_LEVELS = {trusted, normal}`；别名 `{"truth": trusted, "open": trusted}`；
+  删 `open_reply_probability` 的入参/取值/序列化与 `get_open_reply_probability()`。
+- `reply_decision_node.py`：私聊分支重写为「一律回」；群的 normal 分支加 @ 闸门；
+  退级策略分支同步（删掉那段 open 概率闸）；`random` 因此不再被 import。
+- `settings_schema.py` / `settings_service.py`：删 `open_reply_probability`（含
+  `truth_reply_probability` 别名）与 `_truth_reply_probability` 运行时属性。
+- `__init__.py`：工具 schema 去掉 open 概率入参、删 `_truth_reply_probability` 初始化。
+- `dashboard_service.py`：删两处参数、一处透传、一处校验块、快照键与 ValueError 映射。
+- `session_instruction_service.py`：级别→标签表去掉 `"open"`。
+- `plugin_tool_followup_service.py` / `runtime_ops_service.py`：`permission_level_override` 的
+  `"open"` → `"trusted"`。
+- 前端：`napcat.html` 删「开放群回复概率」输入 + 群弹窗的 open 选项/概率字段/载荷；
+  `status.html` 删「开放群（按概率回复）」选项；i18n 两 bundle 各删 2 键。
+- `config_store.py`：`open_reply_probability` / `truth_reply_probability` 进僵尸键名单。
+
+### 11.3 验证
+
+- 全量回归 **1114 passed**（新增 12 例），CI 门禁 ruff 通过。
+- 新增 `tests/test_qq_permission_levels.py`：normal 群四种 @/引用组合、trusted、
+  none、私聊三级别一律回、`open` 不再合法、`open`/`truth` 别名升 trusted、
+  `add_group` 签名里没有 open 概率参数。
+- 变异验证 **2/2**：normal 的 @ 闸门改成 `if False:` → 红；`open` 别名删掉 → 红；均还原后全绿。
+- 真机（只读）：`trusted_groups` 仍是 `[985066274=trusted, 1048307485=open]` +
+  `open_reply_probability=0.1` —— 下次插件重载时由别名与迁移自动收敛。
+
+### 11.4 教训
+
+1. **正则批量删除必须适配换行风格**：这批文件是 CRLF，我的 `\n` 正则全部落空，
+   而字面替换（带适配）成功 —— 于是出现「一半改了、一半没改」的中间态。
+2. **正则删块要锚到「块尾」，不能只看缩进**：`if X is not None:` 那种块删掉后留下了
+   孤立的 `return Err(...)`（函数会永远返回错误），以及一处仍引用已删参数的调用
+   （未定义名字 → 运行时 NameError）。**删完必须跑全量测试 + 逐处读一遍改动**。
+3. 删枚举值（级别）时，**前端与 i18n 必须一起查**：下拉选项、i18n 键、载荷字段都藏着它。
 
 
 

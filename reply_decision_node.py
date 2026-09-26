@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from typing import Any
 
 from .pipeline_models import QQReplyDecision, QQReplyRequest
@@ -12,7 +11,7 @@ class QQReplyDecisionNode:
 
     def decide(self, request: QQReplyRequest) -> QQReplyDecision:
         if request.force_reply:
-            permission_level = str(request.permission_level_override or ("open" if request.is_group else "trusted"))
+            permission_level = str(request.permission_level_override or "trusted")
             return QQReplyDecision(action="reply", permission_level=permission_level)
         if request.permission_level_override:
             return QQReplyDecision(action="reply", permission_level=str(request.permission_level_override))
@@ -47,21 +46,14 @@ class QQReplyDecisionNode:
         }
 
     def _decide_private(self, request: QQReplyRequest) -> QQReplyDecision:
-        # 开放平台：全部回复，但保留实际权限级别（管理员=主人、其他=用户）
-        if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
-            real_level = self.plugin.permission_mgr.get_permission_level(request.sender_id) if self.plugin.permission_mgr else "none"
-            return QQReplyDecision(action="reply", permission_level=real_level if real_level != "none" else "open")
+        """私聊一律回复。
+
+        私聊里不存在「@ 才算叫我」这回事——对方就是在跟你单聊。历史上这里按
+        ``normal`` 级走 relay（转发给主人）、``none`` 级直接忽略，结果是普通用户
+        私聊石沉大海；已按用户口径收敛为「一律回复」，只把**真实权限级别**带下去
+        给下游用（工具权限、记忆作用域仍按级别区分）。
+        """
         permission_level = self.plugin.permission_mgr.get_permission_level(request.sender_id) if self.plugin.permission_mgr else "none"
-        if permission_level == "none":
-            # 带上原因，与群聊分支同口径：否则私聊只有一句 action=ignore，
-            # 排查时看不出是「发送者不在信任用户/管理员列表」而非别的门控。
-            return QQReplyDecision(
-                action="ignore", permission_level=permission_level,
-                attention_gate_reason="permission_none",
-            )
-        if permission_level == "normal":
-            relay_probability = self.plugin.permission_mgr.get_normal_relay_probability(request.sender_id) if self.plugin.permission_mgr else None
-            return QQReplyDecision(action="relay", permission_level=permission_level, relay_probability=relay_probability)
         return QQReplyDecision(action="reply", permission_level=permission_level)
 
     def _decide_group(self, request: QQReplyRequest) -> QQReplyDecision:
@@ -76,8 +68,13 @@ class QQReplyDecisionNode:
             if group_level == "none":
                 return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="permission_none")
             if group_level == "normal":
-                relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
-                return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
+                # normal 群：**只在被 @ 或引用她时回**；其余消息按概率转发给主人。
+                if not (request.is_at_bot or request.is_reply_to_bot):
+                    relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
+                    return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
+                kwargs = self._decision_kwargs(request, group_level, attention)
+                kwargs["attention_gate_reason"] = "normal_at_bot"
+                return QQReplyDecision(action="reply", **kwargs)
             kwargs = self._decision_kwargs(request, group_level, attention)
             kwargs["attention_gate_reason"] = "attention_gate"
             return QQReplyDecision(action="reply", **kwargs)
@@ -87,21 +84,17 @@ class QQReplyDecisionNode:
         if group_level == "none":
             return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="permission_none")
         if group_level == "normal":
-            relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
-            return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
+            # 与 neko_dynamic 同口径：@ 或引用她 → 回，否则转发给主人。
+            if not (request.is_at_bot or request.is_reply_to_bot):
+                relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
+                return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
+            kwargs = self._decision_kwargs(request, group_level, attention)
+            kwargs["attention_gate_reason"] = "normal_at_bot"
+            return QQReplyDecision(action="reply", **kwargs)
         if attention["enabled"] and group_id and attention["focus_group_id"] and attention["focus_group_id"] != group_id and attention["multiplier"] <= 0.0 and not request.is_at_bot:
             return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="attention_focus_other_group")
         if group_level == "trusted" and not request.is_at_bot:
             if attention["enabled"] and attention["multiplier"] < 0.9:
                 return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="attention_not_focused")
             return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="trusted_no_at")
-        if group_level == "open" and not request.is_at_bot:
-            if request.suppression_reason:
-                return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason=request.suppression_reason)
-            reply_probability = self.plugin.group_permission_mgr.get_open_reply_probability(group_id) if self.plugin.group_permission_mgr else None
-            effective_reply_probability = self.plugin._truth_reply_probability if reply_probability is None else reply_probability
-            effective_reply_probability *= max(0.0, float(attention["multiplier"] or 1.0))
-            if effective_reply_probability <= 0.0 or random.random() >= effective_reply_probability:
-                return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="probability_gate")
-            return QQReplyDecision(action="reply", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="probability_pass")
         return QQReplyDecision(action="reply", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="at_bot_or_explicit")

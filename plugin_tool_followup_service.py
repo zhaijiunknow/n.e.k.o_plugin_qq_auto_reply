@@ -503,7 +503,7 @@ class QQPluginToolFollowupService:
             group_facing=is_group,
             group_scene_mode=str(convo.get("group_scene_mode") or ("group_collective" if is_group else "")),
             fallback_to_text_on_voice_failure=False,
-            permission_level_override=("open" if is_group else permission),
+            permission_level_override=("trusted" if is_group else permission),
             force_reply=True,
         )
         # 「正要发」的记号**先落盘再发**：主动消息宁可少一条，也不能重复。

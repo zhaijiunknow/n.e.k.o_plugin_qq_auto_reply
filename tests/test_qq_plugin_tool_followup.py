@@ -425,7 +425,7 @@ def test_a_group_followup_goes_back_to_the_same_group(tmp_path):
     assert request.is_group is True
     assert request.group_id == "g_openid_9"
     assert request.sender_id == "10001", "群聊回投借管理员的名义（与主动群发言同口径）"
-    assert request.permission_level_override == "open"
+    assert request.permission_level_override == "trusted"
     assert request.group_scene_mode == "group_collective"
 
 

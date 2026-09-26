@@ -61,8 +61,7 @@ class QQDashboardService:
                 "strategy_mode": self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode")),
                 "backlog_labels": list(settings.get("backlog_labels") or []),
                 "normal_relay_probability": float(self.plugin._normal_relay_probability),
-                "truth_reply_probability": float(self.plugin._truth_reply_probability),
-                "token_configured": bool(settings.get("token")),
+                    "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
                 # 暴露**用户配置的**值，不是解析后的路径。
                 #
@@ -164,7 +163,6 @@ class QQDashboardService:
         guide_step_config_done: Optional[bool] = None,
         guide_step_runtime_done: Optional[bool] = None,
         normal_relay_probability: Optional[float] = None,
-        truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         attention_max_score: Optional[float] = None,
         attention_focus_threshold: Optional[float] = None,
@@ -209,7 +207,6 @@ class QQDashboardService:
         buffer_delay_mean_seconds: Optional[float] = None,
         buffer_delay_private_seconds: Optional[float] = None,
         buffer_max_count: Optional[int] = None,
-        open_reply_probability: Optional[float] = None,
         buffer_collect_window_seconds: Optional[float] = None,
         buffer_collect_window_private_seconds: Optional[float] = None,
         attention_frequency_target_gap: Optional[float] = None,
@@ -229,8 +226,7 @@ class QQDashboardService:
                 guide_step_config_done=guide_step_config_done,
                 guide_step_runtime_done=guide_step_runtime_done,
                 normal_relay_probability=normal_relay_probability,
-                truth_reply_probability=truth_reply_probability,
-                backlog_labels=backlog_labels,
+                    backlog_labels=backlog_labels,
                 attention_max_score=attention_max_score,
                 attention_focus_threshold=attention_focus_threshold,
                 attention_focus_hold_threshold=attention_focus_hold_threshold,
@@ -274,8 +270,7 @@ class QQDashboardService:
                 buffer_delay_mean_seconds=buffer_delay_mean_seconds,
                 buffer_delay_private_seconds=buffer_delay_private_seconds,
                 buffer_max_count=buffer_max_count,
-                    open_reply_probability=open_reply_probability,
-                buffer_collect_window_seconds=buffer_collect_window_seconds,
+                        buffer_collect_window_seconds=buffer_collect_window_seconds,
                 buffer_collect_window_private_seconds=buffer_collect_window_private_seconds,
                 attention_frequency_target_gap=attention_frequency_target_gap,
                 attention_frequency_min_multiplier=attention_frequency_min_multiplier,
@@ -284,11 +279,11 @@ class QQDashboardService:
             )
         except ValueError as exc:
             message = str(exc)
-            if "truth_reply_probability" in message:
-                field = "truth_reply_probability"
-            else:
-                field = "normal_relay_probability"
-            return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default=field + ' 必须在 0 到 1 之间')}"))
+            # 概率键只剩 normal_relay_probability 一个（open 级已删除）。
+            # 仍按「文案里带键名」取字段，将来再加概率键时不必改这里。
+            field = "normal_relay_probability" if "normal_relay_probability" in message else message
+            default = field + " 必须在 0 到 1 之间" if field == "normal_relay_probability" else field
+            return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default=default)}"))
         payload = await self.build_dashboard_state()
         payload.update(result)
         return Ok(self._inject_business_permissions(payload))
@@ -736,7 +731,6 @@ class QQDashboardService:
         group_id: str,
         level: str = "normal",
         normal_relay_probability: Optional[float] = None,
-        open_reply_probability: Optional[float] = None,
     ):
         if not self.plugin.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
@@ -744,11 +738,7 @@ class QQDashboardService:
             value = float(normal_relay_probability)
             if value < 0.0 or value > 1.0:
                 return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
-        if open_reply_probability is not None:
-            value = float(open_reply_probability)
-            if value < 0.0 or value > 1.0:
-                return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default='open_reply_probability 必须在 0 到 1 之间')}"))
-        self.plugin.group_permission_mgr.add_group(group_id, level, normal_relay_probability=normal_relay_probability, open_reply_probability=open_reply_probability)
+        self.plugin.group_permission_mgr.add_group(group_id, level, normal_relay_probability=normal_relay_probability)
         await self.plugin.backlog_store.ensure_group_placeholder(group_id, group_display_name=f"QQ群 {group_id}")
         success = await self.plugin.settings_service.persist_business_config()
         payload = await self.build_dashboard_state()

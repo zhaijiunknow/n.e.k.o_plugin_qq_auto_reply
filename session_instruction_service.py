@@ -699,8 +699,7 @@ class QQSessionInstructionService:
             "admin": "主人/管理员本人",
             "trusted": "受信任用户",
             "normal": "普通用户，通常走中继或低频响应",
-            "open": "开放群聊用户",
-            "none": "未授权用户",
+                "none": "未授权用户",
         }.get(permission_level, permission_level or "unknown")
         profile_lines = [
             f"- 当前用户称呼：{user_title}",

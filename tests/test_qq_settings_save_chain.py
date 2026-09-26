@@ -36,7 +36,6 @@ _PLUGIN_DIR = pathlib.Path(settings_schema.__file__).resolve().parent
 #: 前端用的历史别名 → settings_schema 的 canonical 名。
 #: 见 `settings_service._save_settings_locked` 里两个名字都收的那段注释。
 _ALIASES = {
-    "truth_reply_probability": "open_reply_probability",
 }
 
 #: 认定一个 `args={...}` 对象是"设置保存载荷"的门槛：至少提到这么多个已知
