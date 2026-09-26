@@ -3806,3 +3806,61 @@ true —— 也就是说三种环境里**新的页内确认框行为完全一致
 DOM（这台机器上没有 Electron 进程、宿主也没开调试端口）。所以"缺 allow-modals 就是原因"
 的链条是：现象完全吻合 + 同参数复现 + 源码注释自证。若重开面板后**连页内弹层都不出现**，
 那就说明点击根本没进处理函数，下一步查父页面的遮罩 / 指针事件。
+
+---
+
+## 19. 「napcat 页刷新有延迟」：SSE 死连接被永久复用 + 兜底轮询固定 2s
+
+使用者问「napcat页的刷新有延迟，为什么」。量完发现后端根本不慢，慢在两处前端兜底逻辑。
+
+### 19.1 实测数字（真 Chromium，CDP 驱动；脚本 `.dsh-artifacts/measure-refresh*.py`）
+
+| 场景 | 每次刷新 |
+|---|---|
+| SSE 正常（`readyState = 1`） | **5~12 ms**（8 个刷新函数逐个量） |
+| 把 EventSource `close()` 掉（死连接） | **2010~2022 ms** ← 修复前 |
+| 完全没有 SSE（只剩兜底轮询） | **2000 ms 整** ← 修复前 |
+
+后端本身很快（POST → 到终态）：`dashboard` 71.9ms、`buffer` 54.6ms、`attention` 39.1ms、
+`list_stickers` 31.3ms、`logs(200行)` 31.1ms；SSE 的 `run` 事件送达延迟 5~23ms。
+
+### 19.2 两个成因（都在 `static/ui-sse.js`）
+
+1. **死连接被永久复用**：`ensureEs()` 原本是 `if (es) return es`。EventSource 掉到
+   **CLOSED(2) 是终态** —— 浏览器只对 CONNECTING(0) 自动重连 —— 于是那个死单例被一直返回，
+   这个页面**余生**每次 `call()` 都吃满 2s 兜底轮询；同时 `run`/`status`/`logs` 推送全断，
+   顶栏状态、缓冲区、注意力、日志只剩 **30s** 兜底轮询（`startStatusPoll` / `startLogPoll`
+   都是 `30000`）。使用者看到的"刷新有延迟"就是这两条一起发作。
+2. **兜底轮询固定 2000ms**：它只是"SSE 不在时的兜底"，却让第一次刷新白等一整个周期。
+
+### 19.3 改动
+
+- `ensureEs()`：遇到 `readyState === 2` **丢掉重建**；`onerror` 里再补一个
+  `scheduleReopen()`（3s 后重建），这样"没人点、没人等"时也能自愈；`reopenCount` 计数供排查。
+- `awaitRun()`：兜底轮询改成 **100ms 起步、每次 ×1.6、上限 2s** 的退避（原来是固定 2s）。
+  四个调用方（napcat / open_platform / status / old 的 `call()`）都没自己传 `pollInterval`，
+  所以默认值一改全都受益。
+- 新增 `UISSE.state()` → `{readyState, reopenCount}`：下次排查不用猜。
+- 四个页面统一 `ui-sse.js?v=3`：改共享脚本必须把**每一处**引用一起提版本号，
+  否则浏览器一直用缓存里的旧文件（这条也进了看门狗）。
+
+### 19.4 验证
+
+- CDP 实机：正常 5~12ms；`close()` 之后**第一次刷新 6~10ms**（修复前 2010~2022ms），
+  再过 4 秒 `UISSE.state()` 回到 `readyState: 1`（自愈）；把 EventSource 换成永不投递的
+  假实现（= 完全没有 SSE）后第一次刷新 **109~110ms**（修复前 2000ms）。
+- 新看门狗 `tests/test_qq_ui_sse_resilience.py`（4 条）：CLOSED 必须丢掉重建（认**那一行**）、
+  必须有 `onerror` 重建兜底、兜底轮询起步 100ms 且不是固定 2000ms、`UISSE.state()` 在位、
+  四页版本号一致。
+- 变异取证 `tests/verify_ui_sse_resilience_fail_to_pass.py` **5/5**。
+  其中第一处变异**第一版没红**：断言当时只写 `"es.readyState === 2" in text`，而 `onerror`
+  里还有一处同样的判断 —— 删掉 ensureEs 里那行照样通过。收紧成认
+  `if (es && es.readyState === 2) { es = null; }` 这一行之后才成为合格的必要条件证据。
+- 全量 **1204 passed**；ruff（E4/E7/E9/F/I）All checks passed。
+
+### 19.5 使用者自查口径
+
+- 控制台里 `UISSE.state()`：`readyState` 正常应为 `1`；若是 `2` 而 `reopenCount` 一直不涨，
+  说明连重建都失败（那要看服务端 `/ui-api/events`）。
+- 另有一类"延迟"**不是刷新慢**：表情包上传要等 VLM 自动描述（实测每张 3~10 秒，
+  日志里能看到 `[VLM] 表情包自动描述` 紧跟 `上传表情包`），那是上传本身耗时。
