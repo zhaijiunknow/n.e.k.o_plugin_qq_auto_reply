@@ -12,8 +12,14 @@
   的 `README.md`/`message.yaml` 说明）、腾讯 QQ 机器人官方文档（消息收发概述）、
   OpenClaw 文档（bot loop protection）。
 - 本机 DNS 策略**屏蔽 `github.com` 与 `raw.githubusercontent.com`**（解析到非公网 IP），
-  所以 GitHub 源码一律**改用镜像**读：`cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>/<path>`
-  （可用，本轮两个插件的文档就是这么读的）。这条对以后的调研同样有效。
+  所以 GitHub 源码一律**改用镜像**读。本轮实测可用的四条通路：
+  ① `cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>/<path>`（文本类文件；对 `.py`/`.toml` 会报
+  unsupported content type，但它的树 API `data.jsdelivr.com/v1/packages/gh/<o>/<r>@<branch>?structure=tree`
+  可用）；② `ghproxy.net/https://raw.githubusercontent.com/<o>/<r>/<b>/<p>`（读单文件，含 .py/.toml）；
+  ③ `ghfast.top/https://github.com/<o>/<r>` **可以整仓 `git clone`**（本轮据此拿到 MoFox 本地副本，
+  逐条 grep 复核过，落在 `.dsh-artifacts/MoFox_Bot-research/`，**主仓工作区不受影响**）；
+  ④ `gitlab.mikumikumi.xyz/maibot/maibot`（MaiBot 全历史镜像，tag 0.5.8→1.1.4）与
+  `git.gardel.top/gardel/Mofox-Core`（Gitea，**支持 git grep 代码搜索**）。这条对以后的调研同样有效。
 - 证据等级标注：`【原文】`＝我直接读到的官方文档/仓库文件；`【子代理】`＝并行子代理读到并
   交出处的（本轮用于 MaiBot 源码级、框架层、协议端风控）；`【二手】`＝博客/搜索摘要。
 - **凡是没读到的一律写"未验证"**，不从别人的默认值外推我们的行为。
@@ -210,6 +216,154 @@ Koishi 有"复读检测"。
 `[expression]` / `[jargon]`：**表达学习 + 黑话学习**（含 `vector_intent` 向量意图召回、
 候选池上限 50、`learning_list` 按平台/群/私聊分别控制 use/learn）。
 
+### 1.9 MaiBot 源码级核查（含 MoFox_Bot）【子代理·源码】
+
+取源：MaiBot 全历史 GitLab 镜像 `gitlab.mikumikumi.xyz/maibot/maibot`（tag 覆盖 0.5.8→1.1.4）、
+`ghproxy.net` 代理 GitHub raw、MoFox 的 Gitea 镜像（**支持 git grep 代码搜索**）。
+（`github.com` / `raw.githubusercontent.com` / DeepWiki 一律不可用；jsDelivr 对 `.py`/`.toml`
+报 unsupported content type，所以改用前两者。）
+
+**① 必要性评分表（`src/maisaka/reply_necessity.py`，全硬编码）**
+
+`raw = 相关 + 内容 + 压力 − 存在感惩罚`；`final = int(round(raw × (0.5 + 0.5×min(1.0, talk_value))))`；
+**触发线 `REPLY_NECESSITY_TRIGGER_SCORE = 80` 是代码常量、不落配置**。
+
+| 因子 | 分值 | 与我们实现的差异 |
+|---|---|---|
+| 被 @ / 被提及 / 私聊 / focus 生效 / 普通 | `100 / 80 / 40 / 40 / 0` | ✓ 逐项一致（我们：@100 引用80 焦点40 私聊40 普通0） |
+| 问题 / 请求 / 征询 | `+15 / +20 / +20` | ✓ 一致；**但**：弱请求词（需要/求/看看/试试）只在 `is_direct_context` 时计，非直接上下文时"征询意见"必须含"麦麦" —— **我们可能没做这两层限定，需核对** |
+| 长文 ≥40 字 / ≥120 字 | `+5 / 再 +10` | ✓ 一致 |
+| 整批皆短反应 | `−25` | ✓ 一致 |
+| 积压压力 | `ratio<1 → int(50×ratio²)`（空闲≥平均间隔再 +15，上限 50）；`ratio≥1 → 50 + 50×log1p(ratio−1)/log1p(4)`，上限 100 | ✓ 一致 |
+| 存在感惩罚 | 300s 窗口，占比 ≤0.25 不罚、≥0.60 罚满 **25**（线性） | ✓ 一致 |
+| 频率因子 | `×(0.5 + 0.5×min(1.0, talk_value))` | ✓ 公式一致；**注意它用的是 `talk_value`（0~1，默认 1 → 不加成）**，我们喂的是"群频次倍率"（0.15~1.8），语义不同 —— 需确认我们确实按 ≤1.0 截断 |
+
+**② 两条通路的"条数门槛"（`src/maisaka/runtime.py`）**
+
+`frequency → max(1, ceil(1/talk_value))`；`reply_necessity → max(1, ceil(1/talk_value²))`；
+其中 `freq = talk_value × 频率调整量`，focus 生效时强制 1.0。**我们没有这层"攒够几条才检查"**
+（我们的门控是每条都评估，靠分数与退避控制），值得知道这是 MaiBot 的"省算力"手段。
+
+**③ 空窗补偿（`turn_gates.py`）**：`等效数 = pending + min(空窗/平均间隔, 阈值−1)`，
+**`pending = 0` 一律不触发**（防"纯沉默自唤醒"）；`平均间隔` 样本窗 `1800s`、剔除 `<5s` 连发、
+下限 `30s`。→ 我们**没有**这层（我们有 `last_gap_seconds ≥ 30` 的近似判据）。
+
+**④ 焦点槽（`focus/manager.py`）**：`FOCUS_SLOT_LIMIT = 1`（每作用域只允许 1 个会话决策）；
+作用域由 `focus_groups` 分组决定（同组共享一槽、未分组用全局槽 `__global__`、否则按会话隔离）；
+`focus_cool_time = 120s`；**连续 `FOCUS_NO_ACTION_EXIT_THRESHOLD = 5` 次空闲 → 释放焦点并
+"封禁它抢占下一槽"**，直到冷却过期或被 `unblock_focus_entry()` 解除（被 @ 时走这条路、
+`wakeup_reason="at"` 无视冷却）；另有 `FOCUS_EVENT_UNREAD_COUNT_THRESHOLD = 3`、
+`FOCUS_SWITCH_NEW_MESSAGE_LIMIT = 20`；**状态全在内存**。
+
+**⑤ 群聊上下文渲染（`context/planner_messages.py`）**：每条消息渲染成
+`<message msg_id="…" [quote="被引用 id 列表"] time="HH:MM:SS" user="昵称" [group_card=…]
+[is_self_message="true"]>` + 换行 + 正文；`self_message_special_mark` 默认 **true**（显式标注
+自身消息，减少"把自己当别人"）。**引用是 id 属性、转发用 `view_forward_message` 工具按需展开**
+—— 与我们"递归内联展开引用链/合并转发"是**两种相反的策略**（他们省 token、给模型控制权；
+我们一次性把内容铺给模型）。图片超过 `max_image_num = 128` 时把旧图替换成 `[图片]` 占位。
+启动时回灌 `ceil(max_context_size × 0.5)` 条历史，并注入 `<1min / <30min / <6h / <24h / 更久`
+五档离线段落。
+
+**⑥ 记忆（A_Memorix，默认关）**：SQLite + faiss(int8) + 关系图；检索
+`weighted_rrf(rrf_k=60, 向量 0.7 / BM25 0.3)` → PPR(`α=0.85`, 超时 1.5s) → `top_k_final=10`；
+回灌三路（Planner 主动调工具 / **每轮注入人物画像**（最多 3 个）/ 启发式拉起（默认关））；
+写回阈值 `chat_summary_writeback_message_threshold = 36`。
+**跨群默认隔离**：`global_memory_sharing_enabled = false`，要共享得用 `shared_memory_groups` 分组放行。
+
+> ⚠️ **我们与他们相反**：我们的 `allow_cross_group_context = true`（跨群上下文默认**开**）。
+> 这不是错，但要知道 MaiBot 的选择是"默认隔离、显式分组才共享"。
+
+**⑦ 权限**：MaiBot 只有操作员名单 + 命令级 `allow_users/allow_chats`；**没有群管/群主角色概念**，
+**也没有任何禁言期行为处理**（源码级未找到）。MoFox_Bot 才有：`master_users`（无视一切权限节点）、
+细粒度权限节点（`plugin.<插件>.<类>.<权限>` + `permission_api` + `/permission` 命令）、
+以及 **`message_receive.mute_group_list`（"静默群"：这些群里只有被 @ 或被回复才响应）**；
+禁言 notice 会注入上下文并保留 7200s。
+
+**⑧ 拟人化的具体参数**
+
+- MaiBot 0.8.x：`calculate_typing_time()` 中文 **0.3s/字**、英文 0.15s/字、末尾 +0.3s、单字 ×3、
+  emoji 固定 1s，再乘 `typing_speed`(0~2)；结尾句号 **90% 删**、逗号 5% 删 / 20% 变空格；
+  错别字生成器有 **50% 概率在错字后补发更正消息**（"拟人化瑕疵"的完整闭环）。
+- MoFox：`response_splitter`（`split_mode="punctuation"`，`max_length 512`（代码 256）、
+  `max_sentence_num 8`（代码 3）、颜文字保护开关）；错别字率 `0.001`(字)/`0.005`(声调)/`0.006`(整词)。
+  **未找到发送前的打字延迟，也未找到自动复读**（存疑，见 §4）。
+
+**⑨ MoFox_Bot ＝ MaiBot-Plus 的活跃延续**（不是独立项目：2025-11-19 的重命名提交
+`e362615d6d` 即 "rename project from MaiMbot-Pro-Max to MoFox_Bot"）。它**删掉了 talk_value
+频率体系**，改用「兴趣阈值 + 焦点能量」：
+
+- 兴趣 = `min(0.5×兴趣匹配 + 0.2×关系 + 0.3×提及, 1)`；**回复阈值 0.75、动作阈值 0.65**；
+  强提及 2.0 / 弱提及 0.8 / 基础关系 0.3 → **单靠被 @ 只有 0.6，不足以触发回复**。
+- **阈值只降不升**：连续不回复每次 −0.004（≤5 次）；回复后 −`0.1×0.5^n`（n≤3）；回复成功再把
+  `no_reply_count −= 2`。
+- 焦点能量 = `0.5×兴趣 + 0.3×活跃度 + 0.2×最近性 + 0.1×关系`，整形后限幅 `[0.1, 1]`，
+  **Focus↔Normal 双模按能量概率切换**（`p(Focus→Normal)=fe`）。
+- 主动发言间隔 = `base_interval × (interest_score_factor − focus_energy)`（720s 基准、
+  夹在 360~2880s），抛话题后冷却 3600s，**每日上限 3 次**，安静时段 00:00–07:00（系数 0.7）。
+- 多群并发：`asyncio.Semaphore(10)` + **按能量动态重投递周期**（1/3/8/15/30s ±20%）。
+
+### 1.10 勘误与补充：MoFox 复核（第二版，本地 clone 逐条 grep）【子代理】
+
+子代理用 `ghfast.top` 把 MoFox_Bot 整仓 clone 到本地逐条复核，推翻了它自己上一版的三处结论。
+**这三处都以本地源码为准，§1.9 里对应的表述按本节理解。**
+
+**勘误 1：MoFox 的打字延迟确实存在**（上一版误列为"未找到"）：
+`src/chat/utils/utils.py::calculate_typing_time()` —— **中文 0.2s/字、英文 0.1s/字**（比 MaiBot
+上游的 0.3/0.15 快）、单字 `3×0.2+0.3`、emoji 固定 1s、**且"已思考超过 10 秒则压成 1 秒"**
+（避免长思考后还慢悠悠打字）；调用点 `uni_message_sender.py` 里 `await asyncio.sleep(typing_time)`。
+另有 `timing_utils.get_normal_distributed_interval(base, sigma_percentage=0.1)` ——
+**正态分布** + 3σ 规则（我们的延迟是均匀分布，可换成这个）。
+
+**勘误 2：MoFox 多群并发根本没有信号量限流**（上一版记成 `Semaphore(10)`）：
+`distribution_manager.py` 全文件无 `asyncio.Semaphore`；真实机制是**每个聊天流一个独立轮询任务**
+（`_stream_loop_worker(stream_id)` + per-stream Lock 防重复），轮询周期按能量档
+`1 / 3 / 8 / 15 / 30s` × `U(0.8, 1.2)` clamp 到 `[1, 30]`；`max_concurrent_streams` **只在统计
+字典里被读、从未用于限流**；用 **`force_dispatch_unread_threshold = 20`（未读 > 20 直接处理）**
+替代限流来防积压。唯一的 Semaphore 在另一套 `unified_scheduler`（插件/定时任务用）。
+
+**勘误 3：不存在独立的「MaiBot-Plus」项目**：`MaiBot-Plus/MaiMbot-Pro-Max@master` 的文件树与
+`MoFox-Studio/MoFox_Bot@master` **逐字节相同**（模板同 size/hash、README 同字节），即 GitHub
+改名重定向；该命名空间下也没有同名仓库。另外被问到的 `mode_mxp.py`（"梦溪畔独家赞助"那种
+自嘲文案）是**上游 MaiBot 内的第三方意愿模式插件位**，与 MaiBot-Plus 无关 —— 悬念删除。
+
+**补充 A：MoFox 的记忆是全局跨群共享**（`memory_graph/models.py` 的 `MemoryNode/Edge/Memory`
+**无 `chat_id`**、图节点 `concept` 全局唯一）——即"A 群的事在 B 群说出来"是**设计内行为**；
+与上游 MaiBot `A_Memorix` 的"每个聊天流只检索自己产生的记忆"**默认策略相反**。
+（所以"跨群共享还是隔离"这一维上，外部两家各站一边，我们也是共享 —— 见 §3.2 第 3 条。）
+
+**补充 B：MoFox 的能量阈值有强制不等式**：启动时
+`high_match ≥ reply + 0.1`、`reply ≥ non_reply + 0.1`；模板写 `0.6/0.75/0.65`，**实际生效为
+`high=0.85 / reply=0.75`** —— 引用它的三档阈值必须换算。
+
+**补充 C：MoFox 的分割器实际只用 `max_sentence_num`**（`max_length` 在 `process_llm_response`
+里已被注释掉、不参与截断），超限时**反复合并"最短的相邻句对"**（用"，"拼接）直到达标 ——
+比"超长就截尾"更保语义，值得抄。
+
+**新可借鉴的常数（本轮新挖出）**：
+
+- **MaiBot 0.8.x 的可插拔"回复意愿"模式**（`normal_chat/willing/mode_mxp.py`，全源码常量）：
+  ① 用反正切把无界意愿压进 `[0,1)`（`w<2 → atan(2w)·2/π`）；② **在途消息防喷射**：同一个人
+  **≥2 条在途 → 意愿直接归 0**，群内 2/3/≥4 条 → `−0.5 / −1.5 / 归 0`；③ 意愿**按 (chat, person)
+  独立**，每 3s 以 `0.93` 向该群基础意愿收敛；④ `expected_replies_per_min = 3`、
+  `mention_willing_gain = 0.6`、`interest_willing_gain = 0.3`；⑤ **疲劳惩罚时长 = 消息间隔 × 2**。
+  ⑥ 插件位设计：`mode_{mode}.py` + `{Mode}WillingManager` + `importlib` 动态加载 +
+  **加载失败静默回落经典实现** —— 这套"可替换策略 + 安全回落"的做法很适合我们的策略层。
+- **MoFox 的打断概率反比例衰减**：`p = 1.4/(interruption_count+2) + 0.05` → 第 1 次 **80%**、
+  第 2 次 **35%**、第 3 次 **15%**、第 4 次起约 **10%**，达 `interruption_max_limit = 5` 后为 0；
+  触发则 `start_stream_loop(force=True)` 重入。**这是"被打断"这件事的量化版本，我们完全没有。**
+- **长消息分片重组**（`message_chunker.py`，`timeout = 30s` 内到达的碎片重组成一条再处理）——
+  与我们 5s 的合并缓冲目的相近但语义不同（它治"一条话被拆成几条发"）。
+- **消息渲染**：`昵称(QQ号): 内容`、bot 自身渲染成 `昵称(你)`、`@<platform:id>` → `@昵称`、
+  **引用只渲染最后一次**（`re.sub(..., count=1)`）、`[picid:x]` 查描述表 → `[图片：描述]`
+  （查不到 → `[图片内容未知]`）；转发由适配器**递归展开**（缩进 `"--"×层`，图片 <5 才转图）。
+
+**⚠️ 引用陷阱（务必记住）**：MoFox 的配置值有**三套互相冲突的来源** —— `official_configs.py`
+的 Pydantic 默认 / `template/bot_config_template.toml`（**用户实际拿到的，评价行为以它为准**）/
+`docs/affinity_flow_guide.md` 的示例；而且 `docs.mofox.chat` 已是 **Neo-MoFox 重写版**文档
+（其 DFC 配置与 MoFox_Bot 无关，**不可混用**）。另外 MoFox 的两个镜像
+（`MoFox_Bot@master` 模板 7.7.0 + MySQL + `[maim_message]` vs `Mofox-Core@gitea` 8.0.5 +
+PostgreSQL + `[message_bus]`）是**两条分叉**而非版本先后，引用时须注明分支。
+
 ## 2. 逐维度对比（外部 vs 我们）
 
 > "我们"一列＝当前代码/线上配置（86 个配置键、7 入口 50 动作、64 模块）。
@@ -355,6 +509,10 @@ Koishi 有"复读检测"。
 | 14 | **`talk_value` 式的"整体安静度"总旋钮**（按时段/按群） | MaiBot `talk_value` + `talk_value_rules`（支持跨夜时段）；bl-chat `talkValue` | 小 | 现在要"更安静"只能去改 necessity 阈值或各种倍率，缺一个直觉旋钮 |
 | 15 | **正则黑名单**（`ban_msgs_regex`）与**提到名字更容易回**（`mentioned_bot_reply`） | MaiBot `message_receive.ban_msgs_regex`（启动时校验）、`reply_timing.mentioned_bot_reply` | 小 | 前者补我们"只有关键词表"的短板，后者是低成本的礼貌信号 |
 | 16 | **中期记忆 / 聊天回想**（最近 N 条之外的"最近发生过什么"） | MaiBot `mid_term_memory` + `mid_term_memory_lenth 10` | 中 | 我们现在只有"长期群记忆"与"当前上下文"两档 |
+| 17 | **在途消息防喷射 + 打断概率反比例衰减** | MaiBot `mode_mxp`：同一人 ≥2 条在途 → 意愿归 0，群内 2/3/≥4 → −0.5/−1.5/0；MoFox `p = 1.4/(n+2)+0.05`（80%→35%→15%→10%） | 中 | 治"她还没说完群里又来了几条"的抢话问题（我们只有 in-flight 锁式的并发闸） |
+| 18 | **随机延迟改成正态分布**（σ≈10%，3σ 截断） | MoFox `timing_utils.get_normal_distributed_interval` | 小 | 比均匀分布更像真人（我们现在是 `uniform(0.2, 2.5)`） |
+| 19 | **超长回复的"合并最短相邻句"**（而不是截尾/丢弃） | MoFox `response_splitter`：`max_sentence_num` 超限时反复合并最短相邻句对 | 小 | 分段与长回复处理时更保语义 |
+| 20 | **可替换策略 + 安全回落**（`mode_{x}.py` + 动态导入 + 失败回落经典实现） | MaiBot `willing_manager.BaseWillingManager.create(mode)` | 中 | 我们的策略（necessity/注意力）是硬接的，换算法只能改代码 |
 
 ### 3.1 对账：我们抄 MaiBot 抄得准不准
 
@@ -368,6 +526,20 @@ Koishi 有"复读检测"。
 **待办提示**：如果以后真的需要"某些群退回到纯频率模式"，MaiBot 那个 `reply_trigger_mode`
 就是现成的设计参考。
 
+### 3.2 需要回头核对**我们自己实现**的 7 处（本轮调研的直接产出）
+
+| # | 要核的 | 对照的外部事实 | 怎么核 |
+|---|---|---|---|
+| 1 | necessity 的两层限定：**弱请求词**（需要/求/看看/试试）是否只在"直接上下文"时计分；非直接上下文时"征询意见"是否要求文本含"麦麦" | MaiBot 源码里这两条是明确分支 | 读 `reply_necessity.py` + 补 2 条单测 |
+| 2 | 频率因子是否**按 ≤1.0 截断** | MaiBot `×(0.5 + 0.5×min(1.0, talk_value))`，而 `talk_value ≤ 1` | 读我们的 `frequency_factor` 计算；若我们的倍率可 >1 则与 MaiBot 语义不同（不是错，但要写明） |
+| 3 | 跨群上下文默认 **开**（`allow_cross_group_context = true`） | MaiBot/A_Memorix **默认隔离**，要共享得 `shared_memory_groups` 显式分组 | 想清楚：我们是要"她记得别的群的事"（产品选择）还是默认隔离更稳 |
+| 4 | 群聊上下文里是否**显式标注"这条是她自己发的"** | MaiBot `self_message_special_mark` 默认 true（减少"把自己当别人"） | 读 `prompting.py` 的群聊行渲染；没有就加一个标记 |
+| 5 | 引用/合并转发的展开策略：我们**递归内联**（一次性铺给模型） | MaiBot 只给 `quote="msg_id"`，转发用 `view_forward_message` 工具**按需展开** | 评估上下文体积与 token 成本；我们的策略更"懂上下文"但更贵 |
+| 6 | 焦点"**连续 N 次空闲就退出并禁止它抢下一槽**" | MaiBot `FOCUS_NO_ACTION_EXIT_THRESHOLD = 5` + 冷却 + 被 @ 强制解封 | 我们现在只有分数与 idle backoff，没有"她对这个群彻底失去兴趣"的表达 |
+| 7 | 空窗补偿（**`pending = 0` 不自唤醒** + 用平均间隔折算空闲） | MaiBot `turn_gates.py` | 我们现在是"每条都评估 + 退避"，两种路子都合理，但要确认没有"没人说话她自己反复评估"的开销 |
+
+前 4 条是**行为正确性**问题，后 3 条是**设计取舍**问题 —— 建议按 1→2→4→3→6→7→5 的顺序处理。
+
 **不建议照搬的**：
 
 - **概率门槛**（`initial_probability 0.02` 那套）：我们已有确定性打分，再加一层概率会互相打架。
@@ -379,9 +551,16 @@ Koishi 有"复读检测"。
 ## 4. 未验证（禁止外推）
 
 - 上面各家的**默认值**是否等于**推荐值**：文档给的是默认，不代表作者推荐。
-- AstrBot 插件的"注意力机制"与"对话疲劳"两节的**具体字段与公式**本轮没读到（只看到目录里有这两节）。
-- MaiBot 的 `talk_value` / 心流具体公式、框架层四家（NoneBot2 / Koishi / Yunzai / ZeroBot）的
-  会话与冷却实现、协议端的风控经验数值 —— 见 §5（子代理交付，另行标注出处）。
+- **AstrBot 插件里"对话疲劳"的具体公式**只读到字段（阈值 3/5/8、衰减 0.1/0.2/0.35、结束语 0.3），
+  其内部实现未读。
+- **MaiBot 1.x** 的 `response_splitter` 与 `[emoji]`/`[chinese_typo]` 默认值（抓取被截断）、
+  发送端"打字延迟"的实现位置、是否有"连续回复硬上限"、是否有群管/群主角色、禁言期如何处理
+  （1.x 全部**未找到任何证据**）。
+- **MoFox** 的打字延迟与自动复读（仅 changelog 提到"为复读增加硬限制"）；`mute_group_list`
+  的判定代码路径未逐行核验（证据到配置注释/README 级）；主动发言的 `base_interval` 在**两个
+  镜像间默认值不同**（720s vs 1800s），引用时必须注明分支。
+- 其它衍生版（MaiBot-Next / Core / Desu / Fork）未核查。
+- 第三方协议端的风控触发条件、以及"安全发送频率"数字：**没有可信出处**（见 §2.10）。
 - 我们的"60s 内 3 条"回复闸与他们的"60s 30 条消息速率"**口径不同**，不能直接比较松紧。
 
 ## 5. 源码级细节（子代理交付）
@@ -389,8 +568,8 @@ Koishi 有"复读检测"。
 - **框架层（NoneBot2 / Koishi / Yunzai / ZeroBot）**：已并入 §1.7（源码级证据来自 nonebot2 与
   Miao-Yunzai 的 Gitea 镜像、ZeroBot 官方 docs 与 pkg.go.dev）。
 - **协议端与账号安全（NapCat / LLBot / Lagrange / go-cqhttp + QQ 官方）**：已并入 §1.6 与 §2.10。
-- **MaiBot 系（含衍生）源码级**：待补 —— 要核的是 `reply_necessity` 的完整评分表与阈值、
-  heartflow 的 `talk_value`/发言时机公式、idle backoff、群上下文构建、多群调度。
+- **MaiBot 1.x / MoFox_Bot 源码级**：已并入 §1.9。
+- **AstrBot / LangBot 的流水线阶段与群响应规则**：待补（第一轮给的是阶段数，本轮要落到字段）。
 - **AstrBot / LangBot 的流水线阶段与群响应规则**：待补 —— 要核的是两家"多条件取或"的具体
   实现与阶段清单（第一轮文档给的是阶段数，本轮要落到字段）。
 
