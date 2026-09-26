@@ -3151,7 +3151,63 @@ i18n 各 3 键；`napcat.html` 的疲劳卡片/开关/`loadFatigue`/填表/存�
    改名前的旧名字，pytest 报 not found → 非零返回码 → 被当成「变异后变红」。
    已在证据脚本里加防护：**目标测试自身必须先跑绿**，否则拒绝产出证据。
 
-### 12.6 待办
+### 12.7 真机验证（已做）+ 一次由我造成的事故
+
+**怎么重载的**：宿主 Python 侧没有单插件重载路由，但插件服务器（`http://127.0.0.1:48916`）
+有 `POST /plugin/{id}/reload`（同类还有 `/start`、`/stop`、`/plugins/reload`）。
+`POST /plugin/qq_auto_reply/reload` 三次都返回 `Plugin started successfully`。
+
+**重载后核对（全部通过）**：
+
+| 检查项 | 结果 |
+|---|---|
+| 新代码能起来 | ✅ 01:09:33 / 01:11:51 / 01:14:58 三次重载，NapCat 启动、OneBot 连上、`get_login_info`/`get_group_list` ok、无新增报错 |
+| 僵尸键清空 | ✅ `fatigue*` 6 个、`open_reply_probability`/`truth_reply_probability` 全部从磁盘消失 |
+| 两代命名合并 | ✅ `group_attention*` 残留 0；`attention_*` 就位 |
+| 级别收敛 | ✅ `1048307485` 由 `open` 变 `trusted`（别名迁移生效），`985066274` 保持 `trusted` |
+| 阈值 | ✅ `reply_necessity_threshold = 40.0` |
+| 权限名单 | ✅ `trusted_users`（2 个管理员）与 `trusted_groups` 完整保留 |
+
+⏳ **仍未验证**：必要性判定的**运行时**行为——重载后群里还没来消息，日志里
+`必要性不足` / `necessity_backoff` 均为 0 条（`配置迁移已落盘` 那条也是 0，
+因为 `_emit_log` 只进内存环、不落文件，属已知行为）。等群里来消息即可核对。
+
+### 12.8 ⚠️ 事故记录：迁移落盘冲掉了权限名单（已修复）
+
+**我做了什么**：为了让「加载期迁移」不只停在内存（磁盘长期留着旧键），在
+`settings_service.load_business_config()` 里加了一句「迁移过就立刻 persist」。
+
+**后果**：第一次重载后，磁盘上的 `trusted_users` 与 `trusted_groups` **全被清空**
+（管理员名单 + 两个群都没了）。
+
+**根因**：`_persist_business_config_locked()` 会用**内存里的权限管理器**覆盖这两个键
+（`_qq_settings["trusted_groups"] = group_permission_mgr.list_groups()`），
+而 `load_business_config()` 跑在 `rebuild_permission_managers(settings)` **之前**
+——此刻管理器还是 `None`，于是写入两个空列表。**是我把 persist 放在了错误的时序位置。**
+
+**修复**：改走 `_persist_business_config_locked(preserve_published_permissions=True)`
+——该参数会把「加载进来的原值」保留在 payload 与内存快照里（它本来就是为信任名单这类
+只读透传键设计的）。
+
+**数据恢复**：从 `business_config.json.bak-20260923-164241` 取回 `trusted_users`，
+并写回 `trusted_groups`（985066274 / 1048307485 = trusted，后者按用户要求由 open 升级）；
+恢复前先备份成 `business_config.json.bak-dsh-20260927-011248`。第三次重载后三项全部正确。
+
+**回归测试**：`test_migration_persist_keeps_permission_lists`（用真实的 config_store +
+一个「管理器为 None」的 fake plugin，正是事故时序）。**变异验证**：把修复改回普通
+`persist_business_config()` → 该测试变红（证明这条路径确实会冲名单），还原后全绿。
+
+**教训**：**在启动早期落盘任何东西之前，先问「这个键的真源是什么、它现在建好了吗」。**
+`trusted_*` 的真源是权限管理器，而管理器是**后建**的——早期 persist 必然写空。
+
+### 12.9 另一处「一个旋钮两个真源」
+
+阈值我改的是模块常量（40），却忘了 `settings_schema` 里那份默认值还是 30 ——
+于是**加载出来的配置**仍把她按 30 判（回放显示 30 与 40 档差了近一倍抑制率）。
+已把 schema 默认值改成 40，并加看门狗 `test_schema_default_matches_module_constant`
+钉住「两者必须相等」。
+
+### 12.10 待办
 
 1. **真机验证**：插件当前跑的仍是编辑前代码，需重载后看 `[Gate] … 必要性不足` 与
    `necessity_backoff` 两类日志，确认她的发言密度实际下降。

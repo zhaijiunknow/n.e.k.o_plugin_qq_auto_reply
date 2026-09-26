@@ -168,3 +168,91 @@ async def test_unknown_legacy_prefixed_keys_are_dropped(tmp_path):
 
     assert "fatigue_some_future_key" not in loaded, "fatigue* 前缀残留未被清掉"
     assert "group_attention_whatever" not in loaded, "group_attention_* 前缀残留未被清掉"
+
+
+@pytest.mark.asyncio
+async def test_load_reports_whether_it_migrated(tmp_path):
+    """``load()`` 必须报告「这次是否真的迁移过」——调用方据此决定要不要落盘。
+
+    真机踩过：迁移只改内存视图，磁盘里长期留着旧键（插件已按新键跑，
+    配置文件却还是两代键并存）。settings_service 会在迁移过时立刻写盘一次。
+    """
+    _write_config(tmp_path, {"group_attention_focus_threshold": 6.5, "fatigue_enabled": True})
+    store = _store(tmp_path)
+    await store.load()
+    assert store.migration_applied is True
+
+    # 干净的配置：不该报告迁移（否则每次启动都白写一次盘）
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    clean_store = _store(clean)
+    await clean_store.load()                      # 文件不存在 → 默认值
+    assert clean_store.migration_applied is False
+
+    await clean_store.save(clean_store.default_config())
+    await clean_store.load()
+    assert clean_store.migration_applied is False
+
+
+@pytest.mark.asyncio
+async def test_migrated_file_is_rewritten_after_save(tmp_path):
+    """迁移后保存一次，磁盘上就不该再有旧键/僵尸键。"""
+    _write_config(tmp_path, {"fatigue_tiers": [1, 2], "group_attention_max_score": 8.0, "reply_mode": "text"})
+    store = _store(tmp_path)
+    loaded = await store.load()
+    assert store.migration_applied is True
+    await store.save(loaded)
+    on_disk = json.loads((tmp_path / CONFIG_FILE).read_text(encoding="utf-8"))
+    assert "fatigue_tiers" not in on_disk
+    assert "group_attention_max_score" not in on_disk
+    assert on_disk["attention_max_score"] == 8.0
+
+
+@pytest.mark.asyncio
+async def test_migration_persist_keeps_permission_lists(tmp_path):
+    """加载期迁移落盘时**不能**把权限名单冲成空。
+
+    真机事故（本测试就是它的回归）：``load_business_config`` 跑在
+    ``rebuild_permission_managers`` **之前**，此时权限管理器还是空的；
+    普通 persist 会用 ``list_users()/list_groups()``（空）覆盖磁盘上的信任名单
+    —— 一次插件重载把管理员与两个群全清掉了。
+
+    修复方式：走 ``_persist_business_config_locked(preserve_published_permissions=True)``。
+    """
+    from types import SimpleNamespace
+
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    users = [{"qq": "820040531", "level": "admin"}]
+    groups = [{"group_id": "985066274", "level": "trusted"}, {"group_id": "1048307485", "level": "open"}]
+    _write_config(tmp_path, {
+        "trusted_users": users,
+        "trusted_groups": groups,
+        "fatigue_enabled": True,               # 僵尸键：迁移会清掉
+        "group_attention_max_score": 8.0,      # 旧名：迁移会改名
+        "reply_mode": "text",
+    })
+
+    plugin = SimpleNamespace(
+        config_store=QQAutoReplyConfigStore(tmp_path),
+        _qq_settings={},
+        permission_mgr=None,          # 启动早期就是 None —— 事故的成因
+        group_permission_mgr=None,
+        backlog_store=None,
+        logger=SimpleNamespace(error=lambda *a, **k: None, info=lambda *a, **k: None),
+        _emit_log=lambda *a, **k: None,
+        _create_backlog_store_from_settings=lambda settings: None,
+    )
+    assert plugin.config_store.migration_applied is False
+
+    await QQSettingsService(plugin).load_business_config()
+    assert plugin.config_store.migration_applied is True
+
+    on_disk = json.loads((tmp_path / CONFIG_FILE).read_text(encoding="utf-8"))
+    assert on_disk["trusted_users"] == users, "迁移落盘把信任用户名单冲掉了"
+    assert on_disk["trusted_groups"] == groups, "迁移落盘把信任群名单冲掉了"
+    assert plugin._qq_settings["trusted_groups"] == groups
+    # 迁移本身仍然生效
+    assert "fatigue_enabled" not in on_disk
+    assert on_disk["attention_max_score"] == 8.0

@@ -352,7 +352,7 @@ MISC = (
     # 刻意**不 saveable、不给 UIInput**：saveable 键有硬契约（必须同时出现在 dashboard
     # 快照与 save_settings 参数里，两条看门狗盯着），而这是调参项不是日常开关 ——
     # 直接改 business_config.json 即可（与那些昼夜节律参数同类）。
-    SettingSpec("reply_necessity_threshold", "float", 30.0,
+    SettingSpec("reply_necessity_threshold", "float", 40.0,
                 floor=0.0, ceiling=100.0,
                 description="焦点群「这句该不该接」的判定阈值（0=关闭；改配置文件生效）"),
     SettingSpec("normal_relay_probability", "float", 0.1, saveable=True,

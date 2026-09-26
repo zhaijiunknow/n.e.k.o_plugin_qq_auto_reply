@@ -29,6 +29,9 @@ class QQAutoReplyConfigStore:
         settings_schema.BY_KEY["strategy_mode"].enum or ()
     )
 
+    #: 上一次 load() 是否真的迁移/清理过键（调用方据此决定要不要落盘）。
+    migration_applied: bool = False
+
     def __init__(self, base_dir: Path):
         self._path = Path(base_dir) / self.FILE_NAME
         self._lock = asyncio.Lock()
@@ -163,20 +166,31 @@ class QQAutoReplyConfigStore:
     _LEGACY_ZOMBIE_PREFIXES = ("group_attention_", "fatigue")
 
     @classmethod
-    def _migrate_attention_keys(cls, settings: dict[str, Any]) -> None:
-        """就地合并两代注意力命名并清掉僵尸键。幂等，可反复调用。"""
+    def _migrate_attention_keys(cls, settings: dict[str, Any]) -> bool:
+        """就地合并两代注意力命名并清掉僵尸键。幂等，可反复调用。
+
+        返回**是否真的改动了内容**：调用方据此决定要不要把结果落盘 ——
+        迁移只改内存视图的话，配置文件会长期留着旧键（真机上就出现过：
+        插件已按新键跑，磁盘里却还躺着 6 个 fatigue 键与 open 概率）。
+        """
+        changed = False
         for old, new in cls._LEGACY_ATTENTION_KEY_MAP.items():
             if old not in settings:
                 continue
+            changed = True
             legacy_value = settings.pop(old)
             # 新名已有值 ⇒ 以新名为准（它才是当前保存链路写的那个）；
             # 新名缺失才搬运旧值，避免把用户调过的参数悄悄退回默认。
             if new not in settings:
                 settings[new] = legacy_value
         for zombie in cls._LEGACY_ZOMBIE_KEYS:
-            settings.pop(zombie, None)
+            if zombie in settings:
+                settings.pop(zombie, None)
+                changed = True
         for key in [k for k in settings if str(k).startswith(cls._LEGACY_ZOMBIE_PREFIXES)]:
             settings.pop(key, None)
+            changed = True
+        return changed
 
     def default_config(self) -> dict[str, Any]:
         """全部默认值。**唯一真相在 ``settings_schema.SETTINGS``**。
@@ -198,7 +212,7 @@ class QQAutoReplyConfigStore:
             return self.default_config()
         # 必须作用在**原始 payload** 上：下面 merged 会先用 default_config()
         # 把新名填满，届时已无法区分「用户存过新名」与「schema 默认值」。
-        self._migrate_attention_keys(payload)
+        self.migration_applied = self._migrate_attention_keys(payload)
         merged = self.default_config()
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []

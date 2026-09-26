@@ -597,6 +597,20 @@ class QQSettingsService:
     async def load_business_config(self) -> dict[str, Any]:
         self.plugin._qq_settings = await self.plugin.config_store.load()
         self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
+        if self.plugin.config_store.migration_applied:
+            # 加载期迁移只改内存视图；不落盘的话配置文件会长期留着旧键
+            # （真机出现过：插件已按新键跑，磁盘里还留着 6 个已删功能的旧键）。
+            #
+            # ⚠️ **必须 preserve_published_permissions=True**：本函数跑在
+            # ``rebuild_permission_managers`` 之前，权限管理器此刻还是空的，
+            # 普通 persist 会用 ``list_users()/list_groups()``（空）覆盖磁盘上的
+            # 信任名单——真机事故：管理员与两个群被一次启动清空。
+            # 该参数会把「加载进来的原值」保留在 payload 与内存快照里。
+            try:
+                await self._persist_business_config_locked(preserve_published_permissions=True)
+                self.plugin._emit_log("INFO", "配置迁移已落盘：旧键已清理（注意力两代命名 / 已删功能）")
+            except Exception as exc:
+                self.plugin._emit_log("WARN", f"配置迁移落盘失败（内存视图仍正确）: {exc}")
         return dict(self.plugin._qq_settings)
 
     async def ensure_business_config_initialized(self) -> dict[str, Any]:

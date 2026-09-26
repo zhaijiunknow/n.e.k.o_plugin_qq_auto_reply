@@ -257,3 +257,15 @@ def test_default_curve_at_40():
     assert score_necessity(reaction).decision == "wait"         # 纯短反应：不接
     assert score_necessity(talkative).decision == "wait"        # 她刚说过一阵子：让一让
     assert score_necessity(_sig(is_at_bot=True)).decision == "trigger"
+
+
+def test_schema_default_matches_module_constant():
+    """同一个旋钮不能有两个真源：schema 的默认值必须等于 ``DEFAULT_TRIGGER_SCORE``。
+
+    踩过的坑：模块常量改成 40 后忘了改 schema，于是**加载出来的配置**仍是 30，
+    真机上这一关比她该有的更严（回放显示 30 档与 40 档差了近一倍抑制率）。
+    """
+    from plugin.plugins.qq_auto_reply import settings_schema
+
+    spec = next(s for s in settings_schema.SETTINGS if s.key == "reply_necessity_threshold")
+    assert spec.default == DEFAULT_TRIGGER_SCORE
