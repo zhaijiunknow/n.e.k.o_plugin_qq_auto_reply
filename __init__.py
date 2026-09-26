@@ -1292,9 +1292,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         _ = kw
         service = self.plugin_tool_service
         tiers = service.tiers()
-        # refresh=True：界面要看**实时**的启停状态（刚启动一个插件就该能加它），
+        # refresh_for_ui：界面要看**此刻**的启停状态（刚启动一个插件就该能加它）。
+        # 它是一次真网络往返（本机 HTTP，实测 ~0.3s，4s 上限后回退缓存）——
         # 而每轮生成那条路径吃的是 60s 缓存（见 CANDIDATES_TTL_SECONDS）。
-        candidates = await service.list_candidates(refresh=True)
+        candidates = await service.refresh_for_ui()
         running_by_id = {
             row["plugin_id"]: bool(row.get("running")) for row in candidates
         }

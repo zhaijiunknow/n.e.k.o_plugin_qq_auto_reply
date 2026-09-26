@@ -693,6 +693,7 @@
   "ui.openplat.plugintools.drop_hint": "把卡片拖到这里，或点左边卡片上的档位按钮",
   "ui.openplat.plugintools.empty_available": "没有可添加的插件（非 QQ 插件都会列在这里）",
   "ui.openplat.plugintools.not_running": "未启动",
+  "ui.openplat.plugintools.running": "运行中",
   "ui.openplat.plugintools.entry_count": "可用功能 ",
   "ui.openplat.plugintools.btn_remove": "撤销",
   "ui.openplat.plugintools.saved": "分级已保存",

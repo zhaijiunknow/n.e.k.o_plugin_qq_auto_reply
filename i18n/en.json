@@ -693,6 +693,7 @@
   "ui.openplat.plugintools.drop_hint": "Drop a card here, or use the tier buttons on the left",
   "ui.openplat.plugintools.empty_available": "Nothing to add (every non-QQ plugin shows up here)",
   "ui.openplat.plugintools.not_running": "not running",
+  "ui.openplat.plugintools.running": "running",
   "ui.openplat.plugintools.entry_count": "callable entries ",
   "ui.openplat.plugintools.btn_remove": "Remove",
   "ui.openplat.plugintools.saved": "Permission tier saved",

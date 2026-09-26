@@ -161,6 +161,50 @@ def test_a_stale_cache_never_blocks_the_reader():
     assert elapsed < 1.0, f"读路径等了 {elapsed:.2f}s —— 它去 await 宿主了"
 
 
+# ── 0b. 界面那条路：要**此刻的真相**，不是 60 秒内的快照 ──────────────
+#
+# 真机复现（2026-09-26 17:3x，`.dsh-artifacts/repro-stale-candidate.py`）：
+#   启动前：宿主=False 桥候选=False
+#   POST /plugin/mcp_adapter/start → success
+#   启动后（立刻问桥，0.34s）：宿主=True  桥候选=False   ← 使用者的原话
+# 根因：界面走 `wait_for_a_fresh_cache`，它按**年龄**判"新鲜"（< 60s），于是最多 60 秒
+# 前的快照会被原样当成最新的。
+
+def test_the_ui_path_asks_the_host_again_instead_of_serving_a_stale_snapshot():
+    plugin = _plugin(plugins_result=_plugins_payload(_candidate("mcp_adapter", status="stopped")))
+    service = plugin.plugin_tool_service
+    asyncio.run(_refresh(service))            # 缓存里是"停着"的快照（且按年龄算新鲜）
+
+    # 使用者在别处把它启动了：宿主那边已经是 running
+    stale = service.cached_candidates()
+
+    async def _now_running():
+        return _plugins_payload(_candidate("mcp_adapter", status="running"))
+
+    service._fetch_registry = _now_running
+
+    fresh = asyncio.run(service.refresh_for_ui())
+
+    assert stale[0]["running"] is False, "夹具没造出「旧快照」这个前提"
+    row = next(r for r in fresh if r["plugin_id"] == "mcp_adapter")
+    assert row["running"] is True, "界面拿到了 60 秒内的旧快照（卡片就会一直写「未启动」）"
+    assert service.cached_candidates()[0]["running"] is True, "顺手也该把缓存换成新的"
+
+
+def test_the_ui_path_falls_back_to_the_cache_when_the_host_is_slow():
+    """界面不该被宿主拖住：问超时就给手里那份（并踢一次后台刷新）。"""
+    plugin = _plugin(plugins_result=_plugins_payload(_candidate("web_search")), query_delay=10.0)
+    service = plugin.plugin_tool_service
+    service._candidates_cache = (time.monotonic(), [{"plugin_id": "web_search", "entries": [], "running": True}])
+
+    started = time.monotonic()
+    rows = asyncio.run(service.refresh_for_ui(timeout=0.3))
+    elapsed = time.monotonic() - started
+
+    assert [row["plugin_id"] for row in rows] == ["web_search"], "超时后没退回缓存"
+    assert elapsed < 3.0, f"界面被宿主拖了 {elapsed:.2f}s"
+
+
 def test_the_query_asks_for_entry_ids():
     """工具定义要靠 entry id 列表 —— 取数那条路必须真的被走到。"""
     plugin = _plugin(plugins_result=_plugins_payload(_candidate("web_search")))
@@ -990,8 +1034,45 @@ def test_the_page_reports_when_the_channel_is_not_the_open_platform():
     assert "not_openplat" in text
 
 
+def test_cards_are_green_while_running_and_grey_while_stopped():
+    """使用者 17:3x 定：**在跑 = 绿卡、没在跑 = 灰卡**，一眼看出来哪些挂了工具。"""
+    text = _page_text()
+
+    assert "var(--success-tint-strong)" in text and "var(--success-border)" in text, "没有绿卡那套色"
+    assert "border-left:3px solid var(--success)" in text, "绿卡没有明显的绿色左边条"
+    assert "background:var(--overlay);border:1px solid var(--border)" in text, "没有灰卡那套色"
+    assert "ui.openplat.plugintools.running" in text, "运行中没打标记"
+    assert "data-running=" in text, "卡片没把状态落在 DOM 上（不好验也不好样式化）"
+
+
+def test_the_page_refreshes_itself_so_the_cards_do_not_go_stale():
+    """使用者 17:3x 的原话：「插件已经启动了，但是卡片还是显示未启动」。
+
+    以前这页只在进页时读一次；状态是在别处（插件管理）改的，于是卡片会一直停在旧值。
+    现在进页起定时器、离开就停。
+    """
+    text = _page_text()
+
+    assert "ptScheduleRefresh" in text and "ptStopRefresh" in text, "没有自动刷新那对函数"
+    assert "setInterval(" in text, "没有定时器"
+    assert "ptScheduleRefresh()}" in text, "切到插件页没起定时器"
+    assert "if(page!=='plugintools')ptStopRefresh()" in text, "离开插件页没停定时器"
+    assert "document.hidden" in text, "后台标签页里还在轮询"
+
+
+def test_the_plugin_tools_query_asks_for_a_real_refresh():
+    """那条 bug 其实在**接线**上：界面查询当时选了"读缓存"那条路。
+
+    所以这里直接钉接线：`plugin_tools` 的取数必须是 `refresh_for_ui()`（真去问一次），
+    而不是 `list_candidates(refresh=True)`（按年龄算新鲜）。
+    """
+    source = (pathlib.Path(__file__).resolve().parents[1] / "__init__.py").read_text(encoding="utf-8")
+
+    assert "await service.refresh_for_ui()" in source, "界面查询又退回读缓存了"
+    assert "list_candidates(refresh=True)" not in source, "界面查询还在用按年龄判新鲜那条路"
+
+
 def test_every_plugin_tools_label_exists_in_both_bundles():
-    import json
 
     base = pathlib.Path(__file__).resolve().parents[1] / "i18n"
     zh = json.loads((base / "zh-CN.json").read_text(encoding="utf-8"))

@@ -311,7 +311,7 @@ function tf(key,fallback,vals){return t(key,fallback).replace(/\{([a-zA-Z0-9_]+)
 async function call(entry,args){args=args||{};let r=await fetch(RUNS,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plugin_id:P,entry_id:entry,args})});if(!r.ok)throw new Error(`HTTP ${r.status}`);let d=await r.json(),id=d.run_id||d.id;if(!id)throw new Error('no run_id');/* SSE 等 run 完成 + 2s 慢轮询兜底 */let status=await UISSE.awaitRun(id,{fetchStatus:async function(runId){try{let p=await fetch(RUNS+'/'+runId);if(!p.ok)return null;let rec=await p.json();return['succeeded','failed','canceled','timeout'].includes(rec.status)?rec.status:null}catch(e){return null}}});if(status==='succeeded'){let exp=await fetch(RUNS+'/'+id+'/export');if(!exp.ok)return{};let{items=[]}=await exp.json();let item=items.find(i=>i.type==='json'&&i.json)||items[0];if(!item)return{};let raw=item.json||{};while(raw&&raw.data&&typeof raw.data==='object'&&('success' in raw.data||'error' in raw.data))raw=raw.data;if(raw&&raw.success&&raw.data&&typeof raw.data==='object')raw=raw.data;return raw}throw new Error(status)}
 function toast(msg,ok){let e=document.getElementById('toast');e.textContent=msg;e.style.background=ok?'var(--success)':'var(--danger)';e.style.opacity='1';e.style.transform='translateY(0)';setTimeout(()=>{e.style.opacity='0';e.style.transform='translateY(-10px)'},2000)}
 let currentPage='status',currentSub='overview';
-function switchPage(page){currentPage=page;document.querySelectorAll('#sidebar .nav-item').forEach(e=>e.classList.toggle('active',e.dataset.page===page));document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));let tb=document.getElementById('topbar-tabs'),tabs=[];if(page==='status')tabs=[{id:'overview',label:t('ui.shared.topbar.tab_overview','概览')}];else if(page==='config')tabs=[{id:'connection',label:t('ui.shared.topbar.tab_connection','连接')},{id:'gating',label:t('ui.napcat.topbar.tab_gating','门控')},{id:'accounts',label:t('ui.shared.topbar.tab_users','用户')}];tb.innerHTML=tabs.map(tt=>`<span class="tb-tab${currentSub===tt.id?' active':''}" data-sub="${tt.id}">${tt.label}</span>`).join('');tb.querySelectorAll('.tb-tab').forEach(tt=>tt.addEventListener('click',()=>switchSub(tt.dataset.sub)));switchSub(tabs.length?tabs[0].id:'');if(page==='guide'){loadDashboard();updateGuide()}else if(page==='status')loadDashboard();else if(page==='config')loadDashboard();else if(page==='sticker')loadStickers();else if(page==='plugintools')loadPluginTools();else if(page==='prompts')loadPromptEditorState();else if(page==='logs'){loadLogs();startLogPoll()}else{stopLogPoll()}}
+function switchPage(page){currentPage=page;document.querySelectorAll('#sidebar .nav-item').forEach(e=>e.classList.toggle('active',e.dataset.page===page));document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));let tb=document.getElementById('topbar-tabs'),tabs=[];if(page==='status')tabs=[{id:'overview',label:t('ui.shared.topbar.tab_overview','概览')}];else if(page==='config')tabs=[{id:'connection',label:t('ui.shared.topbar.tab_connection','连接')},{id:'gating',label:t('ui.napcat.topbar.tab_gating','门控')},{id:'accounts',label:t('ui.shared.topbar.tab_users','用户')}];tb.innerHTML=tabs.map(tt=>`<span class="tb-tab${currentSub===tt.id?' active':''}" data-sub="${tt.id}">${tt.label}</span>`).join('');tb.querySelectorAll('.tb-tab').forEach(tt=>tt.addEventListener('click',()=>switchSub(tt.dataset.sub)));switchSub(tabs.length?tabs[0].id:'');if(page==='guide'){loadDashboard();updateGuide()}else if(page==='status')loadDashboard();else if(page==='config')loadDashboard();else if(page==='sticker')loadStickers();else if(page==='plugintools'){loadPluginTools();ptScheduleRefresh()}else if(page==='prompts')loadPromptEditorState();else if(page==='logs'){loadLogs();startLogPoll()}else{stopLogPoll()}if(page!=='plugintools')ptStopRefresh()}
 function switchSub(sub){currentSub=sub;document.querySelectorAll('#topbar .tb-tab').forEach(tt=>tt.classList.toggle('active',tt.dataset.sub===sub));let pageId='page-'+currentPage+'-'+sub;let el=document.getElementById(pageId);if(!el)el=document.getElementById('page-'+currentPage);if(el){document.querySelectorAll('.page.active').forEach(e=>e.classList.remove('active'));el.classList.add('active')}if(sub==='accounts'&&(state.identityScope||{}).actor_scope==='per_conversation')loadIdentityClaims()}
 async function updateGuide(){
 var done=0,total=5,items=[];
@@ -362,14 +362,27 @@ async function loadDashboard(){try{let d=await call('query', {action:'dashboard'
    说出来，否则使用者会以为配好了就能用。拖拽落点就是保存动作 —— 拖完还要再找
    一次"保存"按钮是更差的交互。 */
 let _pluginTools={tiers:{},candidates:[],configured_not_running:[],max:8,enabled_on_this_channel:false,connection_mode:''};
+let PT_REFRESH_MS=10000,_ptTimer=null;
 async function loadPluginTools(){let box=document.getElementById('pt-zone-available');if(!box)return;try{let d=await call('query',{action:'plugin_tools'});_pluginTools=Object.assign(_pluginTools,d||{});renderPluginTools()}catch(e){toast(t('ui.openplat.plugintools.load_failed','加载插件列表失败: ')+e.message)}}
+/* 这一页要**自己会更新**：启停状态是在别处（插件管理）改的，而卡片以前只在进页时读一次 ——
+   于是就出现"插件已经启动了，卡片还写着未启动"。每 PT_REFRESH_MS 重读一次（界面那条读
+   路径是真的去问宿主，见 plugin_tool_service.refresh_for_ui），离开这页就停掉。 */
+function ptScheduleRefresh(){ptStopRefresh();_ptTimer=setInterval(()=>{if(currentPage==='plugintools'&&!document.hidden)loadPluginTools();else ptStopRefresh()},PT_REFRESH_MS)}
+function ptStopRefresh(){if(_ptTimer){clearInterval(_ptTimer);_ptTimer=null}}
 function _ptCard(c,tier){
   /* 加插件**不看有没有启动**（使用者定的）：全量出卡片、先分档位；在不在跑只影响
-     "这一轮挂不挂得上"，所以这里只打个「未启动」标记，不禁用、也不隐藏。
+     "这一轮挂不挂得上"，所以这里只打个标记，不禁用、也不隐藏。
+     **卡片颜色就是状态**（使用者 17:3x 定）：在跑 = 绿色卡片，没在跑 = 灰色卡片 ——
+     一眼扫过去就知道哪些挂了工具、哪些只是先配好档位。
      **每个卡片自己带两个档位按钮**：一多起来（十几张卡）纯拖拽就没法用了 ——
      列表底部的卡片根本拖不到右侧分区去。按钮是可靠路径，拖拽只是顺手的加速器。 */
   let stopped=c.running===false;
-  let warn=stopped?` <span class="tag tag-offline">${t('ui.openplat.plugintools.not_running','未启动')}</span>`:'';
+  let stateTag=stopped
+    ?`<span class="tag tag-offline">${t('ui.openplat.plugintools.not_running','未启动')}</span>`
+    :`<span class="tag tag-online">${t('ui.openplat.plugintools.running','运行中')}</span>`;
+  let skin=stopped
+    ?'background:var(--overlay);border:1px solid var(--border)'
+    :'background:var(--success-tint-strong);border:1px solid var(--success-border);border-left:3px solid var(--success)';
   let entries=(c.entries||[]).length;
   let count=entries?` · ${t('ui.openplat.plugintools.entry_count','可用功能 ')}${entries}`:'';
   let pid=escapeOnclick(c.plugin_id);
@@ -377,9 +390,9 @@ function _ptCard(c,tier){
   let actions=tier
     ? `${btn('all',t('ui.openplat.plugintools.tier_all_short','所有人'),'')} ${btn('admin',t('ui.openplat.plugintools.tier_admin_short','仅管理员'),'')} <button class="btn btn-ghost btn-sm" onclick="ptSetTier('${pid}',null)">${t('ui.openplat.plugintools.btn_remove','撤销')}</button>`
     : `${btn('all',t('ui.openplat.plugintools.tier_all_short','所有人'),'')} ${btn('admin',t('ui.openplat.plugintools.tier_admin_short','仅管理员'),'')}`;
-  return `<div class="pt-card" draggable="true" data-pid="${escapeHtml(c.plugin_id)}" data-tier="${escapeHtml(tier||'')}"
-      style="background:var(--overlay);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 10px;margin-bottom:6px;cursor:grab${stopped?';opacity:.72':''}">
-      <div style="font-weight:600;font-size:13px">${escapeHtml(c.name||c.plugin_id)}${warn}</div>
+  return `<div class="pt-card" draggable="true" data-pid="${escapeHtml(c.plugin_id)}" data-tier="${escapeHtml(tier||'')}" data-running="${stopped?'0':'1'}"
+      style="${skin};border-radius:var(--radius-md);padding:8px 10px;margin-bottom:6px;cursor:grab">
+      <div style="font-weight:600;font-size:13px">${escapeHtml(c.name||c.plugin_id)} ${stateTag}</div>
       <div style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(c.plugin_id)}${count}</div>
       <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${actions}</div>
     </div>`;

@@ -115,6 +115,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         )""",
         "        pass",
     ),
+    (
+        "plugin_tool_service.py",
+        "界面那条路退回「按年龄算新鲜」的缓存（刚启动的插件最多 60 秒仍显示未启动）",
+        """        try:
+            return await asyncio.wait_for(self.refresh_candidates(), timeout=max(0.1, timeout))""",
+        """        try:
+            return await asyncio.wait_for(self.wait_for_a_fresh_cache(timeout), timeout=max(0.1, timeout))""",
+    ),
+    (
+        "__init__.py",
+        "界面查询改回读缓存（同上：卡片状态会滞后）",
+        """        candidates = await service.refresh_for_ui()""",
+        """        candidates = await service.list_candidates(refresh=True)""",
+    ),
 ]
 
 

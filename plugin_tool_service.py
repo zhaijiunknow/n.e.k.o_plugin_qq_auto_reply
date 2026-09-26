@@ -75,6 +75,10 @@ CANDIDATES_TTL_SECONDS = 60.0
 #: 界面那条读路径最多等多久（秒）。
 UI_WAIT_SECONDS = 2.0
 
+#: 界面"真的去问一次宿主"的超时（秒）。比 `UI_WAIT_SECONDS` 宽一点：这是**一次真网络
+#: 往返**（本机 HTTP，实测 ~0.3s），而超时后只是退回缓存，不会把界面卡住。
+UI_REFRESH_TIMEOUT_SECONDS = 4.0
+
 #: 可选参数最多列几个名字（只列名，不列类型/说明）。
 OPTIONAL_PARAMS_MAX_NAMES = 4
 
@@ -233,7 +237,12 @@ class QQPluginToolService:
         return self.cached_candidates()
 
     async def wait_for_a_fresh_cache(self, timeout: float = UI_WAIT_SECONDS) -> list[dict[str, Any]]:
-        """等一次刷新落进缓存（界面用），超时就给手里那份 —— 界面不该被宿主拖住。"""
+        """等一次刷新落进缓存，超时就给手里那份 —— 界面不该被宿主拖住。
+
+        ⚠️ 注意它判的是"**按年龄**算新鲜"（< `CANDIDATES_TTL_SECONDS`），所以手里那份
+        可能是 60 秒前的快照。**界面不能用这条**：使用者刚启动一个插件时，界面会继续
+        显示「未启动」最多 60 秒。界面走 `refresh_for_ui`。
+        """
         import asyncio
 
         self.ensure_refresh_loop()
@@ -243,6 +252,28 @@ class QQPluginToolService:
                 return self.cached_candidates()
             await asyncio.sleep(0.1)
         return self.cached_candidates()
+
+    async def refresh_for_ui(self, timeout: float = UI_REFRESH_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
+        """界面那条路：**真的去问宿主一次**，而不是接受"按年龄算新鲜"的缓存。
+
+        真机复现（2026-09-26 17:3x）：启动一个已停止的插件后**立刻**问桥，宿主
+        `/plugins` 已经是 `running`，而候选表仍说 `running=false` —— 因为后台循环
+        每 60 秒才刷一次，而 `wait_for_a_fresh_cache` 见到"5 秒前的快照"就当作新鲜货
+        直接返回。使用者的原话：「插件已经启动了，但是卡片还是显示未启动」。
+
+        界面要的是**此刻的真相**，所以这里直接拉一次；只在超时/失败时退回缓存，
+        并顺手踢一次后台循环补上。
+        """
+        import asyncio
+
+        try:
+            return await asyncio.wait_for(self.refresh_candidates(), timeout=max(0.1, timeout))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.plugin.logger.warning("界面刷新候选表失败（先给缓存）", exc_info=True)
+            self.ensure_refresh_loop()
+            return self.cached_candidates()
 
     # ── 宿主注册表 ──────────────────────────────────────────────────
 
