@@ -65,7 +65,7 @@ def _sticker_plan(*, is_group: bool) -> QQDeliveryPlan:
 
 
 def test_group_stickers_still_go_through_send_group_image():
-    """群聊那条**不许**被这次改动碰到（回归守卫）。"""
+    """**OneBot** 的群聊那条不许被这次改动碰到（回归守卫）。"""
     client = _Client()
     node = _node(client)
 
@@ -74,6 +74,36 @@ def test_group_stickers_still_go_through_send_group_image():
     assert delivered is True
     assert client.group_images == [("1048307485", STICKER_PATH)]
     assert client.private_segments == []
+
+
+def test_group_sticker_on_the_open_platform_goes_through_the_media_helper(monkeypatch):
+    """群聊在开放平台上也必须走富媒体流程。
+
+    这是**真机实测逼出来的**：连接器那份（宿主副本）的群聊图只实现旧式直传，
+    而 2026-09-26 的现场日志证明旧式直传在开放平台已经失效：
+
+        [QQOpenPlatform] 图片直传上传未拿到 file_info
+        [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJ9rU
+
+    也就是说这条路不接的话，群聊表情包只会静默降级成「[图片]」三个字。
+    """
+    calls: list[tuple] = []
+
+    async def _fake(conn, group_id, source, **kw):
+        calls.append((conn, group_id, source, kw))
+        return "mid-group-image"
+
+    monkeypatch.setattr(connector_seam.open_platform_media, "send_group_image", _fake)
+    client = _Client(channel="open", mode="open_platform", needs_attention=False)
+    node = _node(client)
+
+    delivered = asyncio.run(node._send_sticker(_sticker_plan(is_group=True), QQMessageBlock(sticker="7")))
+
+    assert delivered is True
+    assert calls and calls[0][1] == "1048307485" and calls[0][2] == STICKER_PATH
+    assert calls[0][3].get("record_sent") is False
+    # 走对了路就不该再往连接器那条（只会降级的）群聊图接口上发一遍
+    assert client.group_images == []
 
 
 def test_private_sticker_on_the_open_platform_goes_through_the_media_helper(monkeypatch):

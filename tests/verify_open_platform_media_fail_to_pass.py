@@ -38,12 +38,31 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "reply_delivery_node.py",
         "私聊表情包退回「静默不发」（这轮补的那条路）",
-        """        client = self.plugin.qq_client
-        if plan.target_type == "group":""",
-        """        client = self.plugin.qq_client
-        if plan.target_type != "group":
-            return False
-        if plan.target_type == "group":""",
+        """        if is_open_platform:
+            message_id = await media.send_private_image(
+                client, plan.target_id, sticker_path, record_sent=False,
+            )
+            return self._confirm_platform_result(message_id)
+        return self._confirm_platform_result(
+            await client.send_private_message_segments(
+                plan.target_id, [{"type": "image", "data": {"file": sticker_path}}],
+                record_sent=False,
+            ),
+        )""",
+        """        return False
+        if is_open_platform:
+            message_id = await media.send_private_image(
+                client, plan.target_id, sticker_path, record_sent=False,
+            )
+            return self._confirm_platform_result(message_id)""",
+    ),
+    (
+        "reply_delivery_node.py",
+        "群聊表情包退回只实现旧式直传的连接器那条（真机上会静默降级成「[图片]」）",
+        """        if plan.target_type == "group":
+            if is_open_platform:""",
+        """        if plan.target_type == "group":
+            if False:""",
     ),
     (
         "voice_reply_service.py",

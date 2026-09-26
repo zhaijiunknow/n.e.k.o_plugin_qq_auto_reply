@@ -295,3 +295,47 @@ async def send_private_image(
         except Exception:
             pass
     return message_id or None
+
+
+async def send_group_image(
+    conn: Any, group_id: str, source: str, *,
+    content: str = "", reply_message_id: str = "", at_user_id: str = "", record_sent: bool = False,
+) -> str | None:
+    """给群聊发一张图（``msg_type=7`` + ``media.file_info``）。
+
+    **为什么群聊也要走这里** —— 2026-09-26 真机实测逼出来的。投递层原来直接调连接器的
+    ``send_group_image``，而那份（宿主副本）只实现了**旧式直传**。真机上旧式直传在开放
+    平台**已经失效**，日志原文：
+
+        [QQOpenPlatform] 图片直传上传未拿到 file_info
+        [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJ9rU
+
+    也就是说**群聊表情包在开放平台上一直是坏的**（静默降级成 `[图片]` 三个字），
+    而私聊那条只是因为走了本模块的分片兜底才成功。两边现在走同一条。
+    """
+    target = str(group_id or "").strip()
+    if not target:
+        return None
+    file_info = await upload_image(conn, scope="groups", owner_id=target, source=source)
+    if not file_info:
+        return None
+    body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
+    at = str(at_user_id or "").strip()
+    text = str(content or "").strip()
+    if at or text:
+        body["content"] = (f"<@!{at}>" if at else "") + text
+    reply_id = str(reply_message_id or "").strip()
+    if reply_id:
+        body["msg_id"] = reply_id
+    try:
+        data = await _post(conn, f"/v2/groups/{target}/messages", body)
+    except Exception as exc:
+        _log(conn, "warning", f"发送群聊图片失败: {exc}")
+        return None
+    message_id = str(data.get("id") or "")
+    if message_id and record_sent:
+        try:
+            conn.record_sent_message_id(message_id)
+        except Exception:
+            pass
+    return message_id or None

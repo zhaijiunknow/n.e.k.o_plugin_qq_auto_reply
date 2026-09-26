@@ -248,28 +248,43 @@ class QQReplyDeliveryNode:
         return result is not None
 
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
+        """表情包投递。**两条通道走法不同，不能合并**：
+
+        * **开放平台**：一律走 `connector_seam.open_platform_media` 里的自由函数
+          （上传 + `msg_type=7` + `media`）。理由是硬的 ——
+          ① 宿主那份连接器没有单聊富媒体方法（插件改不了宿主的文件）；
+          ② 宿主那份的**群聊**图只实现旧式直传，而 2026-09-26 真机实测证明旧式直传
+          在开放平台已经失效（日志：「图片直传上传未拿到 file_info」→ 分片才成功）。
+          所以群聊也走这里，否则群聊表情包只会静默降级成「[图片]」三个字。
+        * **OneBot（NapCat 等）**：`send_group_image` / `send_private_msg` 本来就认
+          image 段，用现成接口。私聊刻意**不**走连接器上那个 `send_private_image()`：
+          它固定 `record_sent=True`，而表情包这条一直是 `record_sent=False` ——
+          "她发出去的消息 id 缓存"里不该多出表情包。
+
+        私聊以前第一行就是 `return False`（表情包是装饰，不发就不发）；"群里能发、私聊
+        静默不发"并不是谁定的规矩，只是这条路没写。
+        """
         sticker_path = self.plugin._resolve_sticker_path(block.sticker)
         if not sticker_path:
             return False
         client = self.plugin.qq_client
+        media = connector_seam.open_platform_media
+        is_open_platform = media.is_open_platform(client)
+
         if plan.target_type == "group":
+            if is_open_platform:
+                return self._confirm_platform_result(
+                    await media.send_group_image(
+                        client, plan.target_id, sticker_path, record_sent=False,
+                    ),
+                )
             return self._confirm_platform_result(
                 await client.send_group_image(
                     plan.target_id, sticker_path, sub_type="1",
                 ),
             )
-        # 私聊以前直接 `return False`（表情包是装饰，不发就不发）—— 但"群里能发、
-        # 私聊静默不发"并不是谁定的规矩，只是这条路没写。
-        #
-        # 两条通道的走法不同，不能合并：
-        # * 开放平台：宿主那份连接器**没有**单聊富媒体方法（插件改不了宿主的文件），
-        #   所以要调 `qq_open_platform_media` 里的自由函数 —— 它对任何一份连接对象都能跑；
-        # * OneBot（NapCat 等）：`send_private_msg` 本来就认 image 段，直接用现成接口。
-        #   刻意**不**走连接器上那个 `send_private_image()`：它固定 `record_sent=True`，
-        #   而表情包在群聊那条（`send_group_image`）是 `record_sent=False` —— 两边
-        #   保持一致，"她发出去的消息 id 缓存"里不该多出表情包。
-        media = connector_seam.open_platform_media
-        if media.is_open_platform(client):
+
+        if is_open_platform:
             message_id = await media.send_private_image(
                 client, plan.target_id, sticker_path, record_sent=False,
             )

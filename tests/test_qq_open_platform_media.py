@@ -289,6 +289,52 @@ def test_a_token_failure_does_not_raise(tmp_path):
     assert _run(MEDIA.upload_image(conn, scope="groups", owner_id="G1", source=str(sticker))) == ""
 
 
+# ── 群聊发图：与单聊同一条富媒体流程 ────────────────────────────────────
+
+def test_group_image_uploads_with_the_group_scope_and_sends_msg_type_7():
+    def responder(method, url, body):
+        if url.endswith("/messages"):
+            return {"id": "MID-G"}
+        return {"file_info": "FI-group"}
+
+    conn = _Conn(responder)
+    message_id = _run(MEDIA.send_group_image(
+        conn, "G-openid", "https://cdn.example/a.png", at_user_id="MEMBER1",
+    ))
+
+    posts = conn._http.posts()
+    assert posts[0] == (
+        "https://api.example/v2/groups/G-openid/files",
+        {"file_type": 1, "url": "https://cdn.example/a.png", "srv_send_msg": False},
+    ), f"群聊上传入口或请求体不对: {posts[0]!r}"
+    assert posts[1] == (
+        "https://api.example/v2/groups/G-openid/messages",
+        {"msg_type": 7, "media": {"file_info": "FI-group"}, "content": "<@!MEMBER1>"},
+    ), f"群聊发图载荷不对: {posts[1]!r}"
+    assert message_id == "MID-G"
+
+
+def test_group_image_failure_returns_none_and_does_not_send(tmp_path):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"q" * 8)
+    conn = _Conn(lambda method, url, body: {})
+
+    assert _run(MEDIA.send_group_image(conn, "G1", str(sticker))) is None
+    assert not any(url.endswith("/messages") for url, _ in conn._http.posts())
+
+
+def test_group_image_without_content_sends_no_content_field():
+    """没有文字/@ 时不要塞一个空 content —— 平台对空串的处理没必要去赌。"""
+    def responder(method, url, body):
+        return {"id": "MID"} if url.endswith("/messages") else {"file_info": "FI"}
+
+    conn = _Conn(responder)
+    _run(MEDIA.send_group_image(conn, "G1", "https://cdn.example/a.png"))
+
+    sent = [body for url, body in conn._http.posts() if url.endswith("/messages")]
+    assert sent == [{"msg_type": 7, "media": {"file_info": "FI"}}]
+
+
 # ── 漂移守卫：这些自由函数依赖的连接成员 ────────────────────────────────
 
 def test_the_media_helpers_members_exist_on_the_resolved_connector():
