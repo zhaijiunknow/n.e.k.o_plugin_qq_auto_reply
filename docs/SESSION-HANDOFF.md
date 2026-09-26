@@ -3686,3 +3686,74 @@ napcat / open_platform / status / old / theme.css / i18n.js 全是这一条）�
 这些**资源**的版本号还在，改它们时仍要 +1。它们是"被多页引用的资源"，靠运行时时间戳
 会让每次进页都重新下载（theme.css 10KB、i18n.js 4KB，纯浪费）；而 .html 页面才是
 "改了就希望立刻看到"的那类。这是有意的分工，不是漏改。
+
+---
+
+## 18. 破坏性操作改成页内确认框（`static/ui-confirm.js`）
+
+使用者报：「napcat页点击删除无效诶」→ 追问后确认是**表情包列表里的「删除」**，现象是
+**没有确认框、没有提示、列表也没变**。
+
+### 18.1 排查：先证明后端和前端都没问题
+
+1. **后端**：走前端同一条路（`POST /runs` → `asset action=delete_sticker`）做了一次可逆演练
+   —— 删掉真实表情包 id=51（垃圾桶.gif）：运行 `succeeded`、`sticker.json` 里登记摘掉、
+   图片文件删掉、日志一行 `删除表情包: id=51, path=178_垃圾桶.gif, 文件已删=True`；
+   随后**逐字节还原**（`sticker.json` + 图片，51 张全在位）。**删除功能本身是好的。**
+2. **前端**：把 napcat.html 的内联脚本原样跑一遍，`deleteSticker` / `loadStickers` /
+   `doUploadSticker` 全都正常挂成全局；再用 CDP 驱动真 Chromium 打开页面点一下：
+   表格 49 行、按钮是 `<button … onclick="deleteSticker('1')">删除</button>`、
+   点下去确实走到 `["asset",{"action":"delete_sticker","id":"1"}]` + 删完刷新。
+   **前端链路也是好的。**
+3. **但使用者那次点击在插件日志里连一条 `asset` TRIGGER 都没有**（03:41:18 之后只有
+   `query`/`config`/`deploy`；03:42:48 那两条是我自己的演练）。也就是说：**请求根本没发出去。**
+4. 点击到请求之间只剩一道门：`if(!confirm(...)) return;`。
+
+### 18.2 机制取证：沙箱 frame 里原生 `confirm()` 会被静默拦掉
+
+用 CDP 在三种环境里各点一遍（`.dsh-artifacts/cdp-confirm-probe.py`，全程把页面的
+`call()` 换成记录器，不碰真数据）：
+
+| 环境 | 原生 `confirm()` | 点「删除」 |
+|---|---|---|
+| 顶层标签页 | 弹窗 1 次、返回 true | 页内没弹层（旧代码）→ 真发请求 |
+| 宿主 app 真实 sandbox（`allow-scripts allow-forms allow-popups allow-same-origin allow-modals`） | 弹窗 1 次、返回 true | 同上 |
+| `sandbox="allow-scripts allow-same-origin"`（**没有** allow-modals） | **弹窗 0 次、返回 `false`** | **旧代码在这里就是"点了完全没反应"** |
+
+第三行就是使用者的现象：`confirm()` 被静默拦掉 → `!confirm(...)` 为真 → `return` ——
+没有弹窗、没有提示、没有请求。**这正是"点击删除无效"的完整解释。**
+
+### 18.3 改动
+
+- 新增 `static/ui-confirm.js`：`UIConfirm.ask(message, opts) -> Promise<boolean>`，
+  页内弹层（主题变量配色 + 页面既有的 `.btn` 样式）。要点：
+  文案用 **textContent** 写（消息里带 `< >` 不会被当 HTML）；焦点落在**取消**上
+  （回车不该顺手删东西）；Esc / 点背景 / 点取消都算取消；同一时刻只允许一个；
+  **拿不到 document 一律 `return false`**（宁可不动，也不静默动手）。
+- **5 处原生 `confirm()` 全部替换**（这是最后一次出现它们的地方）：
+  `napcat.html` 的 `deleteSticker` / `doForgetGroupMemory` / `resetPromptOverride`，
+  `open_platform.html` 的 `deleteSticker` / `resetPromptOverride`。
+- i18n 两份包各加 `ui.shared.btn.cancel` / `ui.shared.btn.confirm`。
+
+### 18.4 验证
+
+- 新看门狗 `tests/test_qq_destructive_confirm.py`（4 条）：前端**不许**再出现原生
+  `confirm/alert/prompt`（注释除外）；5 个破坏性处理函数必须走 `UIConfirm.ask(`；
+  两个控制台页必须加载 `ui-confirm.js`；确认框自身的安全性质（textContent / 焦点在取消 /
+  没有 document 时拒绝动手 / 两个文案键）。
+- `tests/test_qq_sticker_delete_ui.py` 的「删除前必须确认」改成认 `UIConfirm.ask(`
+  且**禁止** `confirm(`（否则等于没拦）。
+- CDP 实机三环境（上表）：三种环境下都是「点删除 → 页内弹层出现 → 点取消不发请求、
+  点确定才发 `delete_sticker` + 刷新」，且**点删除期间新增原生弹窗 = 0**。
+- 变异取证 `tests/verify_confirm_in_page_fail_to_pass.py` **6/6**（napcat 退回原生 confirm /
+  open_platform 退回原生 confirm / napcat 不加载 ui-confirm.js / 文案改 innerHTML /
+  焦点挪到确定）→ 目标全红、控制组全绿、逐字节还原。
+- 全量 **1200 passed**；ruff（E4/E7/E9/F/I）All checks passed。
+
+### 18.5 诚实说明
+
+我没能**直读**使用者那个 frame 的运行期 DOM（这台机器上没有 Electron 进程、宿主也没开
+调试端口），"你的环境正好是没有 allow-modals 的沙箱"是**推断**——只有现象与它一模一样，
+而且新的页内确认框在任何 frame 里都不依赖对话框策略。如果换成页内确认框后**依然**
+"点了没反应"（连弹层都不出现），那就说明点击根本没进处理函数，下一步该查父页面的
+遮罩 / 指针事件，而不是这一层。

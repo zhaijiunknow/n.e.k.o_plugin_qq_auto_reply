@@ -497,6 +497,8 @@
   "ui.shared.attention.title": "注意力状态",
   "ui.shared.btn.add": "+ 添加",
   "ui.shared.btn.add_label": "+ 添加标签",
+  "ui.shared.btn.cancel": "取消",
+  "ui.shared.btn.confirm": "确定",
   "ui.shared.btn.delete": "删除",
   "ui.shared.btn.edit": "编辑",
   "ui.shared.btn.mark_reviewed": "标记已处理",

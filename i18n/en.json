@@ -497,6 +497,8 @@
   "ui.shared.attention.title": "Attention Status",
   "ui.shared.btn.add": "+ Add",
   "ui.shared.btn.add_label": "+ Add Label",
+  "ui.shared.btn.cancel": "Cancel",
+  "ui.shared.btn.confirm": "Confirm",
   "ui.shared.btn.delete": "Delete",
   "ui.shared.btn.edit": "Edit",
   "ui.shared.btn.mark_reviewed": "Mark Reviewed",

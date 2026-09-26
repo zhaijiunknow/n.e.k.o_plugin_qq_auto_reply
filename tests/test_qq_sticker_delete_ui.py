@@ -89,16 +89,23 @@ def test_delete_sends_the_backend_contract():
 
 
 def test_delete_asks_for_confirmation_first():
-    """后端连图片文件一起删、不可恢复 —— 本仓库其它破坏性操作（清群记忆、恢复默认
-    提示词）都先 confirm，这里也一样。"""
+    """后端连图片文件一起删、不可恢复 —— 删除前必须先确认。
+
+    2026-09-27 改成**页内**确认框（`UIConfirm.ask`）：原生 `confirm()` 在沙箱/嵌入式
+    页面里会被静默拦掉（不弹窗、返回 false），现象就是"点了删除没反应" —— 使用者报的
+    正是这个（见 tests/test_qq_destructive_confirm.py 与 SESSION-HANDOFF §18）。
+    """
     for name in PAGES:
         body = fn_body(code_of(name), "deleteSticker")
         assert body is not None, f"{name}: 定位不到 deleteSticker 的函数体"
-        confirm_at = body.find("confirm(")
+        ask_at = body.find("UIConfirm.ask(")
         call_at = body.find("call(")
-        assert confirm_at != -1, f"{name}: 删除前没有 confirm，一点就真删了"
-        assert call_at == -1 or confirm_at < call_at, (
-            f"{name}: confirm 出现在调用之后 —— 等于没拦"
+        assert ask_at != -1, f"{name}: 删除前没有确认，一点就真删了"
+        assert call_at == -1 or ask_at < call_at, (
+            f"{name}: 确认出现在调用之后 —— 等于没拦"
+        )
+        assert "confirm(" not in body, (
+            f"{name}: 又用回原生 confirm 了 —— 沙箱里会被静默拦掉，点了没反应"
         )
 
 
