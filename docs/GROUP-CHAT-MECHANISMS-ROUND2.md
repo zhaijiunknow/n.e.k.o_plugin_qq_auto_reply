@@ -364,6 +364,75 @@ Koishi 有"复读检测"。
 （`MoFox_Bot@master` 模板 7.7.0 + MySQL + `[maim_message]` vs `Mofox-Core@gitea` 8.0.5 +
 PostgreSQL + `[message_bus]`）是**两条分叉**而非版本先后，引用时须注明分支。
 
+### 1.11 AstrBot / LangBot 源码级：责任链、唤醒语义与增量上下文【子代理·源码】
+
+**AstrBot（master / v4.x）**
+
+- **9 阶段责任链确认**：`WakingCheck → WhitelistCheck → SessionStatusCheck → RateLimit →
+  ContentSafetyCheck → PreProcess → Process → ResultDecorate → Respond`；调度是洋葱模型，
+  任一阶段 `event.stop_event()` 即断链。**"忽略这条群消息"发生在第 1 阶段**。
+- **唤醒条件是「或」**：① 以 `wake_prefix`（顶层默认 `["/"]`）开头 ② @机器人 ③ @全体
+  （`ignore_at_all` 可关）④ **引用机器人的消息** ⑤ 私聊 ⑥ 插件 handler filter。
+  **核心没有概率唤醒、也没有关键词/正则唤醒**（那是插件的事）。白名单 `id_whitelist`
+  （可填 UMO 或群号）+ `wl_ignore_admin_on_group|friend`；**核心没有黑名单键**（按群拉黑走
+  「自定义规则」按 UMO 覆盖）。
+- **限流按 UMO（群/会话）固定窗口**：`rate_limit{time:60, count:30, strategy:stall|discard}`，
+  `stall` 睡到下一窗口、`discard` 直接丢。
+- **会话 key**：`UMO = platform:type:session_id`；aiocqhttp / slack / qq_official 的群
+  `session_id = {sender_id}_{group_id}`，`unique_session=True` 时才启用"群+人隔离"。
+- **群聊上下文渲染**（这条最值得学）：`[昵称/HH:MM:SS]: 正文`、@机器人的位置插
+  `⚠️[DIRECTED AT YOU]`、图片 `[Image: 描述]`（配了 vision 模型）否则 `[Image]`、
+  引用 `[Quote(昵称: 文本)]`；**这些记录只在被唤醒时**以
+  `<system_reminder>…group chat context after your last reply…` 注入
+  `extra_user_content_parts`，**注入后从队列里删除** —— 天然"上次回复之后"语义，
+  不重复、省 token。
+- **拟人化**：`segmented_reply`（按标点分段、每段 `random.uniform(1.5, 3.5)` 秒，
+  这就是它的"打字延迟"，**没有独立键**）；长文防刷屏 `forward_threshold 1500`（合并转发）
+  与 `t2i` + `t2i_word_threshold 150`（转图）。**连续回复上限与"被刷屏退避"未查到。**
+- **主动插话 `active_reply`**：对**未被唤醒**的群消息按 `random.random() < 0.1` 插话；
+  要求该会话已存在（`/new`），开 `unique_session` 时会失败。**冷场检测未查到。**
+- **@空消息的 60 秒等待**：`empty_mention_waiting` + `@session_waiter(60)` —— 单独 @ 她
+  但没内容时等 60 秒，把用户下一条重新入队（并在消息头补一个 At），低成本做出"你在组织
+  语言"的连续感。
+- **记忆**：群记忆 = `group_icl_enable`（默认关）+ `group_message_max_cnt 1000`，
+  **内存 deque 按 UMO 分桶**；`group_message_history_enable` + 700 条持久化（带 `sender_name`）
+  并向模型提供「当前群聊历史查询工具」；检索式记忆是知识库 RAG。
+  `builtin_stars/astrbot/long_term_memory.py` 在文件清单里但镜像 404 → **内容未验证**。
+
+**LangBot（v4.8.x）**
+
+- **更正上一轮文档：不是 11 阶段，源码是 12 阶段**（官方文档根本没有阶段清单，"11 阶段"
+  是 DeepWiki 的说法且**漏掉了 `ConversationMessageTruncator`**）：
+  `GroupRespondRuleCheck → BanSessionCheck → PreContentFilter → PreProcessor →
+  ConversationMessageTruncator → RequireRateLimitOccupancy → MessageProcessor →
+  ReleaseRateLimitOccupancy → PostContentFilter → ResponseWrapper → LongTextProcess →
+  SendResponseBack`；任一阶段返 `INTERRUPT` 即断链（主力是第 1/2/6 阶段）。
+- **触发规则取「或」**：`group-respond-rules{at:false, prefix:["ai"], regexp:[], random:0.0}`，
+  源码注释明确"任意一个匹配就放行"；**`random` 不是"随机回复概率"，而是"其他规则都没匹配时
+  的兜底概率"**；另有优先级更高的 `ignore-rules{prefix, regexp}`。访问控制
+  `access-control{mode: blacklist|whitelist, blacklist, whitelist}`，条目形如
+  `group_456` / `person_*` / `*_123`。
+- **限流粒度是"群/会话"而不是群内用户**：`rate-limit{window-length:60, limitation:60,
+  strategy:drop|wait}`，算法硬编码 `fixwin`（固定窗口）。
+- **消息聚合防抖**：`trigger.message-aggregation{enabled:false, delay:1.5}`（1.0~10.0s、
+  缓冲上限 10 条）—— **与我们 5s 合并缓冲同构**，只是它是配置项。
+- 会话 `session_id = group_<群号>`（**群级、不按人**）；上下文轮数 `ai.local-agent.max-round`
+  默认 10（`RoundTruncator` 从后往前按 user 消息计轮）；`combine-quote-message` 默认 true
+  （引用内容并进本次消息）。
+- **拟人化**：`output.force-delay{min,max}` → `random.uniform` + `asyncio.sleep` 再回复；
+  **没有分段回复**；长文 `long-text-processing{threshold:1000, strategy: none|forward|image}`。
+- **主动发言 / 定时播报 / 冷场检测：三项全部未找到**（config.yaml、pipeline 元数据、官方
+  文档都没有对应键）。**没有群记忆**（只有 RAG 知识库）；v4.8 的 `config.yaml` 里**连
+  `admins` 键都没有**（只有 `command.privilege{}` 的命令→权限映射）。
+
+**两家都没有"多群注意力竞争"**（这条与 §2.2 的更正一致，可以放心）：
+
+- AstrBot：每群一个 deque、互不可见；限流按 UMO；`active_reply` 是**每群独立掷骰**。
+  它最接近"注意力"的东西是**"注意力 = 显式唤醒"**：群消息默认只记录、不进 prompt。
+- LangBot：`Controller` 用全局信号量 `concurrency.pipeline:20` + 每会话 `concurrency.session:1`，
+  "取第一个未被锁定的会话"执行 —— **每会话串行、跨群并行**，这是**背压调度，不是注意力**；
+  代码里没有"当前聚焦群"这个概念。
+
 ## 2. 逐维度对比（外部 vs 我们）
 
 > "我们"一列＝当前代码/线上配置（86 个配置键、7 入口 50 动作、64 模块）。
@@ -513,6 +582,11 @@ PostgreSQL + `[message_bus]`）是**两条分叉**而非版本先后，引用时
 | 18 | **随机延迟改成正态分布**（σ≈10%，3σ 截断） | MoFox `timing_utils.get_normal_distributed_interval` | 小 | 比均匀分布更像真人（我们现在是 `uniform(0.2, 2.5)`） |
 | 19 | **超长回复的"合并最短相邻句"**（而不是截尾/丢弃） | MoFox `response_splitter`：`max_sentence_num` 超限时反复合并最短相邻句对 | 小 | 分段与长回复处理时更保语义 |
 | 20 | **可替换策略 + 安全回落**（`mode_{x}.py` + 动态导入 + 失败回落经典实现） | MaiBot `willing_manager.BaseWillingManager.create(mode)` | 中 | 我们的策略（necessity/注意力）是硬接的，换算法只能改代码 |
+| 21 | **「上次回复之后」的增量上下文注入**（唤醒时注入上次回复以来的群消息，**注入即删**） | AstrBot `GroupChatContext` + `<system_reminder>…after your last reply…` 注入 `extra_user_content_parts` | 中 | 天然不重复、省 token；我们现在是"每次把最近上下文整段拼进去" |
+| 22 | **@空消息的等待窗口**（单独 @ 她但没内容时等 60s，把用户下一条补 @ 后重投） | AstrBot `empty_mention_waiting` + `@session_waiter(60)` | 小 | 低成本做出"你在组织语言"的连续感 |
+| 23 | **对"未被唤醒"的消息按概率主动插话**（可选开关 + 白名单 + 每小时上限） | AstrBot `active_reply{possibility_reply 0.1, whitelist}` | 中 | 我们现在只有"冷场破冰"这一种主动开口；这条是"群在聊但没叫我"时的插话 |
+| 24 | **长文三种处置可选**（原样 / 合并转发 / 转图） | AstrBot `forward_threshold 1500` + `t2i_word_threshold 150`；LangBot `long-text-processing{threshold:1000, strategy:none\|forward\|image}` | 小 | 我们现在只发文字，长回复会刷屏 |
+| 25 | **触发规则分层：多条件「或」+ 更高优先级的 ignore 规则 + random 只作兜底** | LangBot `group-respond-rules{at,prefix,regexp,random}` + `ignore-rules{prefix,regexp}`（源码注释"任意一个匹配就放行"、random 是"都没匹配时"的兜底） | 中 | 我们已有类似的"@/引用/关键词/焦点"多条路，可以把"谁能叫醒她"做成一份显式配置 |
 
 ### 3.1 对账：我们抄 MaiBot 抄得准不准
 
@@ -568,8 +642,11 @@ PostgreSQL + `[message_bus]`）是**两条分叉**而非版本先后，引用时
 - **框架层（NoneBot2 / Koishi / Yunzai / ZeroBot）**：已并入 §1.7（源码级证据来自 nonebot2 与
   Miao-Yunzai 的 Gitea 镜像、ZeroBot 官方 docs 与 pkg.go.dev）。
 - **协议端与账号安全（NapCat / LLBot / Lagrange / go-cqhttp + QQ 官方）**：已并入 §1.6 与 §2.10。
-- **MaiBot 1.x / MoFox_Bot 源码级**：已并入 §1.9。
-- **AstrBot / LangBot 的流水线阶段与群响应规则**：待补（第一轮给的是阶段数，本轮要落到字段）。
+- **MaiBot 1.x / MoFox_Bot 源码级**：已并入 §1.9 + §1.10（含三处勘误）。
+- **AstrBot / LangBot 源码级**：已并入 §1.11。其中一条**更正第一轮文档**：
+  **LangBot 是 12 阶段不是 11 阶段** —— 源码 `default_stage_order` 含
+  `ConversationMessageTruncator`，而"11 阶段"来自 DeepWiki（漏了它）、官方文档根本没有阶段清单。
+  引用阶段数时请以 §1.11 为准。
 - **AstrBot / LangBot 的流水线阶段与群响应规则**：待补 —— 要核的是两家"多条件取或"的具体
   实现与阶段清单（第一轮文档给的是阶段数，本轮要落到字段）。
 
