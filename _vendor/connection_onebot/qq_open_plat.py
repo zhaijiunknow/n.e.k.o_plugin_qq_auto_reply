@@ -1,5 +1,16 @@
 """QQ Open Platform connector -- official QQ Bot API."""
 
+# LOCAL-PATCH: 4302a9ea 开放平台富媒体接线（单聊发图 / 群图上传转发 / 附件文件名）
+#
+# 本文件**不是**上游的逐字副本：除了 lint 修复，还有三处功能性改动是插件侧加的
+# （上游 utils/connection/onebot/qq_open_plat.py 没有）——
+#   send_private_message 单聊真发图、send_private_image（新）、_upload_group_image 薄转发、
+#   _extract_attachments 带文件名，另加 `from . import qq_open_platform_media`。
+# **重新同步上游时必须把这些重新应用**，否则会静默回退（私聊发图消失、群图只试旧式直传），
+# 或者更糟：漏掉 qq_open_platform_media.py 会让整个副本包 import 失败。
+# 明细与同步顺序见同目录 PROVENANCE.md；守卫见 tests/test_qq_connector_seam.py。
+# 注意：本副本与上游恰好同为 1126 行，行数不能用来判断是否一致。
+
 from __future__ import annotations
 
 import asyncio

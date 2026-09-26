@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import importlib
+import pathlib
 import sys
 from types import ModuleType
 
@@ -87,3 +88,93 @@ def test_vendored_matches_host_protocol_surface():
     assert _public_members(host.OneBotConnector) == _public_members(vendored.OneBotConnector), (
         "宿主与副本的 OneBotConnector 协议已经漂移 —— 对齐后（或合并后拆掉 _vendor/）再放行"
     )
+
+
+# ── 副本里的功能性本地改动必须留痕 ─────────────────────────────────
+#
+# 2026-09-26 的 4302a9ea 改了副本里的 qq_open_plat.py（5 个 hunk）并新增
+# qq_open_platform_media.py，但**没有更新 PROVENANCE.md** —— 于是"副本不是逐字一致"
+# 在文档里只剩 lint 那一半，功能性差异零痕迹。重新同步上游时这些改动会**静默**消失
+# （不报错）：单聊发图退回只发 `[图片]`、群图上传退回只试旧式直传；
+# 而如果连 qq_open_platform_media.py 一起漏拷，`from . import qq_open_platform_media`
+# 会让整个副本包 import 失败（宿主没带连接器时插件直接起不来）。
+#
+# 这三条守卫把"标记"钉成可执行的：标记在、接线在、文件名清单与 PROVENANCE 对得上。
+
+_VENDOR_DIR = pathlib.Path(connector_seam.__file__).resolve().parent / "_vendor" / "connection_onebot"
+_PROVENANCE = _VENDOR_DIR / "PROVENANCE.md"
+
+#: 带功能性本地改动的文件 → (标记里必须出现的 commit 短号, 必须还在的接线片段)
+LOCAL_PATCHES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "qq_open_plat.py": ("4302a9ea", (
+        "from . import qq_open_platform_media",
+        "qq_open_platform_media.send_private_image(",
+        "qq_open_platform_media.upload_image(",
+    )),
+    "qq_open_platform_media.py": ("4302a9ea", (
+        "def upload_image(",
+        "def send_private_image(",
+    )),
+}
+
+#: 标记只认文件头这一段：贴到文件末尾等于没标。
+_MARKER_HEAD_LINES = 40
+
+
+def _vendored_text(name: str) -> str:
+    path = _VENDOR_DIR / name
+    if not path.is_file():
+        pytest.skip(f"_vendor/ 已按 PROVENANCE 的计划拆掉（缺 {name}），本组守卫随之退休")
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", sorted(LOCAL_PATCHES))
+def test_vendored_local_patches_are_marked_and_kept(name: str):
+    commit, anchors = LOCAL_PATCHES[name]
+    text = _vendored_text(name)
+
+    head = "\n".join(text.splitlines()[:_MARKER_HEAD_LINES])
+    assert "LOCAL-PATCH:" in head, (
+        f"{name} 丢了文件头的 LOCAL-PATCH 标记 —— 重新同步上游时这些功能改动会被静默抹掉"
+    )
+    assert commit in head, f"{name} 的标记里缺 commit 短号 {commit}"
+
+    for anchor in anchors:
+        assert anchor in text, (
+            f"{name} 里的本地接线不见了: {anchor!r} —— 上游副本覆盖回来时就是这样丢的"
+        )
+
+
+def _fenced_blocks(text: str) -> str:
+    """把 ``` 围栏里的内容拼起来 —— 文件名清单写在这里面。"""
+    inside = False
+    collected: list[str] = []
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            inside = not inside
+            continue
+        if inside:
+            collected.append(line)
+    return "\n".join(collected)
+
+
+def test_provenance_lists_every_vendored_file():
+    """文件名清单必须与实际一致（当初就是漏了 qq_open_platform_media.py）。
+
+    只在正文里提一句不算：清单是**围栏代码块**里的那张表，核对的是那个。
+    """
+    text = _PROVENANCE.read_text(encoding="utf-8")
+    actual = sorted(p.name for p in _VENDOR_DIR.glob("*.py"))
+    listed = _fenced_blocks(text)
+
+    assert actual, "副本目录里一个 .py 都没有 —— 路径解析错了"
+    missing = [name for name in actual if name not in listed]
+    assert not missing, f"PROVENANCE.md 的清单没登记这些副本文件: {missing}"
+
+
+def test_provenance_documents_the_local_patch():
+    text = _PROVENANCE.read_text(encoding="utf-8")
+
+    assert "LOCAL-PATCH" in text, "PROVENANCE.md 里没有标记约定的说明"
+    assert "4302a9ea" in text, "PROVENANCE.md 没记这次功能性改动的出处 commit"
+    assert "qq_open_platform_media.py" in text, "PROVENANCE.md 没登记自撰的 media 模块"

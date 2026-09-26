@@ -25,6 +25,11 @@
 ``tests/test_qq_open_platform_media.py`` 里有针对它们的漂移守卫。
 """
 
+# LOCAL-PATCH: 4302a9ea 本文件是**插件自撰**，不是上游副本（上游没有对应模块）。
+# 它必须跟着 _vendor/connection_onebot/ 一起留下来：副本里的 qq_open_plat.py 用
+# `from . import qq_open_platform_media` 引它，删了会让整个副本包 import 失败。
+# 明细与同步顺序见同目录 PROVENANCE.md。
+
 from __future__ import annotations
 
 import hashlib

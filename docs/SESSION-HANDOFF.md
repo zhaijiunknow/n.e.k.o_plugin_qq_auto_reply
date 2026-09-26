@@ -3531,3 +3531,60 @@ Event loop is closed` 不是成因 —— 那条路径 `_ws` 非空，而崩溃�
 - 给 `reply_necessity_threshold` 补面板控件（需要把「不可保存」的键接到 dashboard
   快照 + `save_settings` 参数上）。
 - C 档（门控出口合并 + 顺序看门狗）、接话反馈闭环。
+
+---
+
+## 16. 给副本里的功能性本地改动补「标记」（`_vendor/connection_onebot`）
+
+使用者点名：`4302a9ea6280954929b644fe9404adebc69f10a2` 改过 `_vendor` 里的
+`qq_open_plat.py`，需要做一个标记。
+
+### 16.1 缺口在哪
+
+`4302a9ea`（2026-09-26「开放平台三处缺口」）在 `_vendor/` 下动了**两个**文件 ——
+`qq_open_plat.py`（5 个 hunk）与新增的 `qq_open_platform_media.py` ——
+**但没有更新 `_vendor/connection_onebot/PROVENANCE.md`**。于是文档里「副本不是逐字一致」
+只剩 lint 那一半（6 处自动修复 + 5 处手工修复），功能性差异零痕迹；而 PROVENANCE 的
+「所取的 5 个文件」也已经与实际（6 个）对不上。
+
+**为什么这是真风险**：这个目录的刷新动作就是"从上游拷过来"，它会**静默**抹掉功能改动 ——
+不报错、也没有测试拦着。丢了会怎样：单聊发图退回只发 `[图片]` 三个字、群图上传退回
+"只试旧式直传"（文档里的 URL / 分片两条路没了）、附件文件名丢失；最糟的一种是只拷 5 个
+上游文件顺手 `rm` 掉 `qq_open_platform_media.py` —— 副本里 `from . import
+qq_open_platform_media` 会让**整个副本包 import 失败**（宿主没带连接器时插件直接起不来）。
+
+另一个坑记一笔：副本与上游的 `qq_open_plat.py` **恰好都是 1126 行**（加的行与减的行正好
+抵消），拿行数核对会得出"一致"的错误结论，必须 `git diff --no-index`。
+
+### 16.2 标记做了什么
+
+1. `PROVENANCE.md`：
+   - 文件清单改成 6 个，并把 `qq_open_platform_media.py` 标成**插件自撰（上游没有）**；
+   - 新增「## 标记约定：`LOCAL-PATCH`」—— 副本里任何非 lint 差异都必须在文件头留一行
+     `# LOCAL-PATCH: <commit> <摘要>`，`grep -rn "LOCAL-PATCH" _vendor/connection_onebot/`
+     一次列全；
+   - 新增「## 相对上游的本地改动（一）：功能性改动」—— 逐个 hunk 的表（5 处接线 + 1 个
+     自撰模块）、丢了会怎样的四条后果、以及**重新同步上游的 5 步顺序**；
+   - 原来的 lint 那节降为「（二）」，并在开头指向（一）；
+   - 「什么时候删掉这个目录」加了第 0 步：**先把这些功能性改动搬进宿主**再删副本。
+2. 两个文件头各留一行标记：`qq_open_plat.py`（说明它不是逐字副本 + 三处改动 + 行数陷阱）、
+   `qq_open_platform_media.py`（说明它是自撰的、删了会连累副本包 import）。
+3. 把「标记」做成可执行的守卫（`tests/test_qq_connector_seam.py`）：
+   - `test_vendored_local_patches_are_marked_and_kept[...]`：文件头 40 行内必须有
+     `LOCAL-PATCH:` 与 commit 短号，且三处接线（`from . import qq_open_platform_media` /
+     `qq_open_platform_media.send_private_image(` / `qq_open_platform_media.upload_image(`）
+     必须还在；
+   - `test_provenance_lists_every_vendored_file`：**围栏代码块**里的清单必须覆盖目录里
+     实际存在的每个 `.py`（只在正文里提一句不算 —— 这条正是当初会红的那个）；
+   - `test_provenance_documents_the_local_patch`：PROVENANCE 必须写出标记约定、出处 commit
+     与自撰模块。
+
+### 16.3 验证
+
+- `test_qq_connector_seam.py` 9 passed（原 5 条 + 新 4 条：两条参数化的标记守卫、
+  清单守卫、出处守卫）；
+- 全量 `pytest plugin/plugins/qq_auto_reply/tests -q` → **1194 passed**（上一轮 1190 + 4）；
+  ruff（E4/E7/E9/F/I）All checks passed；
+- 变异取证 `tests/verify_vendored_patch_marker_fail_to_pass.py`：4 处变异（抹掉文件头标记 /
+  把群图上传那处接线换成上游写法 / 从清单里删掉 media 模块 / 抹掉出处 commit）→ 目标全红、
+  控制组 `test_qq_permission_levels.py` 全绿，**5/5**。
