@@ -233,21 +233,27 @@ def test_backoff_reset_clears_state():
 def test_default_threshold_is_pinned():
     """默认阈值是**行为旋钮**，改动必须是有意的：它决定「她多沉默」。
 
-    取 60 的理由见模块里 DEFAULT_TRIGGER_SCORE 的注释（关键约束：必须 > focus 的 40，
-    否则焦点群里的普通消息光靠 focus 分就通过，这一关等于不存在）。
+    取 40 是真机回放定的（见模块 DEFAULT_TRIGGER_SCORE 的注释）。它还承担一条硬约束：
+    必须 ≥ focus 的 40，否则焦点群里的普通消息光靠 focus 分就通过、这一关形同不存在。
     """
-    assert DEFAULT_TRIGGER_SCORE == 60.0
+    assert DEFAULT_TRIGGER_SCORE == 40.0
 
 
-def test_default_curve_quiet_group_vs_busy_group():
-    """用默认阈值刻画真实曲线：安静闲聊不接，忙起来/被问到才接。"""
-    quiet_plain = _sig(message_text="今天天气不错", pending_count=1, pending_threshold=10)
-    busy_plain = _sig(message_text="今天天气不错", pending_count=10, pending_threshold=10)
-    asked_quiet = _sig(message_text="这个怎么弄？", pending_count=1, pending_threshold=10)
-    asked_busy = _sig(message_text="这个怎么弄？", pending_count=3, pending_threshold=3)
+def test_default_curve_at_40():
+    """默认阈值 40 档的曲线（真机回放定的，见模块注释）。
 
-    assert score_necessity(quiet_plain).decision == "wait"      # 安静时的闲聊：不接
-    assert score_necessity(busy_plain).decision == "trigger"    # 群里攒了 10 条：接
-    assert score_necessity(asked_quiet).decision == "wait"      # 只问了一句、没积压：仍不接
-    assert score_necessity(asked_busy).decision == "trigger"    # 有人问 + 积压到位：接
+    40 这一档不追求「安静闲聊一律不接」——那是 60 档的行为，回放显示会静音 86%。
+    它靠的是：短反应不接 + 存在感惩罚 + 空闲退避。
+    """
+    plain_quiet = _sig(message_text="今天天气不错", pending_count=1, pending_threshold=10)
+    plain_busy = _sig(message_text="今天天气不错", pending_count=10, pending_threshold=10)
+    asked = _sig(message_text="这个怎么弄？", pending_count=1, pending_threshold=10)
+    reaction = _sig(message_text="哈哈哈", pending_count=1, pending_threshold=10)
+    talkative = _sig(message_text="今天天气不错", pending_count=1, pending_threshold=10, self_ratio=0.6)
+
+    assert score_necessity(plain_quiet).decision == "trigger"   # 安静闲聊也搭话（不静音）
+    assert score_necessity(plain_busy).decision == "trigger"    # 群里攒了 10 条：更该接
+    assert score_necessity(asked).decision == "trigger"         # 有人问：接
+    assert score_necessity(reaction).decision == "wait"         # 纯短反应：不接
+    assert score_necessity(talkative).decision == "wait"        # 她刚说过一阵子：让一让
     assert score_necessity(_sig(is_at_bot=True)).decision == "trigger"

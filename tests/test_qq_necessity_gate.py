@@ -103,9 +103,15 @@ def _gate(plugin) -> QQAttentionGateService:
     return QQAttentionGateService(plugin)
 
 
-def test_trusted_group_stays_quiet_on_idle_chatter():
+def test_trusted_group_stays_quiet_when_she_has_been_talking():
+    """她刚说过一阵子（存在感占比高）→ 普通闲聊让一让。这是 40 档的主力机制。"""
     plugin = _plugin(level="trusted")
-    decision = _evaluate(plugin, _gate(plugin))
+    gate = _gate(plugin)
+    for _ in range(10):
+        gate._speech.record_self(GROUP, now=990)
+    for i in range(4):
+        gate._speech.record(GROUP, now=991 + i, speaker=f"u{i}")
+    decision = _evaluate(plugin, gate)
     assert decision.action == "ignore"
     assert decision.reason.startswith("necessity_wait(")
 
@@ -129,9 +135,12 @@ def test_trusted_group_ignores_pure_short_reaction():
 
 
 def test_normal_group_is_not_touched_by_necessity_gate():
-    """normal 群要靠后面 relay 转发给主人；在这里 ignore 会把转发一起吃掉。"""
+    """normal 群要靠后面 relay 转发给主人；在这里 ignore 会把转发一起吃掉。
+
+    用短反应（默认 40 档下必然 necessity_wait）来证明：这一关只对 trusted 生效。
+    """
     plugin = _plugin(level="normal")
-    decision = _evaluate(plugin, _gate(plugin))
+    decision = _evaluate(plugin, _gate(plugin), message_text="哈哈哈")
     assert decision.action == "reply"
     assert decision.reason == "focus_group"
 
@@ -153,18 +162,21 @@ def test_at_bot_bypasses_necessity_and_backoff():
 
 
 def test_repeated_waits_arm_the_backoff():
-    """连续不接 → 第二次起进入退避，后续消息以 necessity_backoff 被拦下。"""
+    """连续不接 → 第二次起进入退避，后续消息以 necessity_backoff 被拦下。
+
+    用短反应当「必然不接」的消息（默认 40 档下普通闲聊是会接的）。
+    """
     plugin = _plugin(level="trusted")
     gate = _gate(plugin)
-    first = _evaluate(plugin, gate, timestamp=1000)
-    second = _evaluate(plugin, gate, timestamp=1001)
+    first = _evaluate(plugin, gate, timestamp=1000, message_text="哈哈哈")
+    second = _evaluate(plugin, gate, timestamp=1001, message_text="哈哈哈")
     assert first.reason.startswith("necessity_wait(")
     assert second.reason.startswith("necessity_wait(")       # 第 2 次才设定退避
-    third = _evaluate(plugin, gate, timestamp=1002)
+    third = _evaluate(plugin, gate, timestamp=1002, message_text="哈哈哈")
     assert third.reason.startswith("necessity_backoff(")
 
     # 时钟推进到退避之外 → 重新按分数判定
-    later = _evaluate(plugin, gate, timestamp=1001 + int(IdleBackoff.BASE_SECONDS) + 1)
+    later = _evaluate(plugin, gate, timestamp=1001 + int(IdleBackoff.BASE_SECONDS) + 1, message_text="哈哈哈")
     assert later.reason.startswith("necessity_wait(")
 
 
