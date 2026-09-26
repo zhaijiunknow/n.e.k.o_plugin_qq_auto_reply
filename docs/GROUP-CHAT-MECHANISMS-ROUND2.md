@@ -134,6 +134,82 @@
   + 签名服务；go-cqhttp 官方 README 已写"无力继续维护"、Lagrange v1 标注 sunset。
 - 正/反向 WS 都是双工；反向 WS = 协议端当客户端主动连我们（利于内网），NapCat 官方推荐优先 WS。
 
+### 1.7 框架层：会话 / 权限 / 限流都是"容器"，不是"策略"【子代理·源码+官方文档】
+
+| 框架 | 会话容器 | 权限 | 冷却/限流 | 去重 | 拟人化 |
+|---|---|---|---|---|---|
+| **NoneBot2** | 临时响应器（`temp`）续接，`expire_time` 默认 **2 分钟**；`T_State` 只在单次事件流程内有效；**没有**上下文条数/历史 | 只有 `SUPERUSER`；**无内置群主/群管层级**（自己读事件 `role`） | 核心**无** cd（生态插件做） | 无框架级（插件 `nospam` 做群内重复/相似检测并撤回） | 核心无 |
+| **Koishi** | `session.prompt(timeout?)`，`delay.prompt` 默认 **60s**；历史条数无内置 | authority **0~5** + 指令/选项级；**assignee（同频道哪个 bot 应答）**；filters（按平台/用户/群 include-exclude）；实验性 permissions 支持 `inherit`/`depend` 与**按平台群管角色授权的访问器权限**（如 `telegram:admin`） | 官方插件 `rate-limit`：`maxUsage` / `minInterval` / `usageName`（多指令共享额度） | 插件 `repeater`：统计连续相同消息（`times/users/repeated`），按 `minTimes`+概率**复读或打断** | **核心有**：`session.sendQueued(msg, delay)`、`delay.character`（按前一条字数）、`delay.message`（默认 100ms）、`cancelQueued`；广播默认 500ms 间隔 |
+| **Yunzai (Miao)** | `setContext/getContext`，key=`插件名.群/用户`，**默认 120s** 超时清理 | 规则级 `master/owner/admin/all`（**框架内置群主/群管**） | **框架内置两级 CD**：`groupGlobalCD`（整群）+ `singleCD`（个人，默认 **1000ms**），内存字典 + `setTimeout` | **框架内置** `msgThrottle`：key=`user_id:raw_message`，**200ms** 内同文本直接丢 | 未内置分段/随机延迟；**回复支持引用与定时撤回（0~120s）** |
+| **ZeroBot (Go)** | `State` + `FutureEvent`（`Next` 取一次 / `Repeat` 持续并给 cancel），**无超时清空** | Rule 工厂：`SuperUser/Admin/Owner/UserOrGrpAdmin/GroupHigherPermission/CheckUser/CheckGroup/OnlyGroup/OnlyToMe` | **框架内置** `extension/rate`（令牌桶 `NewLimiter(interval, burst)` + `LimiterManager[K]` 按键分桶）与 `extension/single`（同 key **反并发**中间件） | 插件 `breakrepeat` 打断复读 | 无内置；只有 CLI `-l latency` 全局延时 |
+
+**框架层的一致结论**（子代理逐条核过源码/文档）：**四家都不判定"这条群消息要不要回"**。
+它们只提供容器与阻断原语（NoneBot 的 priority/block、Koishi 的中间件链、Yunzai 的
+"命中即 break，一个事件只被一个 rule 处理"、ZeroBot 的 `Block`），策略全在插件里。
+另外三家**都没有"同一用户短时间多条合并"**，只有 Yunzai 有 200ms 同文本去重、
+Koishi 有"复读检测"。
+
+对我们的启示（可抄的原语）：
+
+1. **Yunzai 的 `msgThrottle`（200ms 同文本）**：极便宜，专治"同一事件被推送两次/自己重复回复"。
+2. **Koishi 的 `delay.character`（按上一条字数算延迟）**：比"固定随机延迟"更像打字 ——
+   我们的 buffer 延迟是固定区间，可以改成随回复长度变化。
+3. **Yunzai 的"命中即 break"**：多插件/多策略竞争时**只有一个**处理这条消息 —— 我们的
+   门控链已经是顺序短路（等价），但值得明确写成不变式（我们有测试守着顺序）。
+4. **Koishi 的 assignee**：同频道"哪个 bot 应答"是框架级概念 —— 我们的多 bot 场景目前没有对策。
+
+### 1.8 MaiBot 官方配置（`bot_config.toml`）：我们抄的那套的**出处**【原文】
+
+来源：[Bot 配置（docs.mai-mai.org，更新 2026-09-14）](https://docs.mai-mai.org/manual/configuration/bot-config)
+
+**这段最要紧**：我们的 `IdleBackoff` 与 necessity 阈值就是从 MaiBot 抄的，现在拿到了官方默认值，
+可以对账；而且它**也有跨聊天的焦点机制**（见下），我们不是唯一一家。
+
+`[chat.reply_timing]`（发言时机）：
+
+| 键 | 默认 | 与我们的关系 |
+|---|---|---|
+| `talk_value` / `private_talk_value` | `1`（0~1，越小越安静；0.3~0.5 明显话少） | 我们**没有**这个旋钮（我们用 necessity 阈值 40 表达"多安静"） |
+| `inevitable_at_reply` | `true` | ✓ 我们的 @ 旁路 |
+| `mentioned_bot_reply` | `false` | 我们**没有**"提到名字更容易回"（`neko_dynamic_waking_keywords` 是唤醒词，语义不同） |
+| **`reply_trigger_mode`** | `"frequency"` / `"reply_necessity"` | **两种触发模式可切**；我们直接并成了 necessity 一条（这是有意的简化） |
+| `planner_interrupt_max_consecutive_count` | `0`（不限） | 我们**没有**"思考中来了新消息要不要重新想" |
+| `max_consecutive_wait_count` | `3` | 我们**没有**（wait 是它的动作之一） |
+| **`no_action_backoff_base_seconds`** | **`15`** | ✓✓ **我们 `IdleBackoff` 的 `15` 就是从这里来的** |
+| **`no_action_backoff_cap_seconds`** | **`300`** | ✓✓ 我们的上限 `300` |
+| **`no_action_backoff_start_count`** | **`2`** | ✓✓ 我们的 `START_COUNT = 2` |
+| **`no_action_backoff_bypass_pending_count`** | **`6`** | ✓✓ 我们的 `BYPASS_PENDING = 6` |
+| `talk_value_rules`（平台/群/时段，支持跨夜 `23:00-02:00`） | 默认两条全局规则 | 我们**没有**时段化频率 |
+
+`[chat]`：`max_context_size 40`（群聊参考最近 40 条）/ `max_private_context_size 60` /
+`enable_context_optimization true` / `mid_term_memory true` + `mid_term_memory_lenth 10`（**中期记忆
+"聊天回想"**）—— 我们靠 Memory Server 的群记忆 + idle finalize，没有"最近 40 条"这种显式窗口。
+
+`[experimental]`（**关键更正**）：
+
+- **`focus_mode`（默认关）＝"同一时间只专注一个聊天流"**，`focus_on_private`、
+  `focus_chat_whitelist`、**`focus_groups`（同组共享 Focus，不同组互不抢占）**、
+  **`focus_cool_time = 120`（当前聊天多久没继续后允许被其他聊天唤醒）**。
+  → **这就是跨聊天/跨群的焦点竞争**，只是实现形态不同：MaiBot 是「焦点 + 120s 冷却后允许被抢 +
+  可分组」；我们是「分数 0~10 + 焦点线 4.0 / 保持线 2.0 + 被 @@ 上锁 90s + 蜜月 60s」。
+  **我原先"跨群竞争只有我们做"的说法不成立，本文件 §2.2 已更正。**
+- `attention_drift`（**话题级**注意力漂移：更容易被新话题/梗/反差点吸引；档位
+  `subtle/active/scattered/wild`；`anchor_policy` 回钩策略；`reaction_style`）——
+  这是"对话题的注意力"，与"对群/对人的注意力"又是另一个维度，我们完全没有。
+- `enable_behavior_learning`（学"什么时候该怎么回应"的经验）、`enable_rich_reply`、
+  `emotion_trait`。
+
+`[message_receive]`：`image_parse_threshold 5`（单条图超 5 张就不识图）、`ban_words`、
+**`ban_msgs_regex`（正则黑名单，启动时校验，写错直接启动失败）** —— 我们只有关键词表，
+没有正则黑名单。
+
+`[response_post_process]`：总开关 `enable_response_post_process true` 同时管**错别字生成与
+"回复分割"**，另有 **`typing_speed`（0 最快 / 1 默认 / 2 更慢）** —— 即 MaiBot 也有打字速度模拟
+与分段回复（与 AstrBot 的 `segmented_reply` / `typing_simulator` 同类）。
+
+`[expression]` / `[jargon]`：**表达学习 + 黑话学习**（含 `vector_intent` 向量意图召回、
+候选池上限 50、`learning_list` 按平台/群/私聊分别控制 use/learn）。
+
 ## 2. 逐维度对比（外部 vs 我们）
 
 > "我们"一列＝当前代码/线上配置（86 个配置键、7 入口 50 动作、64 模块）。
@@ -156,15 +232,20 @@
 
 | 外部 | 我们 |
 |---|---|
-| AstrBot 插件的「注意力机制」是**用户级**：每个用户一个 0~1 连续值（高注意力回复概率 `0.8` / 低 `0.08`、半衰期 `300s`、回复该用户 `+0.35`、**读空气判不回 −0.2**、情绪 ±0.1/0.15），外加**溢出**（高注意力用户 30% 溢到同群其他人）与**两段式冷却**（待冷却观察 1 条 / 60s / 保底 0.18 → 正式冷却阈值 0.3 / 最长 600s） | 我们的注意力是**群级**：0~10 分、焦点线 4.0 / 保持线 2.0、被 @ 上锁 90s、蜜月 60s、频次倍率 0.15~1.8、情绪 9 档倍率 |
-| bl-chat：**per-group 焦点状态机**（`focus / fading / cold` + `focusMaxReplies` / `focusMaxNoAction`），群与群之间完全独立 | 我们额外有**跨群竞争**（同时活跃多个群时分配注意力） |
+| **MaiBot 有跨聊天焦点**（`experimental.focus_mode`）：同一时间只专注一个聊天流、`focus_cool_time 120`（多久没继续才允许被别的聊天唤醒）、`focus_groups`（同组共享焦点、不同组互不抢占）、`focus_chat_whitelist`；另有 `attention_drift`（**话题级**漂移） | **群级注意力竞争**：0~10 分、焦点线 4.0 / 保持线 2.0、被 @ 上锁 90s、蜜月 60s、频次倍率 0.15~1.8、情绪 9 档倍率 |
+| AstrBot 插件的「注意力机制」是**用户级**：每个用户 0~1 连续值（高注意力回复概率 `0.8` / 低 `0.08`、半衰期 `300s`、回复该用户 `+0.35`、**读空气判不回 −0.2**、情绪 ±0.1/0.15），外加**溢出**（高注意力用户 30% 溢到同群其他人）与**两段式冷却**（待冷却观察 1 条 / 60s / 保底 0.18 → 正式冷却阈值 0.3 / 最长 600s） | 我们**没有用户级注意力**（靠 necessity 的"自己发言占比"惩罚 + @/引用 显式信号） |
+| bl-chat：**per-group 焦点状态机**（`focus / fading / cold` + `focusMaxReplies` / `focusMaxNoAction`），群与群之间完全独立 | 我们是**全局竞争**（同一时刻只有一个焦点群） |
 
-**结论（重要）**：外部的"注意力"是**挑人**（在同一个群里跟谁聊得热），我们的"注意力"是**挑群**
-（同时活跃多个群时看哪个）。**两者正交，不冲突**：他们的机制我们完全没有（我们不做"用户级
-热度"），我们的机制他们也没有。潜在互补点：把"用户级注意力"接进我们的 necessity 打分
-（现在是靠"自己发言占比"惩罚 + @/引用 的显式信号）。
+**结论（更正）**：三个"注意力维度"是**正交**的 —— **群级**（我们 + MaiBot `focus_mode`）、
+**用户级**（AstrBot 插件）、**话题级**（MaiBot `attention_drift`、第一轮文档里的 Heartflow）。
+我们只做了**群级**这一维，且形态与 MaiBot 不同：
 
-另外：我们这套跨群竞争**没有现成的对照物**，参数只能靠自己的真机数据校准（第一轮已做过回放）。
+- MaiBot：布尔焦点 + **120s 冷却后允许被抢** + 可分组（简单、可解释）。
+- 我们：连续分数 + 焦点线/保持线 + 锁 90s + 蜜月 + 频次/情绪倍率（表达力强、参数多）。
+
+**值得抄的两点**：① **`focus_groups`（共享组）** —— 让几个"其实是一个场景"的群共享焦点，
+避免它们在彼此之间来回抢（我们完全没有这个概念）；② **`focus_cool_time` 的语义** ——
+"刚聊过的群有冷却保护"，我们用 `lock + 蜜月` 表达了近似语义但更隐晦。
 
 ### 2.3 消息缓存与合并
 
@@ -270,6 +351,22 @@
 | 10 | **群共识记忆分类**（群规/梗/事件/成员共识）与防抖批量提取 | bl-chat 群记忆五类 + 注入上限（8/6 条、1200 字）+ 用户 45s/6 条、群 10 分钟/12 条 | 中 | 群氛围一致性 |
 | 11 | **内容安全**（外部审核 API，或把易触发的长文本转图发） | AstrBot `content_safety`（内置词表 + 百度审核）；bl-chat `textImageTool` | 中 | 账号安全 |
 | 12 | **官方通道的全量模式 + 平台 ASR** | 官方文档确认 `GROUP_MESSAGE_CREATE`（开启"接收所有消息"后每条都推）；语音附件带 `asr_refer_text` | 中 | 官方通道也能做群聊感知，且省掉自建 STT |
+| 13 | **`focus_groups`：把"其实是一个场景"的群共享焦点** | MaiBot `experimental.focus_groups`（同组共享、不同组互不抢占） | 小 | 避免姊妹群互相抢焦点（我们现在是全局平铺竞争） |
+| 14 | **`talk_value` 式的"整体安静度"总旋钮**（按时段/按群） | MaiBot `talk_value` + `talk_value_rules`（支持跨夜时段）；bl-chat `talkValue` | 小 | 现在要"更安静"只能去改 necessity 阈值或各种倍率，缺一个直觉旋钮 |
+| 15 | **正则黑名单**（`ban_msgs_regex`）与**提到名字更容易回**（`mentioned_bot_reply`） | MaiBot `message_receive.ban_msgs_regex`（启动时校验）、`reply_timing.mentioned_bot_reply` | 小 | 前者补我们"只有关键词表"的短板，后者是低成本的礼貌信号 |
+| 16 | **中期记忆 / 聊天回想**（最近 N 条之外的"最近发生过什么"） | MaiBot `mid_term_memory` + `mid_term_memory_lenth 10` | 中 | 我们现在只有"长期群记忆"与"当前上下文"两档 |
+
+### 3.1 对账：我们抄 MaiBot 抄得准不准
+
+| 我们的实现 | MaiBot 官方默认 | 结论 |
+|---|---|---|
+| `IdleBackoff`：`min(300, 15 × 2^(n−2))`、`START_COUNT = 2`、`BYPASS_PENDING = 6` | `no_action_backoff_base_seconds 15`、`cap_seconds 300`、`start_count 2`、`bypass_pending_count 6` | **四个常数逐一相同** —— 第一轮移植是准的（现在有了官方文档作为出处） |
+| necessity 阈值 `40`（真机回放定） | MaiBot 用 `80`，但它那一关还承担"攒够几条才值得思考" | 我们知道这个差异（第一轮已记录），40 是按我们"焦点群内部"这一层重新定的 |
+| @ 必回 | `inevitable_at_reply true` | ✓ 一致 |
+| —— | `reply_trigger_mode` 可在 `frequency` / `reply_necessity` 之间切 | 我们**并成了一条**（有意的简化；代价是失去了"按群回到纯频率模式"的退路） |
+
+**待办提示**：如果以后真的需要"某些群退回到纯频率模式"，MaiBot 那个 `reply_trigger_mode`
+就是现成的设计参考。
 
 **不建议照搬的**：
 
@@ -287,6 +384,14 @@
   会话与冷却实现、协议端的风控经验数值 —— 见 §5（子代理交付，另行标注出处）。
 - 我们的"60s 内 3 条"回复闸与他们的"60s 30 条消息速率"**口径不同**，不能直接比较松紧。
 
-## 5. 子代理交付（源码级 / 框架层 / 协议端）
+## 5. 源码级细节（子代理交付）
 
-（本节由并行子代理的结果补入；未交付的项保持"未验证"。）
+- **框架层（NoneBot2 / Koishi / Yunzai / ZeroBot）**：已并入 §1.7（源码级证据来自 nonebot2 与
+  Miao-Yunzai 的 Gitea 镜像、ZeroBot 官方 docs 与 pkg.go.dev）。
+- **协议端与账号安全（NapCat / LLBot / Lagrange / go-cqhttp + QQ 官方）**：已并入 §1.6 与 §2.10。
+- **MaiBot 系（含衍生）源码级**：待补 —— 要核的是 `reply_necessity` 的完整评分表与阈值、
+  heartflow 的 `talk_value`/发言时机公式、idle backoff、群上下文构建、多群调度。
+- **AstrBot / LangBot 的流水线阶段与群响应规则**：待补 —— 要核的是两家"多条件取或"的具体
+  实现与阶段清单（第一轮文档给的是阶段数，本轮要落到字段）。
+
+（未交付的一律保持"未验证"，不用默认值外推。）
