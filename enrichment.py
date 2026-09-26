@@ -42,6 +42,40 @@ _IMAGE_FILE_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".heic", ".svg"}
 )
 
+#: 按**内容**认图（magic bytes）。
+#:
+#: 为什么需要：QQ 可以把图片当**文件**发出去，这时平台给的附件类型是 file、而且文件名
+#: 可能压根没有扩展名（真机实测是 `qqdownloadftnv5`）。于是"按扩展名判图"两条都不中，
+#: 一张图被当成二进制文本，猫娘只能回一句"这个文件打不开欸" —— 用户看到的现象就是
+#: "我发的图她看不到"。按内容判图不依赖文件名，也不依赖平台给的 content_type。
+_IMAGE_MAGIC_PREFIXES: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # png
+    b"\xff\xd8\xff",       # jpeg
+    b"GIF87a",             # gif
+    b"GIF89a",
+    b"BM",                 # bmp
+    b"II*\x00",            # tiff (little endian)
+    b"MM\x00*",            # tiff (big endian)
+)
+#: 嗅探只看开头这么多字节（够覆盖上面所有前缀 + RIFF/ftyp 的偏移判断）。
+_IMAGE_SNIFF_BYTES = 64
+
+
+def _sniff_timeout_seconds() -> float:
+    """嗅探请求的超时（模块级函数，方便测试替换）。"""
+    return 10.0
+
+
+def looks_like_image_bytes(payload: bytes) -> bool:
+    """这段字节是不是一张图（按内容，不看文件名）。"""
+    head = bytes(payload[:_IMAGE_SNIFF_BYTES])
+    if any(head.startswith(prefix) for prefix in _IMAGE_MAGIC_PREFIXES):
+        return True
+    # webp / heic 的前缀不在第 0 字节：RIFF....WEBP / ....ftypheic|heix|mif1
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return True
+    return len(head) >= 12 and head[4:8] == b"ftyp"
+
 
 class QQMessageEnricher:
     """Enhance a normalized QQ message for LLM consumption.
@@ -184,6 +218,51 @@ class QQMessageEnricher:
                     "busid": int(busid.group(1)) if busid else 0,
                 })
         return files
+
+    async def promote_image_attachments(self, message: Dict[str, Any]) -> int:
+        """把"其实是图片"的文件附件**就地改成图片附件**，返回改了几条。
+
+        真机现象（2026-09-26）：用户把一张图当**文件**发出去，平台给的附件类型是
+        ``file``、文件名还是没有扩展名的 ``qqdownloadftnv5`` → 按扩展名判图不中 →
+        那张图被当成二进制文本渲染成 ``[文件 … (二进制,无法读取)]``，猫娘只能回
+        "这个文件打不开欸"。**用户看到的就是"我发的图她看不到"**。
+
+        判据用**内容**（magic bytes），不用文件名、也不信平台给的 ``content_type``：
+        两者在这次实测里都没给出"这是图"。
+
+        改完之后这条附件会走 ``prompting._queue_attachment_images``（多模态），
+        她**真的看得见**；留在 ``_attachment_files`` 里的才是真文件。只读前
+        ``_IMAGE_SNIFF_BYTES`` 个字节就断开，不整包下载。
+        """
+        promoted = 0
+        for attachment in message.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            if str(attachment.get("type") or "").strip() != "file":
+                continue
+            url = str(attachment.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                if await self._url_looks_like_image(url):
+                    attachment["type"] = "image"
+                    promoted += 1
+            except Exception:
+                # 嗅探失败就当普通文件处理（下面那条链路会给出"二进制/文本"的渲染），
+                # 不能让一次探测失败把整条消息带下去。
+                continue
+        return promoted
+
+    async def _url_looks_like_image(self, url: str) -> bool:
+        """只看开头的字节判断这个 URL 是不是图。"""
+        timeout = max(3.0, min(float(_sniff_timeout_seconds()), 15.0))
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    return False
+                async for chunk in response.aiter_bytes():
+                    return looks_like_image_bytes(chunk)
+        return False
 
     @staticmethod
     def _attachment_files(message: Dict[str, Any]) -> list[dict]:
@@ -607,6 +686,19 @@ class QQMessageEnricher:
                 if self.logger:
                     self.logger.exception(f"Failed to fetch record {file_id}")
 
+    async def _render_image_file(self, url: str, name: str) -> str:
+        """一张图（不管它是按图片发来的、还是按文件发来的）的渲染文本。"""
+        desc = ""
+        if self._image_describer:
+            try:
+                desc = await asyncio.wait_for(self._image_describer(url), timeout=15.0)
+            except Exception:
+                pass
+        render = f"[文件 {name} (图片)]"
+        if desc:
+            render = f"{render}: {desc}"
+        return render
+
     async def _fetch_file_content(self, message: Dict[str, Any], files: list[dict]) -> None:
         """Background-fetch file content: images go through VLM, decode text, mark binary/failed."""
         renders: list[str] = []
@@ -637,15 +729,7 @@ class QQMessageEnricher:
                 if not url:
                     render = f"[文件 {name}]"
                 elif _Path(name).suffix.lower() in _IMAGE_FILE_EXTENSIONS:
-                    desc = ""
-                    if self._image_describer:
-                        try:
-                            desc = await asyncio.wait_for(self._image_describer(url), timeout=15.0)
-                        except Exception:
-                            pass
-                    render = f"[文件 {name} (图片)]"
-                    if desc:
-                        render = f"{render}: {desc}"
+                    render = await self._render_image_file(url, name)
                 else:
                     async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as cl:
                         read_limit = _FILE_TEXT_MAX_BYTES + 1
@@ -659,7 +743,12 @@ class QQMessageEnricher:
                                     if total >= read_limit:
                                         break
                                 payload = b"".join(chunks)
-                                if b"\x00" in payload[:512]:
+                                if looks_like_image_bytes(payload):
+                                    # 名字没有图片扩展名、平台也给的是 file —— 但内容是图。
+                                    # 真机就是这个组合：一张图被渲染成"(二进制,无法读取)"，
+                                    # 用户看到的是"我发的图她看不到"。按内容认图，走 VLM。
+                                    render = await self._render_image_file(url, name)
+                                elif b"\x00" in payload[:512]:
                                     render = f"[文件 {name} (二进制,无法读取)]"
                                 else:
                                     text = payload[:_FILE_TEXT_MAX_BYTES].decode("utf-8", errors="replace")

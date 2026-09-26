@@ -350,6 +350,21 @@ class QQMessageDispatcher:
         enricher = getattr(self.plugin, "enricher", None)
         if enricher is None or not hasattr(enricher, "_attachment_files"):
             return False
+        # 先按**内容**把"其实是图片"的文件附件改成图片附件：这样它会走多模态那条路，
+        # 她真的看得见；真文件才落到下面的文本渲染。真机上"用户把图当文件发"就是靠
+        # 这一步从"这个文件打不开欸"变成看得见（见 promote_image_attachments 的说明）。
+        if hasattr(enricher, "promote_image_attachments"):
+            try:
+                promoted = await enricher.promote_image_attachments(message)
+            except Exception:
+                promoted = 0
+                logger = getattr(self.plugin, "logger", None)
+                if logger is not None:
+                    logger.warning("QQ 附件图片识别失败", exc_info=True)
+            if promoted:
+                emit_log = getattr(self.plugin, "_emit_log", None)
+                if callable(emit_log):
+                    emit_log("INFO", f"[附件] 按内容识别出 {promoted} 张图片（按文件发来的）")
         attachment_files = enricher._attachment_files(message)
         if not attachment_files:
             return False

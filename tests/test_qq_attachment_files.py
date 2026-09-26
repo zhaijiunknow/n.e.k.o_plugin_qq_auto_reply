@@ -251,6 +251,126 @@ def test_a_plugin_without_attachments_support_is_a_noop():
     )) is False
 
 
+# ── 5. 「以文件形式发来的图片」：按内容认图 ─────────────────────────────
+#
+# 真机现象（2026-09-26）：用户把一张图当文件发出去，平台给的附件类型是 file、
+# 文件名还是没有扩展名的 `qqdownloadftnv5` → 按扩展名判图不中 → 图被当成二进制文本，
+# 猫娘只能回"这个文件打不开欸"。**用户看到的是"我发的图她看不到"。**
+
+PNG_HEAD = b"\x89PNG\r\n\x1a\n" + b"\x00" * 56
+JPEG_HEAD = b"\xff\xd8\xff\xe0" + b"\x00" * 60
+GIF_HEAD = b"GIF89a" + b"\x00" * 58
+WEBP_HEAD = b"RIFF\x24\x00\x00\x00WEBP" + b"\x00" * 52
+HEIC_HEAD = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 52
+
+
+@pytest.mark.parametrize("payload", [PNG_HEAD, JPEG_HEAD, GIF_HEAD, WEBP_HEAD, HEIC_HEAD])
+def test_image_bytes_are_recognised_by_content(payload):
+    assert enrichment_mod.looks_like_image_bytes(payload) is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"# \xe6\xb6\x88\xe6\x81\xaf\xe6\x94\xb6\xe9\x9b\x86 -> Agent",  # markdown 文本
+        b"\x00\x01\x02\x03binary",
+        b"",
+        b"PK\x03\x04",          # zip/docx：是二进制，但不是图
+        b"\x89PNG",             # 前缀不全（截断的）不算 —— 宁可当文件也别谎报图片
+        b"RIFF\x24\x00\x00\x00AVI ",  # RIFF 但不是 WEBP
+    ],
+)
+def test_non_image_bytes_are_not_claimed_as_images(payload):
+    assert enrichment_mod.looks_like_image_bytes(payload) is False
+
+
+def test_a_promoted_attachment_becomes_a_multimodal_image(fake_download):
+    """认出来之后**就地改成图片附件** —— 它走 `_queue_attachment_images`，她真的看得见。"""
+    fake_download(PNG_HEAD)
+    enricher = _enricher()
+    message = {"attachments": [{"type": "file", "url": "https://cdn.example/qqdownloadx"}]}
+
+    promoted = asyncio.run(enricher.promote_image_attachments(message))
+
+    assert promoted == 1
+    assert message["attachments"][0]["type"] == "image"
+    # 改成图片之后就不该再落到文件渲染那条路上（否则同一张图既进 prompt 又进图片队列）
+    assert enricher._attachment_files(message) == []
+
+
+def test_a_real_file_is_not_promoted(fake_download):
+    fake_download("# 标题\n正文".encode("utf-8"))
+    enricher = _enricher()
+    message = {"attachments": [{"type": "file", "url": "https://cdn.example/a.md"}]}
+
+    assert asyncio.run(enricher.promote_image_attachments(message)) == 0
+    assert message["attachments"][0]["type"] == "file"
+    assert len(enricher._attachment_files(message)) == 1
+
+
+def test_a_failed_sniff_leaves_the_attachment_as_a_file(fake_download):
+    """探测失败不许让整条附件消失：当普通文件处理，让文本渲染那条给出结论。"""
+    fake_download(PNG_HEAD, status=404)
+    enricher = _enricher()
+    message = {"attachments": [{"type": "file", "url": "https://cdn.example/x"}]}
+
+    assert asyncio.run(enricher.promote_image_attachments(message)) == 0
+    assert message["attachments"][0]["type"] == "file"
+
+
+def test_an_image_already_typed_as_image_is_left_alone(fake_download):
+    """平台已经说是图片的，不进这条探测（少一次请求）。"""
+    http = fake_download(PNG_HEAD)
+    enricher = _enricher()
+    message = {"attachments": [{"type": "image", "url": "https://cdn.example/a.png"}]}
+
+    assert asyncio.run(enricher.promote_image_attachments(message)) == 0
+    assert http.urls == []
+
+
+def test_an_extensionless_image_renders_as_an_image_not_as_binary(fake_download):
+    """即便没被提升成图片附件，文件渲染那条也要按内容认出图（走 VLM 而不是"二进制"）。"""
+    fake_download(PNG_HEAD)
+    described: list[str] = []
+
+    async def _describer(url: str) -> str:
+        described.append(url)
+        return "一只像素黑猫"
+
+    enricher = enrichment_mod.QQMessageEnricher(SimpleNamespace(), image_describer=_describer)
+    message = {"content": "给你", "raw_message": "给你", "message_type": "private"}
+
+    asyncio.run(enricher._fetch_file_content(
+        message,
+        enricher._attachment_files({"attachments": [{"type": "file", "url": "https://cdn.example/qqdownloadftnv5"}]}),
+    ))
+
+    assert described == ["https://cdn.example/qqdownloadftnv5"]
+    assert "(图片)" in message["content"]
+    assert "一只像素黑猫" in message["content"]
+    assert "二进制" not in message["content"], "按内容认得出是图，就不该报二进制"
+
+
+def test_the_dispatcher_promotes_before_rendering(fake_download):
+    """接线：派发层先提升、再渲染文件，并把"识别出几张图"写进日志。"""
+    fake_download(PNG_HEAD)
+    enricher = _enricher()
+    emitted: list = []
+    dispatcher = _dispatcher(enricher, emitted=emitted)
+    message = {
+        "content": "看图",
+        "attachments": [{"type": "file", "url": "https://cdn.example/qqdownloadftnv5"}],
+    }
+
+    filtered = asyncio.run(dispatcher.enrich_open_platform_attachments(
+        message, label_defs=[], raw_content="看图",
+    ))
+
+    assert filtered is False
+    assert message["attachments"][0]["type"] == "image"
+    assert any("识别出 1 张图片" in msg for _level, msg in emitted), emitted
+
+
 # ── 4. 接线：`handle_message` 里那一段真的被走到 ──────────────────────
 #
 # 上面几条测的是 `enrich_open_platform_attachments` 本身。**接线**得单独钉：

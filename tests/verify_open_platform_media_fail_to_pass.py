@@ -103,6 +103,25 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         for attachment in []:""",
     ),
     (
+        "message_dispatcher.py",
+        "派发层不再把「其实是图片的文件附件」提升成图片（真机上就是「这个文件打不开欸」）",
+        """        if hasattr(enricher, "promote_image_attachments"):""",
+        """        if False:""",
+    ),
+    (
+        "enrichment.py",
+        "文件渲染不再按内容认图（扩展名认不出就报二进制）",
+        """                                if looks_like_image_bytes(payload):""",
+        """                                if False:""",
+    ),
+    (
+        "enrichment.py",
+        "按内容认图的判据恒为否（等于没做）",
+        """    head = bytes(payload[:_IMAGE_SNIFF_BYTES])""",
+        """    return False
+    head = bytes(payload[:_IMAGE_SNIFF_BYTES])""",
+    ),
+    (
         "_vendor/connection_onebot/qq_open_platform_media.py",
         "分片缺片也照合并（上传残缺文件还说成功）",
         """    if offset != len(payload):""",
