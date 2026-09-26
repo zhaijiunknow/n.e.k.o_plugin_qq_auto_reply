@@ -798,6 +798,73 @@ def test_the_handler_registers_the_task_and_wires_it_to_the_bridge(tmp_path):
     assert calls and calls[0][0] == "writer:analyze_text"
 
 
+# ── 给提示词用的「你手上还没交的活」─────────────────────────────────────
+
+def test_pending_items_are_reported_for_the_own_conversation_only(tmp_path):
+    """只报**这条会话**在等的事：群里在等的活不该出现在私聊提示词里（反之亦然）。"""
+    plugin = _plugin(tmp_path)
+    _remember(plugin, task_id="t1")
+    _remember(plugin, task_id="t2", convo={**_GROUP_CONVO})
+    _remember(plugin, task_id="t3", convo={**_GROUP_CONVO, "group_id": "g_other"})
+
+    private = _service(plugin).pending_items_for(is_group=False, sender_id="u_openid_1")
+    group = _service(plugin).pending_items_for(is_group=True, group_id="g_openid_9")
+    other = _service(plugin).pending_items_for(is_group=True, group_id="g_other")
+
+    assert len(private) == 1 and "已等" in private[0]
+    assert len(group) == 1
+    assert len(other) == 1
+    # 隔离性：**没在这条会话里等过**的，一个都不该报（去掉会话过滤这条会红）
+    assert _service(plugin).pending_items_for(is_group=False, sender_id="someone_else") == []
+    assert _service(plugin).pending_items_for(is_group=True, group_id="g_none") == []
+
+
+def test_pending_items_are_capped_and_ordered_by_age(tmp_path):
+    """进了提示词的行**必须封顶**。
+
+    注意：`MAX_PENDING_PER_CONVERSATION=1` 时，每个会话本来就只等一件，这个封顶平时够不着
+    —— 所以这里**直接往 `_pending` 里塞三条**（模拟"将来把每会话上限放开"或状态文件被手工改过），
+    否则这条闸是死代码、拆掉它没有任何测试会红（第一版就是这么写的，变异证据直接把它抓出来了）。
+    """
+    plugin = _plugin(tmp_path)
+    service = _service(plugin)
+    now = time.time()
+    for index in range(3):
+        key = f"writer:t{index}"
+        service._pending[key] = {
+            "key": key,
+            "plugin_id": "writer",
+            "entry_id": "analyze_text",
+            "field": "task_id",
+            "task_id": f"t{index}",
+            "poller": "get_analysis_status",
+            "conversation": dict(_CONVO),
+            "created_at": now - (10 - index),  # t0 最老
+            "attempts": 0,
+            "errors": 0,
+            "status": "queued",
+            "terminal": "",
+            "output": "",
+            "last_block_reason": "",
+            "last_block_at": 0.0,
+        }
+
+    rows = service.pending_items_for(is_group=False, sender_id="u_openid_1")
+
+    from plugin.plugins.qq_auto_reply.plugin_tool_followup_service import PENDING_PROMPT_MAX_ITEMS
+
+    assert PENDING_PROMPT_MAX_ITEMS == 2
+    assert len(rows) == PENDING_PROMPT_MAX_ITEMS, f"没封顶：{rows}"
+    assert "已等 10s" in rows[0], f"没按最老的排：{rows}"
+
+
+def test_pending_items_are_empty_without_a_conversation(tmp_path):
+    plugin = _plugin(tmp_path)
+    _remember(plugin)
+    assert _service(plugin).pending_items_for(is_group=False, sender_id="") == []
+    assert _service(plugin).pending_items_for(is_group=True, group_id="") == []
+
+
 # ── 界面/查询要看得见 ───────────────────────────────────────────────
 
 def test_the_snapshot_reports_what_she_is_waiting_on(tmp_path):

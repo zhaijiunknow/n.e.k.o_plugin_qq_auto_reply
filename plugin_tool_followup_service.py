@@ -59,6 +59,10 @@ MAX_ATTEMPTS = 200
 #: 同时在等的任务数上限。工具轮本来就稀少，给 4 个足够，且防"一次涌出好几条"。
 MAX_PENDING = 4
 
+#: 进提示词的"在办的事"最多列几项。这一行是给模型看的**状态**，不是清单：
+#: 只列最老的两项，够她知道自己还欠着什么；再多就是每轮白烧预算。
+PENDING_PROMPT_MAX_ITEMS = 2
+
 #: 同一会话最多同时挂几条（1 = 一个会话一次只等一件事）。
 MAX_PENDING_PER_CONVERSATION = 1
 
@@ -601,6 +605,36 @@ class QQPluginToolFollowupService:
 
     def pending_count(self) -> int:
         return len(self._pending)
+
+    def pending_items_for(
+        self, *, is_group: bool, group_id: str = "", sender_id: str = "",
+    ) -> list[str]:
+        """**这条会话**还在等的结果，给提示词用（一行一项，没有就返回空列表）。
+
+        为什么值得进 prompt：这是唯一一处"她手上还没交的活"——它不进记忆、也不在模型的
+        消息历史里（模型只知道自己上一轮说过"出来了我告诉你"）。写进当轮提示词，她就不会
+        （a）重复承诺一次、（b）在结果回来之前当成已经办完。
+        量很小：只在真的有在办的事时出现，且最多 `PENDING_PROMPT_MAX_ITEMS` 项。
+        """
+        convo = {
+            "is_group": bool(is_group),
+            "group_id": str(group_id or "").strip(),
+            "sender_id": str(sender_id or "").strip(),
+        }
+        target = _conversation_target(convo)
+        if not target:
+            return []
+        now = time.time()
+        rows = [
+            record for record in self._pending.values()
+            if _conversation_target(record.get("conversation") or {}) == target
+        ]
+        rows.sort(key=lambda record: float(record.get("created_at") or 0.0))
+        items: list[str] = []
+        for record in rows[:PENDING_PROMPT_MAX_ITEMS]:
+            waited = int(max(0.0, now - float(record.get("created_at") or now)))
+            items.append(f"{record.get('plugin_id') or '?'}（已等 {waited}s）")
+        return items
 
     @staticmethod
     def max_pending() -> int:

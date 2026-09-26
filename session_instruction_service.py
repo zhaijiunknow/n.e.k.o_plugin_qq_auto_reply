@@ -23,11 +23,14 @@ from .prompt_fragment_templates import (
     FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
     FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
     OUTPUT_PROMPT_SECTION,
+    PENDING_COMMITMENTS_SECTION,
+    RECALL_TRIGGER_HINT,
     ROLE_CARD_SECTION,
     ROLE_PROMPT_SECTION,
     SESSIONS_PROMPT_SECTION,
     TIME_PROMPT_SECTION,
     USER_PROFILE_PROMPT_SECTION,
+    pick_locale,
 )
 from .scene_prompt_templates import (
     SCENE_COLLECTIVE_GROUP,
@@ -484,6 +487,16 @@ class QQSessionInstructionService:
         used_member_subject = bool(core_used_member)
         if core_memory_text:
             sections.append(core_memory_text)
+        # 「你手上还没交的活」：只有插件自己知道（异步结果还在等）——记忆里没有、
+        # 模型的消息历史里也没有，所以每轮补一行；没有在办的事时整段不出现。
+        pending_section = self._build_pending_commitments_section(
+            is_group=is_group,
+            group_id=group_id,
+            sender_id=sender_id,
+            locale=user_language,
+        )
+        if pending_section:
+            sections.append(pending_section)
         # 用户画像：合成轮（buffer总结/破冰/回溯）memory_sender_id 为空，
         # 此时 sender_id 是占位符（如 admin QQ），不应注入画像
         if core_sender_id:
@@ -788,6 +801,36 @@ class QQSessionInstructionService:
 
         return ""
 
+    def _build_pending_commitments_section(
+        self,
+        *,
+        is_group: bool,
+        group_id: str | None,
+        sender_id: str,
+        locale: str = "",
+    ) -> str:
+        """这一轮要不要告诉她"你还在等某个结果"。没有在办的事时返回空串（不进 prompt）。
+
+        数据来自回投服务那一份**插件自己的状态**（`plugin_tool_followup_service`）——
+        它是唯一知道"她答应过、结果还没到"的地方。拿不到服务（轻量调用方/测试）就当没有。
+        """
+        followups = getattr(self.plugin, "plugin_tool_followup_service", None)
+        describe = getattr(followups, "pending_items_for", None)
+        if not callable(describe):
+            return ""
+        try:
+            items = describe(
+                is_group=bool(is_group),
+                group_id=str(group_id or ""),
+                sender_id=str(sender_id or ""),
+            )
+        except Exception:
+            self.plugin.logger.warning("构建「在办的事」提示段失败", exc_info=True)
+            return ""
+        if not items:
+            return ""
+        return pick_locale(PENDING_COMMITMENTS_SECTION, locale).format(items="、".join(items))
+
     async def _build_core_memory_section(
         self,
         *,
@@ -903,6 +946,9 @@ class QQSessionInstructionService:
                     "core_memory_section", CORE_MEMORY_SECTION, locale,
                     memory_context=memory_context,
                     context_ready=context_ready,
+                    # 走到这里 = 这一轮**确实挂了** recall_memory（同一道
+                    # `should_use_memory_context` 闸），所以附上"该查就查"是安全的。
+                    recall_hint=pick_locale(RECALL_TRIGGER_HINT, locale),
                 )
             except Exception as render_error:
                 # 翻译/覆盖里多写一个未知占位符会让 format 抛 KeyError，而
@@ -913,6 +959,7 @@ class QQSessionInstructionService:
                 )
                 return CORE_MEMORY_SECTION.format(
                     memory_context=memory_context, context_ready=context_ready,
+                    recall_hint=pick_locale(RECALL_TRIGGER_HINT, locale),
                 )
         except Exception as e:
             self.plugin.logger.warning(f"读取 Memory Server 上下文失败: {e}")

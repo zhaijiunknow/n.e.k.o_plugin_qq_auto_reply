@@ -34,6 +34,7 @@ CORE_MEMORY_SECTION = """\
 以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。
 {memory_context}
 {context_ready}
+{recall_hint}
 """
 
 LONG_TERM_MEMORY_SECTION = """\
@@ -216,6 +217,56 @@ MEMORY_CONTEXT_SECTION = """\
 {memory_context}
 {context_ready}
 """
+
+#: 记忆段的"该查就查"指令。**只在那一轮真的挂了 `recall_memory` 工具**时附上
+#: （挂载条件 = 本段存在，见 `_build_core_memory_section`），否则等于让她调一个不存在的工具。
+#:
+#: 真机来由（16:19）：宅久喊"妈妈"，她回"嗯？怎么突然喊妈妈啦？"——而"母子隐喻"这条
+#: 关系早在 9-23 就定了、记忆里也有（一条 reflection + 若干 fact），只是那一轮没人去查。
+#: 语义召回当天还没开（`emb_svc=disabled:model_file_missing`），BM25 对"妈妈"两个字命中
+#: 率又低 —— 所以除了修模型（已修），还要**明确告诉她什么时候该查**：召回是模型自发行为。
+RECALL_TRIGGER_HINT: dict[str, str] = {
+    "zh-CN": (
+        "- 涉及**过去发生过的事、你们之间的称呼与关系、你答应过对方的事**时，"
+        "先调用 `recall_memory` 查一次再回答；别凭印象猜，也别装作第一次听说。"
+    ),
+    "en": (
+        "- When the turn touches **what happened before, how you two address each other, "
+        "your relationship, or something you promised**, call `recall_memory` first and answer "
+        "from what comes back; don't guess and don't act like you've never heard of it."
+    ),
+}
+
+#: 「你手上还没交的活」——**只有插件自己知道**的那部分状态：异步结果还在等。
+#: 它不进记忆、也不在模型的消息历史里，所以每轮补一行（没有在办的事时整段不出现）。
+PENDING_COMMITMENTS_SECTION: dict[str, str] = {
+    "zh-CN": (
+        "## 你手上还没交的活（Pending）\n"
+        "- 你还在等「{items}」的结果：**拿到后主动说给对方**；在那之前别再承诺一次，"
+        "也不要当成已经办完了。"
+    ),
+    "en": (
+        "## Still pending on your side\n"
+        "- You are still waiting for the result of {items}: **tell the other side as soon as it "
+        "lands**; until then don't promise it again and don't treat it as already done."
+    ),
+}
+
+
+def pick_locale(mapping: dict[str, str], locale: str) -> str:
+    """按语言取一条文案。
+
+    本插件只维护 zh-CN / en 两本（`i18n/` 里也只有这两个文件），所以这里显式选：
+    中文系一律取 zh-CN，其余取 en。**不复用宿主的 `config.prompts.prompts_sys._loc`** ——
+    它对任何不在 dict 里的 locale 都会 `print("WARNING: Unexpected lang code …")`，
+    而这两条文案是每轮都要取的，会把 stdout 刷满。
+    """
+    key = str(locale or "").strip()
+    if key in mapping:
+        return mapping[key]
+    if key.lower().startswith("zh"):
+        return mapping.get("zh-CN") or mapping.get("zh") or mapping["en"]
+    return mapping.get("en") or next(iter(mapping.values()))
 
 LOGIN_IDENTITY_PROMPT = """\
 ## QQ 登录账号身份（Account Identity）
