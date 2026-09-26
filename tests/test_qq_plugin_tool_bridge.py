@@ -125,7 +125,7 @@ def test_a_fresh_cache_is_reused_without_asking_the_host_again():
     service = plugin.plugin_tool_service
 
     first = asyncio.run(_refresh(service))
-    second = asyncio.run(service.list_started_candidates())
+    second = asyncio.run(service.list_candidates())
 
     assert [row["plugin_id"] for row in first] == ["web_search"]
     assert second == first
@@ -149,7 +149,7 @@ def test_a_stale_cache_never_blocks_the_reader():
                                        service.cached_candidates())
 
     started = time.monotonic()
-    rows = asyncio.run(stale_service.list_started_candidates())
+    rows = asyncio.run(stale_service.list_candidates())
     elapsed = time.monotonic() - started
 
     assert [row["plugin_id"] for row in rows] == ["web_search"], "没拿到手里那份缓存"
@@ -283,8 +283,8 @@ def test_select_mounted_respects_the_tier_and_skips_non_candidates():
     plugin = _plugin(tiers={"web_search": "all", "mijia": "admin", "jukebox_controller": "all"})
     service = plugin.plugin_tool_service
     candidates = [
-        {"plugin_id": "web_search", "entries": ["search"]},
-        {"plugin_id": "mijia", "entries": ["turn_on"]},
+        {"plugin_id": "web_search", "entries": ["search"], "running": True},
+        {"plugin_id": "mijia", "entries": ["turn_on"], "running": True},
         # jukebox_controller 配了但**没在跑** → 不在候选里
     ]
     mounted = service.select_mounted(candidates, allowed_tiers={TIER_ALL})
@@ -298,14 +298,16 @@ def test_select_mounted_respects_the_tier_and_skips_non_candidates():
 def test_select_mounted_caps_the_count():
     tiers = {f"p{i:02d}": TIER_ALL for i in range(MAX_MOUNTED_PLUGINS + 4)}
     plugin = _plugin(tiers=tiers)
-    candidates = [{"plugin_id": pid, "entries": ["e"]} for pid in sorted(tiers)]
+    candidates = [{"plugin_id": pid, "entries": ["e"], "running": True} for pid in sorted(tiers)]
     mounted = plugin.plugin_tool_service.select_mounted(candidates, allowed_tiers={TIER_ALL})
     assert len(mounted) == MAX_MOUNTED_PLUGINS
 
 
 # ── 3. 候选：只带已启动的非 QQ 插件 ─────────────────────────────────
 
-def test_candidates_keep_only_started_non_qq_plugins():
+def test_candidates_list_every_non_qq_plugin_and_mark_who_is_running():
+    """候选表**不筛启动状态**（使用者定的：加插件时不检查有没有启动，全量出卡片），
+    只在每条上标 ``running`` —— 挂载那道闸看它。QQ 家族仍然排除。"""
     plugin = _plugin(plugins_result=_plugins_payload(
         _candidate("web_search", ("search",), name="搜索"),
         _candidate("qq_auto_reply", ("send",)),          # 自己
@@ -315,9 +317,38 @@ def test_candidates_keep_only_started_non_qq_plugins():
         "not-a-dict",
     ))
     rows = asyncio.run(_refresh(plugin.plugin_tool_service))
-    assert [row["plugin_id"] for row in rows] == ["web_search"]
-    assert rows[0]["entries"] == ["search"]
-    assert rows[0]["name"] == "搜索"
+    by_id = {row["plugin_id"]: row for row in rows}
+
+    assert set(by_id) == {"web_search", "sleepy_plugin", "no_entries"}, "候选不该只剩在跑的那些"
+    assert by_id["web_search"]["running"] is True
+    assert by_id["sleepy_plugin"]["running"] is False, "停着的要标出来（界面据此打「未启动」）"
+    assert by_id["web_search"]["entries"] == ["search"]
+    assert by_id["web_search"]["name"] == "搜索"
+
+
+def test_only_running_plugins_are_mounted():
+    """提示词那一侧只带**在跑**的：停着的配了也不挂。"""
+    plugin = _plugin(
+        tiers={"sleepy_plugin": "all", "web_search": "all"},
+        plugins_result=_plugins_payload(
+            _candidate("sleepy_plugin", ("x",), status="stopped"),
+            _candidate("web_search", ("search",)),
+        ),
+    )
+    rows = asyncio.run(_refresh(plugin.plugin_tool_service))
+    mounted = plugin.plugin_tool_service.select_mounted(rows, allowed_tiers={TIER_ALL})
+
+    assert [row["plugin_id"] for row, _tier in mounted] == ["web_search"]
+
+
+def test_a_running_plugin_without_entries_is_not_mounted():
+    """在跑但没有任何可调 entry：挂上去只会让模型空调用。"""
+    plugin = _plugin(
+        tiers={"no_entries": "all"},
+        plugins_result=_plugins_payload(_candidate("no_entries", ())),
+    )
+    rows = asyncio.run(_refresh(plugin.plugin_tool_service))
+    assert plugin.plugin_tool_service.select_mounted(rows, allowed_tiers={TIER_ALL}) == []
 
 
 def test_candidates_dedupe_and_sort_entries():
@@ -485,7 +516,7 @@ def _handler(plugin, mounted):
 
 def test_handler_calls_the_plugin_entry():
     plugin = _plugin()
-    candidates = [{"plugin_id": "web_search", "entries": ["search"]}]
+    candidates = [{"plugin_id": "web_search", "entries": ["search"], "running": True}]
     handler = _handler(plugin, [(candidates[0], TIER_ALL)])
 
     result = asyncio.run(handler(SimpleNamespace(
@@ -501,7 +532,7 @@ def test_handler_calls_the_plugin_entry():
 def test_handler_refuses_an_entry_outside_the_mounted_list():
     """模型不能自己编一个 entry id 来透传 —— 这是这条链路唯一的安全边界。"""
     plugin = _plugin()
-    candidates = [{"plugin_id": "web_search", "entries": ["search"]}]
+    candidates = [{"plugin_id": "web_search", "entries": ["search"], "running": True}]
     handler = _handler(plugin, [(candidates[0], TIER_ALL)])
 
     result = asyncio.run(handler(SimpleNamespace(
@@ -525,7 +556,7 @@ def test_handler_refuses_a_tool_that_was_not_mounted():
 
 def test_handler_tolerates_missing_arguments():
     plugin = _plugin()
-    candidates = [{"plugin_id": "web_search", "entries": ["search"]}]
+    candidates = [{"plugin_id": "web_search", "entries": ["search"], "running": True}]
     handler = _handler(plugin, [(candidates[0], TIER_ALL)])
 
     result = asyncio.run(handler(SimpleNamespace(

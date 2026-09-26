@@ -136,8 +136,8 @@ class QQPluginToolService:
         cached = self._candidates_cache
         return bool(cached) and (time.monotonic() - cached[0]) < CANDIDATES_TTL_SECONDS
 
-    async def list_started_candidates(self, *, refresh: bool = False) -> list[dict[str, Any]]:
-        """候选表（**读缓存**）。缓存过期就踢一次后台刷新，先返回手里那份。"""
+    async def list_candidates(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """候选表（**读缓存**，全量非 QQ 插件）。缓存过期就踢一次后台刷新，先返回手里那份。"""
         if refresh:
             return await self.wait_for_a_fresh_cache()
         if self.cache_is_fresh():
@@ -191,10 +191,17 @@ class QQPluginToolService:
             return None
 
     async def _query_host_registry(self) -> list[dict[str, Any]]:
-        """过滤出**已启动的、非 QQ 的**候选（含 entry 列表）。
+        """宿主插件目录里**所有非 QQ 的**插件（含 entry 列表与**是否在跑**）。
 
-        结果永远留痕（候选数 + 状态分布）：「界面上一片空」必须能自证原因 ——
-        是查询失败、还是宿主那边根本没有在跑的插件，两者要做的事完全不同。
+        两个消费者要的东西不一样，所以**取数时不筛启动状态**：
+
+        * **界面**（使用者定的）：加插件时不检查有没有启动，全量出卡片让人先分配档位 ——
+          否则"想给小工具分个档，得先把它启动起来"这件事本身就很别扭；
+        * **提示词**：只在**真的在跑**的插件上挂工具（`select_mounted` 里那道闸）。
+          没启动的挂在提示词里只会让模型点到错误、还白占每轮的预算。
+
+        结果永远留痕（候选数 + 在跑数 + 状态分布）：「界面上一片空」必须能自证原因 ——
+        是查询失败、宿主那边没有插件、还是全被非 QQ 闸排掉了。
         """
         payload = await self._fetch_registry()
         raw_plugins = (payload or {}).get("plugins") if isinstance(payload, dict) else None
@@ -215,23 +222,20 @@ class QQPluginToolService:
             statuses[status] = statuses.get(status, 0) + 1
             if not plugin_id or self._is_excluded(plugin_id):
                 continue
-            if status != "running":
-                continue
-            entries = self._entry_ids(item)
-            if not entries:
-                # 没有可调 entry 的插件（纯 UI / 纯事件）挂上去只会让模型空调用。
-                continue
             candidates.append({
                 "plugin_id": plugin_id,
                 "name": str(item.get("name") or plugin_id),
                 "description": str(item.get("description") or ""),
-                "entries": sorted(set(entries)),
+                "entries": sorted(set(self._entry_ids(item))),
                 "entry_hints": self._entry_hints(item),
+                #: 只有 True 的那些会进提示词（见 :meth:`select_mounted`）。
+                "running": status == "running",
             })
         candidates.sort(key=lambda row: row["plugin_id"])
+        running = sum(1 for row in candidates if row["running"])
         self.plugin.logger.info(
-            f"插件工具桥候选: {len(candidates)} 个可用；宿主目录 {len(raw_plugins)} 项，"
-            f"状态分布 {statuses}"
+            f"插件工具桥候选: {len(candidates)} 个（在跑 {running} 个）；"
+            f"宿主目录 {len(raw_plugins)} 项，状态分布 {statuses}"
         )
         return candidates
 
@@ -354,7 +358,11 @@ class QQPluginToolService:
     def select_mounted(
         self, candidates: list[dict[str, Any]], *, allowed_tiers: set[str],
     ) -> list[tuple[dict[str, Any], str]]:
-        """这一轮实际要挂的 ``(候选, 档位)``：白名单 ∧ 此刻在跑 ∧ 这个人有权用。
+        """这一轮实际要挂的 ``(候选, 档位)``：白名单 ∧ **此刻在跑** ∧ 这个人有权用。
+
+        **启动闸就在这一处**：候选表（界面用）是全量的，提示词只带在跑的那些 ——
+        没启动的挂在提示词里，模型点到只会拿到一个错误，还白占每轮的预算。
+        没有可调 entry 的插件同样跳过（挂上去只会让模型空调用）。
 
         顺序按 plugin_id 排：挂载顺序不该取决于调用方给的候选顺序（同一次调用要可复现）。
         """
@@ -365,7 +373,9 @@ class QQPluginToolService:
             if tier not in allowed_tiers:
                 continue
             row = by_id.get(plugin_id)
-            if row is None:
+            if row is None or not row.get("running"):
+                continue
+            if not row.get("entries"):
                 continue
             chosen.append((row, tier))
         return chosen[:MAX_MOUNTED_PLUGINS]

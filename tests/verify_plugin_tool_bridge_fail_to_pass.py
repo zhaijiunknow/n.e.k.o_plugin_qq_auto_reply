@@ -46,12 +46,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "plugin_tool_service.py",
-        "拆掉启动闸（没启动的插件也进提示词）",
-        """            if not plugin_id or self._is_excluded(plugin_id):
-                continue
-            if status != "running":
+        "拆掉启动闸（没启动的插件也进提示词 —— 界面照旧全量列）",
+        """            if row is None or not row.get("running"):
                 continue""",
-        """            if not plugin_id or self._is_excluded(plugin_id):
+        """            if row is None:
                 continue""",
     ),
     (

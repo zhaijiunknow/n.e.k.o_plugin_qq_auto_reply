@@ -559,7 +559,8 @@ class QQReplyGenerationService:
             # 认不出来的人（权限 none）：一个插件工具都不给。
             self.plugin._emit_log("INFO", "[PluginTool] 说话人不在名册里，本轮不挂插件工具")
             return [], []
-        candidates = await service.list_started_candidates()
+        # 候选表是**全量非 QQ 插件**（界面也是它）；挂不挂由 select_mounted 的启动闸决定。
+        candidates = await service.list_candidates()
         mounted = service.select_mounted(candidates, allowed_tiers=allowed)
         skipped = sorted(set(tiers) - {row["plugin_id"] for row, _tier in mounted})
         if skipped:

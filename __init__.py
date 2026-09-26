@@ -1270,21 +1270,27 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             f"user_profiles/backlog_summary/backlog_detail/napcat_webui/bots/plugin_tools）"))
 
     async def _query_plugin_tools(self, kw: dict[str, Any]):
-        """插件工具桥的配置视图：候选（只列已启动的非 QQ 插件）+ 当前分级。
+        """插件工具桥的配置视图：**全量非 QQ 插件**（带是否在跑）+ 当前分级。
 
-        **候选与分级分开给**：界面左边是"可添加的插件"（宿主注册表里此刻在跑的），
-        右边两个分区是"已添加 + 各自的档位"。配了但此刻没启动的插件会出现在
-        ``configured_not_running`` 里 —— 它挂不上去，界面要如实说，而不是让使用者
-        以为配好了就能用。
+        **加插件不筛启动状态**（使用者定的）：界面全量出卡片，先分配档位；是不是在跑
+        只影响"这一轮挂不挂得上"，不影响"能不能先配好"。所以候选里每条都带 ``running``，
+        界面据此打「未启动」标记；而挂载那道闸在 `select_mounted`（只带在跑的）。
+
+        另外仍给 ``configured_not_running``：配了但此刻没在跑的插件清单 ——
+        界面用它显示一行"这些挂不上去"，避免使用者以为配好了就能用。
         """
         _ = kw
         service = self.plugin_tool_service
         tiers = service.tiers()
-        # refresh=True：界面要看**实时**的启停状态（配置页刚启动一个插件就该能加它），
+        # refresh=True：界面要看**实时**的启停状态（刚启动一个插件就该能加它），
         # 而每轮生成那条路径吃的是 60s 缓存（见 CANDIDATES_TTL_SECONDS）。
-        candidates = await service.list_started_candidates(refresh=True)
-        by_id = {row["plugin_id"]: row for row in candidates}
-        configured_not_running = sorted(pid for pid in tiers if pid not in by_id)
+        candidates = await service.list_candidates(refresh=True)
+        running_by_id = {
+            row["plugin_id"]: bool(row.get("running")) for row in candidates
+        }
+        configured_not_running = sorted(
+            pid for pid in tiers if not running_by_id.get(pid, False)
+        )
         current = (
             str(self.qq_client.mode if self.qq_client is not None else "")
             or str(self._qq_settings.get("qq_connection_mode") or "")

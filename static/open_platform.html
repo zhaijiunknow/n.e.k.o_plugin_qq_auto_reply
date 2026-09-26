@@ -335,25 +335,32 @@ async function loadDashboard(){try{let d=await call('query', {action:'dashboard'
 let _pluginTools={tiers:{},candidates:[],configured_not_running:[],max:8,enabled_on_this_channel:false,connection_mode:''};
 async function loadPluginTools(){let box=document.getElementById('pt-zone-available');if(!box)return;try{let d=await call('query',{action:'plugin_tools'});_pluginTools=Object.assign(_pluginTools,d||{});renderPluginTools()}catch(e){toast(t('ui.openplat.plugintools.load_failed','加载插件列表失败: ')+e.message)}}
 function _ptCard(c,tier){
-  let warn=c._missing?` <span class="tag tag-offline">${t('ui.openplat.plugintools.not_running','未启动')}</span>`:'';
+  /* 加插件**不看有没有启动**（使用者定的）：全量出卡片、先分档位；在不在跑只影响
+     "这一轮挂不挂得上"，所以这里只打个「未启动」标记，不禁用、也不隐藏。 */
+  let stopped=c.running===false;
+  let warn=stopped?` <span class="tag tag-offline">${t('ui.openplat.plugintools.not_running','未启动')}</span>`:'';
   let entries=(c.entries||[]).length;
+  let count=entries?` · ${t('ui.openplat.plugintools.entry_count','可用功能 ')}${entries}`:'';
   return `<div class="pt-card" draggable="true" data-pid="${escapeHtml(c.plugin_id)}" data-tier="${escapeHtml(tier||'')}"
-      style="background:var(--overlay);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 10px;margin-bottom:6px;cursor:grab">
+      style="background:var(--overlay);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 10px;margin-bottom:6px;cursor:grab${stopped?';opacity:.72':''}">
       <div style="font-weight:600;font-size:13px">${escapeHtml(c.name||c.plugin_id)}${warn}</div>
-      <div style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(c.plugin_id)} · ${t('ui.openplat.plugintools.entry_count','可用功能 ')}${entries}</div>
+      <div style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(c.plugin_id)}${count}</div>
       <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="ptSetTier('${escapeOnclick(c.plugin_id)}',${tier?"''":'null'})">${tier?t('ui.openplat.plugintools.btn_remove','撤销'):t('ui.openplat.plugintools.btn_add','添加')}</button></div>
     </div>`;
 }
 function renderPluginTools(){
   let tiers=_pluginTools.tiers||{},cands=_pluginTools.candidates||[];
   let byId={};cands.forEach(c=>{byId[c.plugin_id]=c});
-  let missing=(_pluginTools.configured_not_running||[]).map(pid=>({plugin_id:pid,name:pid,entries:[],_missing:true}));
+  /* 配了但目录里现在没有（插件被卸了 / id 对不上）：也要给一张卡，否则没法撤销它。 */
+  let missing=(_pluginTools.configured_not_running||[])
+    .filter(pid=>!byId[pid])
+    .map(pid=>({plugin_id:pid,name:pid,entries:[],running:false}));
   let all=missing.concat(cands);
   let avail=all.filter(c=>!tiers[c.plugin_id]);
   let zAll=all.filter(c=>tiers[c.plugin_id]==='all');
   let zAdmin=all.filter(c=>tiers[c.plugin_id]==='admin');
   let zone=(id,rows,hint)=>{let el=document.getElementById(id);if(!el)return;el.innerHTML=rows.length?rows.map(c=>_ptCard(c,tiers[c.plugin_id]||'')).join(''):`<span style="color:var(--text-secondary);font-size:12px">${hint}</span>`};
-  zone('pt-zone-available',avail,t('ui.openplat.plugintools.empty_available','没有可添加的插件（只有已启动的非 QQ 插件能加）'));
+  zone('pt-zone-available',avail,t('ui.openplat.plugintools.empty_available','没有可添加的插件（非 QQ 插件都会列在这里）'));
   zone('pt-zone-all',zAll,t('ui.openplat.plugintools.drop_hint','把卡片拖到这里'));
   zone('pt-zone-admin',zAdmin,t('ui.openplat.plugintools.drop_hint','把卡片拖到这里'));
   document.querySelectorAll('#plugin-tools-card .pt-card').forEach(card=>{

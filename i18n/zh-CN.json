@@ -691,7 +691,7 @@
   "ui.openplat.plugintools.tier_admin": "只有管理员可以用",
   "ui.openplat.plugintools.drag_hint": "拖拽卡片换分区；拖回左边即撤销。改动立刻保存。",
   "ui.openplat.plugintools.drop_hint": "把卡片拖到这里",
-  "ui.openplat.plugintools.empty_available": "没有可添加的插件（只有已启动的非 QQ 插件能加）",
+  "ui.openplat.plugintools.empty_available": "没有可添加的插件（非 QQ 插件都会列在这里）",
   "ui.openplat.plugintools.not_running": "未启动",
   "ui.openplat.plugintools.entry_count": "可用功能 ",
   "ui.openplat.plugintools.btn_add": "添加",
