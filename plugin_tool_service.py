@@ -74,6 +74,10 @@ CANDIDATES_TTL_SECONDS = 60.0
 #: 界面那条读路径最多等多久（秒）。
 UI_WAIT_SECONDS = 2.0
 
+#: 每个 entry 在工具描述里占的字符上限。工具定义**每轮都进 system 段**，而一个插件
+#: 可能有十几个 entry —— 不封顶就会把预算吃光。截断留省略号，看得见被砍过。
+ENTRY_HINT_MAX_CHARS = 140
+
 #: 插件 id 里凡是这种前缀都不进候选（QQ 家族 = 自己这条链路）。
 EXCLUDED_ID_PREFIXES = ("qq",)
 
@@ -252,7 +256,12 @@ class QQPluginToolService:
 
     @staticmethod
     def _entry_hints(item: dict[str, Any]) -> dict[str, str]:
-        """``{entry_id: 一句话说明}`` —— 有就带上，让模型知道每个 entry 是干嘛的。"""
+        """``{entry_id: 一行说明}`` —— 说明 + 必填参数名。
+
+        带参数名不是装饰：`params` 是自由对象（宿主没给逐 entry 的 schema 也可以照抄
+        一份进来，但描述里点名"必填 time、message"比让模型猜准得多）。整行有长度上限，
+        见 :data:`ENTRY_HINT_MAX_CHARS`。
+        """
         raw = item.get("entries")
         if not isinstance(raw, list):
             return {}
@@ -261,10 +270,29 @@ class QQPluginToolService:
             if not isinstance(entry, dict):
                 continue
             entry_id = str(entry.get("id") or entry.get("event_id") or "").strip()
+            if not entry_id:
+                continue
             text = str(entry.get("description") or entry.get("name") or "").strip()
-            if entry_id and text:
+            required = QQPluginToolService._required_params(entry)
+            if required:
+                text = f"{text}（必填参数：{'、'.join(required)}）" if text else (
+                    f"必填参数：{'、'.join(required)}"
+                )
+            if text:
+                if len(text) > ENTRY_HINT_MAX_CHARS:
+                    text = text[:ENTRY_HINT_MAX_CHARS] + "…"
                 hints[entry_id] = text
         return hints
+
+    @staticmethod
+    def _required_params(entry: dict[str, Any]) -> list[str]:
+        schema = entry.get("input_schema")
+        if not isinstance(schema, dict):
+            return []
+        required = schema.get("required")
+        if not isinstance(required, list):
+            return []
+        return [str(name) for name in required if str(name or "").strip()]
 
     # ── 分级（配置） ────────────────────────────────────────────────
 

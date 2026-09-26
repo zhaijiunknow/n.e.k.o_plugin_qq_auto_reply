@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import pytest
 from plugin.plugins.qq_auto_reply.plugin_tool_service import (
     CANDIDATES_TTL_SECONDS,
+    ENTRY_HINT_MAX_CHARS,
     MAX_MOUNTED_PLUGINS,
     RESULT_MAX_CHARS,
     TIER_ADMIN,
@@ -361,6 +362,52 @@ def test_tool_definition_shape():
     # 档位要说给模型听：她据此判断该不该替这个人做这件事
     assert "只有管理员" in definition.description
     assert "搜索" in definition.description
+
+
+def test_the_tool_description_names_the_required_params():
+    """`params` 是自由对象 —— 描述里点名"必填 time、message"比让模型猜准得多。
+
+    用真实的 memo_reminder 形状：`add_reminder` 必填 `time`/`message`，
+    `list_reminders` 没有必填。
+    """
+    plugin = _plugin()
+    candidate = {
+        "plugin_id": "memo_reminder",
+        "name": "备忘提醒",
+        "entries": ["add_reminder", "list_reminders"],
+        "entry_hints": {
+            "add_reminder": "排期一个备忘提醒（必填参数：time、message）",
+            "list_reminders": "列出所有待触发的提醒",
+        },
+    }
+    definition = QQPluginToolService.build_tool_definition(
+        plugin.plugin_tool_service, candidate, TIER_ALL,
+    )
+
+    assert "add_reminder：排期一个备忘提醒（必填参数：time、message）" in definition.description
+    assert "list_reminders：列出所有待触发的提醒" in definition.description
+
+
+def test_the_hint_carries_required_params_and_is_capped():
+    """`_entry_hints` 自己要从 input_schema 里把必填参数名抠出来，并且整行封顶。"""
+    long_text = "说明" * 200
+    item = {
+        "entries": [
+            {
+                "id": "add_reminder",
+                "description": "排期一个提醒",
+                "input_schema": {"type": "object", "required": ["time", "message"], "properties": {}},
+            },
+            {"id": "list_reminders", "description": "", "input_schema": {"type": "object"}},
+            {"id": "long_one", "description": long_text, "input_schema": {"required": ["x"]}},
+        ],
+    }
+    hints = QQPluginToolService._entry_hints(item)
+
+    assert "必填参数：time、message" in hints["add_reminder"]
+    assert "list_reminders" not in hints, "没有说明也没有必填参数时不该硬造一行"
+    assert hints["long_one"].endswith("…"), "超长没被截断"
+    assert len(hints["long_one"]) <= ENTRY_HINT_MAX_CHARS + 1, len(hints["long_one"])
 
 
 def test_tool_names_stay_inside_the_host_name_rule():
