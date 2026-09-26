@@ -491,6 +491,14 @@ class QQPluginToolService:
             hint = str(hints.get(entry_id) or "").strip()
             lines.append(f"  - {entry_id}：{hint}" if hint else f"  - {entry_id}")
         lines.append("params 是一个 JSON 对象，内容按该 entry 自己的入参填。")
+        # 真机 16:53 的教训：使用者让她"用文本分析插件分析一下"，她回「好，我这就再帮你提交
+        # 一次」，而那一轮**根本没有工具调用**（对端插件的日志里没有对应 entry）。
+        # 光靠工具结果里那句话管不住这种情形 —— 得在**工具定义**里就写死这条：
+        # 只有真的调用成功之后才许说"已经提交/我去办"。
+        lines.append(
+            "⚠️ 只有**真的调用本工具并拿到结果**之后，才能对使用者说「我已经提交了 / 我去办」"
+            "这类话。没调用、或调用失败时，不许这么说。"
+        )
         return ToolDefinition(
             name=self.tool_name(candidate["plugin_id"]),
             description="\n".join(lines),

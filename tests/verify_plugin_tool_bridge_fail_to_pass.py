@@ -106,6 +106,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         """            text = "调用失败：" + text + _FAILURE_MANNER_HINT""",
         """            text = "调用失败：" + text""",
     ),
+    (
+        "plugin_tool_service.py",
+        "工具描述里不再禁止「没调用就说已经提交了」（她又可以空口承诺）",
+        """        lines.append(
+            "⚠️ 只有**真的调用本工具并拿到结果**之后，才能对使用者说「我已经提交了 / 我去办」"
+            "这类话。没调用、或调用失败时，不许这么说。"
+        )""",
+        "        pass",
+    ),
 ]
 
 

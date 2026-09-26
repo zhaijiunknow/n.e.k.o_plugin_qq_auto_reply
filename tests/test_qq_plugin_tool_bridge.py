@@ -455,6 +455,22 @@ def test_the_hint_carries_required_and_optional_params_and_is_capped():
     assert len(hints["long_one"]) <= ENTRY_HINT_MAX_CHARS + 1, len(hints["long_one"])
 
 
+def test_the_tool_description_forbids_claiming_work_that_never_happened():
+    """真机 16:53：她说「好，我这就再帮你提交一次」，而那一轮**没有任何工具调用**。
+
+    工具结果里那句"别承诺"管不住这种情形 —— 得在**工具定义**里就写死：
+    只有真的调用成功之后才许说"已经提交/我去办"。
+    """
+    tool = QQPluginToolService.build_tool_definition(
+        _plugin().plugin_tool_service,
+        {"plugin_id": "web_search", "name": "搜索", "entries": ["search"], "entry_hints": {}},
+        TIER_ALL,
+    )
+
+    assert "真的调用本工具" in tool.description
+    assert "不许这么说" in tool.description
+
+
 def test_optional_params_are_names_only_and_capped():
     """可选参数只列名字，且数量有上限（工具描述每轮都发，不能无限膨胀）。"""
     entry = {
