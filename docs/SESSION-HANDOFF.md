@@ -51,7 +51,7 @@
 | 开放平台：**主动发消息不可用**（`send` 的 target 校验只认纯数字/昵称，而这里只有 openid） | ⏸ 已知缺口，未修（§4.0ad） |
 | 附件/长消息**逐字进记忆** → bootstrap 回灌 → 每轮 prompt 涨一份（实测 +12.7k/次） | ✅ 已修（§4.0ae）：同步单条截断 4k + 留痕；现场复测增量为 +3.5k；**归因未拆开**（宿主也有单条上限） |
 | 「以文件形式发来的图片」被当成二进制 → 她回「这个文件打不开欸」 | ✅ **真机已通**（§4.0af）：按 magic bytes 认图 → 提升成图片附件走多模态（`images: 0 → 1`） |
-| 插件工具桥：她能不能调**别的插件**（按分级、按通道） | ✅ **真机已通**（§4.0ag）：3 个插件挂载成功 + 两次真实调用 `-> ok`（web_search / writer_power_analysis）。未测：群里那条分级对照 |
+| 插件工具桥：她能不能调**别的插件**（按分级、按通道） | ✅ **真机已通**（§4.0ag）：候选全量 14 条（在跑 3）、只挂在跑的 3 个、两次真实调用 `-> ok`（web_search / writer_power_analysis）。未测：**非管理员**在群里被 `admin` 档挡下、`memo_reminder` 的真实调用 |
 | 插件配置界面：长列表里**底部卡片拖不进档位区**、「添加」按钮点了没反应 | ✅ 落地（§4.0ag-3）：独立「插件」页 + 每卡两个档位按钮 + 可添加区自滚 + 搜索/计数；Playwright 15 插件场景验证 |
 | 记忆段封顶（可省最多 ~4.4k 字符/轮） | ⏸ 未做（使用者：「这个先不管」），实测值记在 §4.0u |
 | 群聊场景段（i18n 副本）与代码模板已漂移；改 Python 模板对线上无效 | ⏸ 已知，待定 |
@@ -2344,9 +2344,33 @@ writer 750+409），每轮都发且免费线没有 prompt caching。它**不进*
 `configured_not_running` 的语义改成"配了但**此刻没在跑**"（含目录里已经找不到的），
 界面继续用它显示"这些挂不上去"那一行。
 
-**未现场验证**：改这段时宿主插件服务正好被重启且一度不可达（`ConnectError`），
-所以这次只有单测（61 条）与 7/7 变异证据，没有真机日志。下次宿主起来后看一眼
-`插件工具桥候选: N 个（在跑 M 个）` 这行即可确认。
+**现场已验证**（宿主起来后补的，只读探针 `.dsh-artifacts/probe-plugin-tools-live.py`，
+走 `query action=plugin_tools`，不触发任何 QQ 发言，run `1a681fe4` succeeded）：
+
+```
+候选总数: 14（其中在跑 3）
+  [off] app_launcher 未启动 entries=12      [ON ] memo_reminder 在跑 entries=5
+  [off] claude_companion 未启动 entries=0   [off] music_pusher 未启动 entries=16
+  [off] game_agent_minecraft 未启动 3       [off] netease_music 未启动 0
+  [off] jukebox_controller 未启动 1         [off] proactive_controller 未启动 4
+  [off] lifekit 未启动 entries=19           [off] sts2_autoplay 未启动 0
+  [off] mcp_adapter 未启动 entries=8        [ON ] web_search 在跑 entries=2
+  [off] wechat_integration 未启动 9         [ON ] writer_power_analysis 在跑 9
+配置但当前挂不上: []       档位: {memo_reminder: admin, web_search: all, writer_power_analysis: all}
+通道: mode=open_platform 本通道生效=True 上限=8
+```
+
+宿主目录当时 15 项、在跑 4 项：**14 = 15 − `qq_auto_reply` 自己**（`EXCLUDED_ID_PREFIXES`），
+未启动的 11 个也照样进候选 —— 这条就是使用者要的"全量"。挂载侧取的是真机日志：16:19:43 与
+16:21:18 两轮真实对话都是
+
+```
+[PluginTool] 本轮挂载 3 个插件工具（权限 admin）: memo_reminder、web_search、writer_power_analysis
+```
+
+**只挂上在跑的那 3 个**（11 个没启动的没进去），且 `memo_reminder` 配的是 `admin` 档、
+当时调用者是管理员所以能挂 —— 两条口径在真机上一致。（`插件工具桥候选: N 个（在跑 M 个）`
+那行当时已被 ring 挤掉，ring 只留 42 行；上面 `plugin_tools` 的返回是等价证据。）
 
 ---
 
