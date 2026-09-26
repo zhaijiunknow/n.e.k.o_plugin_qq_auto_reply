@@ -504,7 +504,36 @@ class QQMessageDispatcher:
                 self.plugin.logger.error(f"Error processing message: {e}")
                 await __import__("asyncio").sleep(1)
 
+    def _is_blacklisted_user(self, qq_number: str) -> bool:
+        """这个 QQ / openid 是否被拉黑（用户级别里的 ``blacklist``）。
+
+        级别与 admin / trusted / normal 存在同一份名单里（``PermissionManager``），
+        所以控制台那张「信任用户」表就是黑名单的管理入口。
+        """
+        manager = getattr(self.plugin, "permission_mgr", None)
+        if manager is None:
+            return False
+        try:
+            return str(manager.get_permission_level(qq_number) or "").strip().lower() == "blacklist"
+        except Exception:
+            return False
+
     async def handle_message(self, message: dict[str, Any]):
+        # 用户黑名单：这个人发的消息 / 戳一戳 / 入群通知一律不处理，**绝不进管线**。
+        # 必须放在最前面，三个理由：
+        #   ① 下面戳一戳分支会在更早的位置直接 send_group_poke 并 return ——
+        #      放后面就拦不住"回戳"；
+        #   ② 要在 backlog 记录之前，否则黑名单用户的话仍会进 backlog，被
+        #      「回溯补回」在焦点切换时喂给猫娘；
+        #   ③ 要在 enrichment（VLM/STT/引用链）之前，既省一遍开销，也不让内容
+        #      有机会被别处引用。
+        blacklist_sender = str(message.get("user_id") or "").strip()
+        if blacklist_sender and self._is_blacklisted_user(blacklist_sender):
+            self.plugin._emit_log(
+                "INFO",
+                f"用户黑名单过滤: user={blacklist_sender} type={message.get('message_type')}",
+            )
+            return
         # 戳一戳通知：少量 → 回戳不说话；大量 → 说话不回戳；戳别人 → LLM 决定是否也戳
         if message.get("message_type") == "notice" and message.get("notice_type") == "poke":
             group_id = str(message.get("group_id") or "").strip()

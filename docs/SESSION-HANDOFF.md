@@ -3920,3 +3920,45 @@ necessity 那段的注释担心的正是这件事（「若在这里返回 ignore
 所以行为与改动前一致；而且此刻连的是开放平台（`needs_attention=false`），门控整条短路。
 真正变的是「以后新增/降级成 normal 的群」：它们不再抢焦点、不再被静默丢弃，
 而是走回/转达那条路。
+
+---
+
+## 21. 用户级别新增「黑名单」：拉黑的人说什么都不进管线
+
+使用者要求：「黑名单的用户在群里发言的时候需要过滤掉不发给猫娘」。
+
+### 21.1 做法：级别复用现有名单，拦截放在派发层最前面
+
+- `PermissionManager.VALID_LEVELS` 加 **`blacklist`**（与 admin/trusted/normal 同一份名单）
+  —— 于是控制台那张「信任用户」表**就是黑名单的管理入口**，不用新建配置键、不用新建页面
+  逻辑；`is_blacklisted()` 顺手给上，`is_trusted()` / `is_admin()` 对它都为 False。
+- 拦截点在 `message_dispatcher.handle_message` 的**第一行**。位置是刻意选的，三个理由：
+  1. **在戳一戳分支之前** —— 那个分支会直接 `send_group_poke` 然后 return，
+     放后面就拦不住"回戳"；
+  2. **在 `backlog_service.record_message` 之前** —— 否则黑名单用户的话仍会进 backlog，
+     被「回溯补回」在焦点切换时当摘要喂给猫娘；
+  3. **在 enrichment（VLM/STT/引用链）之前** —— 省一遍开销，也不给这段内容被别处引用的机会。
+- 覆盖范围：群消息、戳一戳、入群欢迎通知、**私聊**（同一个入口，一条判断全包）。
+- UI：napcat / open_platform 的用户弹窗级别下拉、status.html 的用户级别下拉、旧版
+  `script.js` 的实体表单都加了「黑名单」；用户表里把 `blacklist` 显示成中文标签；
+  i18n 两份包加 `ui.user.level_blacklist` / `ui.shared.form.level_blacklist` /
+  `ui.status.u_blacklist`。
+- `trust` 入口的 `level` 描述补上可选值（schema 本来就没 enum，所以命令行/LLM 直接传
+  `level=blacklist` 即可）。
+
+### 21.2 验证
+
+- 新看门狗 `tests/test_qq_user_blacklist.py`（8 条）：级别合法/无特权/落盘往返；
+  群消息**不进 backlog**；戳一戳**不回戳**；私聊被丢；**对照组**（非黑名单用户照常走到
+  群聊派发点）；没有权限管理器时不误伤。
+- 变异取证 `tests/verify_user_blacklist_fail_to_pass.py` **5/5**（blacklist 不再是合法级别 /
+  拦截调用被关掉 / 拦截挪到戳一戳之后 / 判定助手恒为 False）→ 目标全红、控制组全绿、
+  逐字节还原。
+- 全量 **1219 passed**；ruff All checks passed。
+
+### 21.3 边界（有意为之）
+
+- **语义是"不处理"，不是"踢出去"**：不改群成员状态、不回怼、不记录；她就像没看见这条消息。
+- 已有的历史（记忆 / 画像）**不会被追溯删除**；要清就单独说一声（`config action=memory_forget`
+  已经能做群维度，用户维度要另加）。
+- 群级别没有加黑名单：群不参与回复已有 `none`（未配置即忽略）。

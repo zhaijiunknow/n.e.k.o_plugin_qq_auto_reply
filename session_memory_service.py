@@ -1998,6 +1998,8 @@ class QQSessionMemoryService:
         level = str(permission_level or "").strip().lower()
         if level == "user":
             level = "normal"
+        # 黑名单（用户级别 blacklist）：他们的话在派发层最前面就被拦下、根本到不了
+        # 这里；真到了也只落到最低档 "none" —— 未知档位绝不能被当成更高权限。
         if level in {"admin", "trusted", "normal", "none"}:
             return level
         manager = getattr(self.plugin, "permission_mgr", None)

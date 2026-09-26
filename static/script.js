@@ -248,7 +248,7 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('entity-nickname-group').style.display = isUser ? 'block' : 'none';
             const levelSelect = document.getElementById('entity-level');
             const options = isUser
-                ? [['admin', 'admin'], ['trusted', 'trusted'], ['normal', 'normal']]
+                ? [['admin', 'admin'], ['trusted', 'trusted'], ['normal', 'normal'], ['blacklist', 'blacklist']]
                 : [['trusted', 'trusted'], ['normal', 'normal']];
             levelSelect.innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
             levelSelect.value = String(item?.level || options[0][0]);
