@@ -1,0 +1,732 @@
+"""插件工具桥：把别的插件按分级挂到 QQ 会话上（只在开放平台）。
+
+这个功能有**四道闸**，每一道都对应一个真实的坏结果，所以每一道都要单独钉住：
+
+1. **通道闸**：只在开放平台挂。NapCat 那边"群里什么样的人都有"，多给一层工具面就多
+   一层风险；
+2. **启动闸**：只带**已经启动**的插件 —— 没启动的挂上去，模型点到只会拿到一个错误，
+   而且它还会占掉提示词预算；
+3. **非 QQ 闸**：排除自己与 `qq*` 家族。让她"通过调用别的插件"再回到 QQ 发送链路是
+   自指；
+4. **权限闸**：`all` 档给名册里的人，`admin` 档只给管理员；**认不出来的人什么都不给** ——
+   那正是陌生人 @ 一下就能指挥插件的情形。
+
+外加一条不是闸但要命的：handler 只认**本轮挂上去的 entry 清单**，
+模型不能自己编一个 entry id 来透传。
+
+另外，候选表的取数**只走后台刷新**（`refresh_candidates`）：真机上在 entry handler 里
+同步查宿主会超时（`Plugin query timed out after 15.0s`），调用方一律只读缓存。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import pathlib
+import time
+from types import SimpleNamespace
+
+import pytest
+from plugin.plugins.qq_auto_reply.plugin_tool_service import (
+    CANDIDATES_TTL_SECONDS,
+    MAX_MOUNTED_PLUGINS,
+    RESULT_MAX_CHARS,
+    TIER_ADMIN,
+    TIER_ALL,
+    QQPluginToolService,
+)
+
+# ── 夹具 ────────────────────────────────────────────────────────────
+
+def _plugin(
+    *, tiers=None, plugins_result=None, mode="open_platform",
+    query_delay: float = 0.0, stub_fetch: bool = True,
+):
+    """最小插件桩：只带服务真正用到的那几样。
+
+    候选表来自**宿主插件服务的 HTTP** `/plugins`（不是 SDK 的 IPC `query_plugins` ——
+    真机上那条路根本没到过宿主）。默认把取数替换成桩；测 HTTP 那一层时传
+    ``stub_fetch=False``。
+    """
+    calls: list[tuple] = []
+    queries: list[dict] = []
+
+    async def _fetch():
+        queries.append({"fetch": True})
+        if query_delay:
+            await asyncio.sleep(query_delay)
+        return plugins_result if plugins_result is not None else {"plugins": []}
+
+    class _Plugins:
+        @staticmethod
+        async def call_entry(entry_ref, params=None, *, timeout=10.0):
+            calls.append((entry_ref, params, timeout))
+            return SimpleNamespace(value={"ok": True, "echo": params}, is_err=lambda: False)
+
+    client = SimpleNamespace()
+    if mode == "open_platform":
+        client.CHANNEL = "open"
+        client.mode = "open_platform"
+        client.needs_attention = False
+    else:
+        client.CHANNEL = "onebot"
+        client.mode = "napcat"
+        client.needs_attention = True
+
+    emitted: list[tuple[str, str]] = []
+    plugin = SimpleNamespace(
+        plugins=_Plugins(),
+        qq_client=client,
+        _qq_settings={"qq_open_plugin_tools": dict(tiers or {})},
+        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        _emit_log=lambda level, msg: emitted.append((level, msg)),
+        calls=calls,
+        emitted=emitted,
+        queries=queries,
+    )
+    service = QQPluginToolService(plugin)
+    if stub_fetch:
+        service._fetch_registry = _fetch
+    plugin.plugin_tool_service = service
+    return plugin
+
+
+def _candidate(plugin_id, entries=("do_it",), name=None, description="", status="running"):
+    """宿主 `/plugins` 的一条记录（形状照真实 payload：entries 是对象数组）。"""
+    return {
+        "id": plugin_id,
+        "name": name or plugin_id.title(),
+        "description": description,
+        "status": status,
+        "entries": [
+            {"id": entry, "name": f"{entry} 功能", "description": f"{entry} 的说明"}
+            for entry in entries
+        ],
+    }
+
+
+def _plugins_payload(*rows):
+    return {"plugins": list(rows)}
+
+
+async def _refresh(service) -> list[dict]:
+    """走"后台刷新"那条路取候选（生产里由常驻循环调用）。
+
+    调用方（entry handler / 生成路径）只读缓存，所以测试也测刷新那条路。
+    """
+    return await service.refresh_candidates()
+
+
+# ── 0. 取数：缓存与后台刷新 ─────────────────────────────────────────
+
+def test_a_fresh_cache_is_reused_without_asking_the_host_again():
+    plugin = _plugin(plugins_result=_plugins_payload(_candidate("web_search", ("search",))))
+    service = plugin.plugin_tool_service
+
+    first = asyncio.run(_refresh(service))
+    second = asyncio.run(service.list_started_candidates())
+
+    assert [row["plugin_id"] for row in first] == ["web_search"]
+    assert second == first
+    assert len(plugin.queries) == 1, "缓存还新鲜却又问了一次宿主"
+
+
+def test_a_stale_cache_never_blocks_the_reader():
+    """缓存过期时读路径**不阻塞**：踢一次后台刷新，先返回手里那份。
+
+    判据用"查询故意睡 10 秒，读路径仍须秒回" —— 比数调用次数可靠：后台刷新跑不跑
+    取决于事件循环调度，而"读路径不 await 宿主"是必须成立的（真机上同步查就是超时）。
+    """
+    plugin = _plugin(plugins_result=_plugins_payload(_candidate("web_search")))
+    service = plugin.plugin_tool_service
+    asyncio.run(_refresh(service))
+
+    # 换成慢查询并让缓存过期
+    stale = _plugin(plugins_result=_plugins_payload(_candidate("web_search")), query_delay=10.0)
+    stale_service = stale.plugin_tool_service
+    stale_service._candidates_cache = (time.monotonic() - CANDIDATES_TTL_SECONDS - 1,
+                                       service.cached_candidates())
+
+    started = time.monotonic()
+    rows = asyncio.run(stale_service.list_started_candidates())
+    elapsed = time.monotonic() - started
+
+    assert [row["plugin_id"] for row in rows] == ["web_search"], "没拿到手里那份缓存"
+    assert elapsed < 1.0, f"读路径等了 {elapsed:.2f}s —— 它去 await 宿主了"
+
+
+def test_the_query_asks_for_entry_ids():
+    """工具定义要靠 entry id 列表 —— 取数那条路必须真的被走到。"""
+    plugin = _plugin(plugins_result=_plugins_payload(_candidate("web_search")))
+    asyncio.run(_refresh(plugin.plugin_tool_service))
+    assert plugin.queries, "刷新没有去取宿主目录"
+
+
+def test_the_registry_is_fetched_over_the_plugin_server_http(monkeypatch):
+    """取数走 HTTP `/plugins`（SDK 的 IPC `query_plugins` 在真机上根本没到过宿主）。
+
+    判据：URL 必须是插件服务的 `/plugins`，而且真的 await 了那个客户端。
+    """
+    import utils.internal_http_client as internal
+
+    seen: list[str] = []
+
+    class _Response:
+        @staticmethod
+        def json():
+            return {"plugins": []}
+
+    class _Client:
+        @staticmethod
+        async def get(url, timeout=None):
+            seen.append(str(url))
+            return _Response()
+
+    monkeypatch.setattr(internal, "get_internal_http_client", lambda: _Client())
+    plugin = _plugin(stub_fetch=False)
+
+    assert asyncio.run(plugin.plugin_tool_service._query_host_registry()) == []
+    assert len(seen) == 1
+    assert seen[0].endswith("/plugins"), seen[0]
+
+
+@pytest.mark.parametrize("boom", [RuntimeError("host down"), TimeoutError("slow")])
+def test_a_registry_failure_is_swallowed(monkeypatch, boom):
+    """这条链路是可选增强：查不到就什么都没有，绝不能把聊天带下去。"""
+    import utils.internal_http_client as internal
+
+    class _Client:
+        @staticmethod
+        async def get(url, timeout=None):
+            raise boom
+
+    monkeypatch.setattr(internal, "get_internal_http_client", lambda: _Client())
+    plugin = _plugin(stub_fetch=False)
+
+    assert asyncio.run(_refresh(plugin.plugin_tool_service)) == []
+    assert asyncio.run(plugin.plugin_tool_service._query_host_registry()) == []
+
+
+def test_a_missing_internal_http_client_yields_no_candidates(monkeypatch):
+    """轻量调用方/测试里没有那个客户端时，也只是没有候选。"""
+    import utils.internal_http_client as internal
+
+    def _boom():
+        raise RuntimeError("no client")
+
+    monkeypatch.setattr(internal, "get_internal_http_client", _boom)
+    plugin = _plugin(stub_fetch=False)
+    assert asyncio.run(_refresh(plugin.plugin_tool_service)) == []
+
+
+def test_the_refresh_loop_is_idempotent():
+    plugin = _plugin()
+    service = plugin.plugin_tool_service
+
+    async def _run():
+        service.ensure_refresh_loop()
+        first = service._refresh_task
+        service.ensure_refresh_loop()
+        assert service._refresh_task is first, "重复调用建了第二个刷新循环"
+        first.cancel()
+        try:
+            await first
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+
+
+# ── 1. 分级读取：配置坏了不该炸会话 ─────────────────────────────────
+
+def test_tiers_are_sanitised_on_read():
+    plugin = _plugin(tiers={
+        "web_search": "all",
+        "mijia": "admin",
+        "bad_tier": "everyone",
+        "  ": "all",
+        "": "admin",
+        "upper": "ADMIN",
+    })
+    assert QQPluginToolService(plugin).tiers() == {
+        "web_search": "all", "mijia": "admin", "upper": "admin",
+    }
+
+
+def test_tiers_tolerate_garbage():
+    for bad in (None, [], "web_search", 42):
+        plugin = _plugin()
+        plugin._qq_settings["qq_open_plugin_tools"] = bad
+        assert QQPluginToolService(plugin).tiers() == {}
+
+
+# ── 2. 权限闸 ───────────────────────────────────────────────────────
+
+def test_admin_sees_both_tiers():
+    service = QQPluginToolService(_plugin())
+    assert service.allowed_tiers_for("admin") == {TIER_ALL, TIER_ADMIN}
+
+
+@pytest.mark.parametrize("level", ["trusted", "normal", "TRUSTED"])
+def test_known_non_admin_users_only_get_the_all_tier(level):
+    assert QQPluginToolService(_plugin()).allowed_tiers_for(level) == {TIER_ALL}
+
+
+@pytest.mark.parametrize("level", ["none", "", None, "unknown"])
+def test_unrecognised_speakers_get_nothing(level):
+    """**这条最重要**：认不出来的人一个插件工具都不该拿到。"""
+    assert QQPluginToolService(_plugin()).allowed_tiers_for(level) == set()
+
+
+def test_select_mounted_respects_the_tier_and_skips_non_candidates():
+    plugin = _plugin(tiers={"web_search": "all", "mijia": "admin", "jukebox_controller": "all"})
+    service = plugin.plugin_tool_service
+    candidates = [
+        {"plugin_id": "web_search", "entries": ["search"]},
+        {"plugin_id": "mijia", "entries": ["turn_on"]},
+        # jukebox_controller 配了但**没在跑** → 不在候选里
+    ]
+    mounted = service.select_mounted(candidates, allowed_tiers={TIER_ALL})
+    assert [row["plugin_id"] for row, _tier in mounted] == ["web_search"]
+
+    mounted_admin = service.select_mounted(candidates, allowed_tiers={TIER_ALL, TIER_ADMIN})
+    # 顺序按 plugin_id 排：挂载顺序不该取决于调用方给的候选顺序（同一次调用要可复现）
+    assert [row["plugin_id"] for row, _tier in mounted_admin] == ["mijia", "web_search"]
+
+
+def test_select_mounted_caps_the_count():
+    tiers = {f"p{i:02d}": TIER_ALL for i in range(MAX_MOUNTED_PLUGINS + 4)}
+    plugin = _plugin(tiers=tiers)
+    candidates = [{"plugin_id": pid, "entries": ["e"]} for pid in sorted(tiers)]
+    mounted = plugin.plugin_tool_service.select_mounted(candidates, allowed_tiers={TIER_ALL})
+    assert len(mounted) == MAX_MOUNTED_PLUGINS
+
+
+# ── 3. 候选：只带已启动的非 QQ 插件 ─────────────────────────────────
+
+def test_candidates_keep_only_started_non_qq_plugins():
+    plugin = _plugin(plugins_result=_plugins_payload(
+        _candidate("web_search", ("search",), name="搜索"),
+        _candidate("qq_auto_reply", ("send",)),          # 自己
+        _candidate("qq_official_bridge", ("x",)),        # qq 家族
+        _candidate("sleepy_plugin", ("x",), status="stopped"),
+        _candidate("no_entries", ()),
+        "not-a-dict",
+    ))
+    rows = asyncio.run(_refresh(plugin.plugin_tool_service))
+    assert [row["plugin_id"] for row in rows] == ["web_search"]
+    assert rows[0]["entries"] == ["search"]
+    assert rows[0]["name"] == "搜索"
+
+
+def test_candidates_dedupe_and_sort_entries():
+    plugin = _plugin(plugins_result=_plugins_payload(_candidate("web_search", ("b", "a", "b"))))
+    rows = asyncio.run(_refresh(plugin.plugin_tool_service))
+    assert rows[0]["entries"] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, {}, {"plugins": None}, {"plugins": "x"}, {"plugins": [None, 1]}],
+)
+def test_malformed_registry_payload_yields_no_candidates(payload):
+    plugin = _plugin(plugins_result=payload)
+    assert asyncio.run(_refresh(plugin.plugin_tool_service)) == []
+
+
+def test_a_plugin_without_the_fetch_layer_yields_no_candidates():
+    """没有 HTTP 取数层（轻量调用方）时也只是没有候选，不抛。"""
+    plugin = _plugin(stub_fetch=False)
+
+    async def _boom():
+        return None
+
+    plugin.plugin_tool_service._fetch_registry = _boom
+    assert asyncio.run(plugin.plugin_tool_service._query_host_registry()) == []
+
+
+# ── 4. 工具定义 ─────────────────────────────────────────────────────
+
+def test_tool_definition_shape():
+    plugin = _plugin()
+    definition = QQPluginToolService.build_tool_definition(
+        plugin.plugin_tool_service,
+        {"plugin_id": "web_search", "name": "搜索", "entries": ["search", "news"]},
+        TIER_ADMIN,
+    )
+    assert definition.name == "plugin_web_search"
+    props = definition.parameters["properties"]
+    assert props["entry_id"]["enum"] == ["search", "news"]
+    assert definition.parameters["required"] == ["entry_id"]
+    # 档位要说给模型听：她据此判断该不该替这个人做这件事
+    assert "只有管理员" in definition.description
+    assert "搜索" in definition.description
+
+
+def test_tool_names_stay_inside_the_host_name_rule():
+    """宿主对工具名有正则约束，别造出非法名。"""
+    import re
+
+    pattern = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+    for plugin_id in ("web_search", "mijia", "a" * 40):
+        assert pattern.match(QQPluginToolService.tool_name(plugin_id)), plugin_id
+
+
+# ── 5. 分发器：只能调本轮挂上的 entry ───────────────────────────────
+
+def _handler(plugin, mounted):
+    return plugin.plugin_tool_service.build_handler(mounted, session_key="private:x")
+
+
+def test_handler_calls_the_plugin_entry():
+    plugin = _plugin()
+    candidates = [{"plugin_id": "web_search", "entries": ["search"]}]
+    handler = _handler(plugin, [(candidates[0], TIER_ALL)])
+
+    result = asyncio.run(handler(SimpleNamespace(
+        call_id="c1", name="plugin_web_search",
+        arguments={"entry_id": "search", "params": {"q": "cat"}},
+    )))
+
+    assert plugin.calls == [("web_search:search", {"q": "cat"}, 20.0)]
+    assert result.call_id == "c1" and result.name == "plugin_web_search"
+    assert "echo" in result.output
+
+
+def test_handler_refuses_an_entry_outside_the_mounted_list():
+    """模型不能自己编一个 entry id 来透传 —— 这是这条链路唯一的安全边界。"""
+    plugin = _plugin()
+    candidates = [{"plugin_id": "web_search", "entries": ["search"]}]
+    handler = _handler(plugin, [(candidates[0], TIER_ALL)])
+
+    result = asyncio.run(handler(SimpleNamespace(
+        call_id="c2", name="plugin_web_search",
+        arguments={"entry_id": "delete_everything"},
+    )))
+
+    assert plugin.calls == []
+    assert "不在可用列表里" in result.output
+
+
+def test_handler_refuses_a_tool_that_was_not_mounted():
+    plugin = _plugin()
+    handler = _handler(plugin, [])
+    result = asyncio.run(handler(SimpleNamespace(
+        call_id="c3", name="plugin_mijia", arguments={"entry_id": "turn_on"},
+    )))
+    assert plugin.calls == []
+    assert "没有挂载" in result.output
+
+
+def test_handler_tolerates_missing_arguments():
+    plugin = _plugin()
+    candidates = [{"plugin_id": "web_search", "entries": ["search"]}]
+    handler = _handler(plugin, [(candidates[0], TIER_ALL)])
+
+    result = asyncio.run(handler(SimpleNamespace(
+        call_id="c4", name="plugin_web_search", arguments=None,
+    )))
+
+    assert plugin.calls == []
+    assert "entry_id" in result.output
+
+
+# ── 6. 结果渲染：不把长文整段塞回上下文 ─────────────────────────────
+
+def test_long_results_are_truncated_with_a_trace():
+    text = QQPluginToolService.render_result("字" * (RESULT_MAX_CHARS + 30), ok=True)
+    assert text.startswith("字" * RESULT_MAX_CHARS)
+    assert "已截断 30 字" in text
+
+
+def test_empty_results_say_so():
+    assert "没有返回内容" in QQPluginToolService.render_result("", ok=True)
+    assert "调用失败" in QQPluginToolService.render_result("", ok=False)
+
+
+def test_an_error_result_is_rendered_as_failure():
+    plugin = _plugin()
+
+    class _Plugins:
+        @staticmethod
+        async def call_entry(entry_ref, params=None, *, timeout=10.0):
+            return SimpleNamespace(error="permission denied", is_err=lambda: True)
+
+    plugin.plugins = _Plugins()
+    output = asyncio.run(plugin.plugin_tool_service.call_plugin_entry("web_search", "search", {}))
+    assert output.startswith("调用失败")
+    assert "permission denied" in output
+
+
+def test_a_raising_call_entry_becomes_a_readable_message():
+    plugin = _plugin()
+
+    class _Plugins:
+        @staticmethod
+        async def call_entry(entry_ref, params=None, *, timeout=10.0):
+            raise RuntimeError("ipc down")
+
+    plugin.plugins = _Plugins()
+    output = asyncio.run(plugin.plugin_tool_service.call_plugin_entry("web_search", "search", {}))
+    assert "调用 web_search:search 失败" in output
+    assert "RuntimeError" in output
+
+
+def test_a_plugin_without_call_entry_says_so():
+    plugin = _plugin()
+    plugin.plugins = SimpleNamespace()
+    output = asyncio.run(plugin.plugin_tool_service.call_plugin_entry("web_search", "search", {}))
+    assert "跨插件调用接口" in output
+
+
+def test_result_rendering_never_leaks_a_raw_object():
+    """渲染必须是文本：把非字符串对象直接塞回去会让工具结果不可读。"""
+    text = QQPluginToolService.render_result({"a": 1, "b": [1, 2]}, ok=True)
+    assert json.loads(text) == {"a": 1, "b": [1, 2]}
+
+
+# ── 7. 挂载路径（reply_generation_service）────────────────────────────
+
+class _Session:
+    def __init__(self):
+        self.tools = None
+        self.handler = None
+        self.round_start = None
+        self.cleared = 0
+
+    def set_tools(self, tools):
+        self.tools = tools
+        self.cleared += 1 if tools is None else 0
+
+    def set_tool_call_handler(self, handler):
+        self.handler = handler
+
+    def set_tool_round_start_callback(self, cb):
+        self.round_start = cb
+
+
+def _generation_service(plugin):
+    from plugin.plugins.qq_auto_reply.reply_generation_service import QQReplyGenerationService
+
+    service = QQReplyGenerationService(plugin)
+    # recall 那条路单独测过；这里把它的"该不该挂"照着真实判据钉一下：
+    # 真实实现是 `use_memory_context` 为假就返回 False（不挂 recall）。
+    service._arm_recall_tool = lambda **kw: bool(kw["context"].use_memory_context)
+    plugin.memory_tool_service = SimpleNamespace(
+        build_recall_tool_definition=lambda: SimpleNamespace(name="recall_memory"),
+    )
+    return service
+
+
+def _context(*, permission_level="admin", use_memory_context=True):
+    return SimpleNamespace(
+        permission_level=permission_level,
+        use_memory_context=use_memory_context,
+        session_key="private:u1",
+    )
+
+
+def _configured_plugin(**kw):
+    """配好一个可用插件，并把候选表刷进缓存（生产里由后台循环做）。"""
+    plugin = _plugin(
+        plugins_result=_plugins_payload(_candidate("web_search", ("search",), name="搜索")),
+        **kw,
+    )
+    asyncio.run(_refresh(plugin.plugin_tool_service))
+    return plugin
+
+
+def test_without_configuration_the_old_path_runs_verbatim():
+    """功能默认关闭：没配任何插件时，行为与之前一致（只挂 recall）。"""
+    plugin = _configured_plugin(tiers={})
+    service = _generation_service(plugin)
+    session = _Session()
+
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+
+    assert (armed, bridge) == (True, False)
+    assert session.tools is None, "空配置不该走合并挂载那条路"
+
+
+def test_configured_on_the_open_platform_arms_recall_plus_bridge():
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    service = _generation_service(plugin)
+    session = _Session()
+
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+
+    assert (armed, bridge) == (True, True)
+    assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
+    assert any("[PluginTool]" in msg for _lvl, msg in plugin.emitted)
+
+
+def test_the_bridge_is_open_platform_only():
+    """NapCat 上不挂插件工具（使用者定的范围）。"""
+    plugin = _configured_plugin(tiers={"web_search": "all"}, mode="napcat")
+    service = _generation_service(plugin)
+    session = _Session()
+
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+
+    assert bridge is False
+    assert session.tools is None
+
+
+def test_an_unrecognised_speaker_gets_no_tools_at_all():
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    service = _generation_service(plugin)
+    session = _Session()
+
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(permission_level="none", use_memory_context=False),
+        user_session=session, consent_before={},
+    ))
+
+    assert (armed, bridge) == (False, False)
+    assert session.tools is None
+
+
+def test_admin_only_plugins_are_not_mounted_for_a_normal_user():
+    plugin = _plugin(
+        tiers={"mijia": "admin", "web_search": "all"},
+        plugins_result=_plugins_payload(_candidate("mijia"), _candidate("web_search")),
+    )
+    asyncio.run(_refresh(plugin.plugin_tool_service))
+    service = _generation_service(plugin)
+    session = _Session()
+
+    asyncio.run(service._arm_turn_tools(
+        context=_context(permission_level="normal"), user_session=session, consent_before={},
+    ))
+
+    assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
+
+
+def test_a_stopped_plugin_is_reported_but_not_mounted():
+    """配了但没在跑：挂不上去，**而且要留痕** —— 否则使用者以为配好了就能用。"""
+    plugin = _plugin(
+        tiers={"jukebox_controller": "all"},
+        plugins_result=_plugins_payload(_candidate("jukebox_controller", status="stopped")),
+    )
+    asyncio.run(_refresh(plugin.plugin_tool_service))
+    service = _generation_service(plugin)
+    session = _Session()
+
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+
+    assert bridge is False
+    assert session.tools is None
+    assert any(
+        "jukebox_controller" in msg and "未挂载" in msg for _lvl, msg in plugin.emitted
+    ), f"没说明为什么没挂上: {plugin.emitted}"
+
+
+def test_the_dispatcher_routes_recall_and_bridge_separately():
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    service = _generation_service(plugin)
+    session = _Session()
+    recall_calls: list = []
+
+    async def _recall(tool_call):
+        recall_calls.append(tool_call)
+        return SimpleNamespace(call_id="r", name="recall_memory", output="回忆")
+
+    service._build_recall_tool_handler = lambda **kw: _recall
+
+    asyncio.run(service._arm_turn_tools(context=_context(), user_session=session, consent_before={}))
+
+    async def _run():
+        first = await session.handler(SimpleNamespace(
+            call_id="c1", name="recall_memory", arguments={},
+        ))
+        second = await session.handler(SimpleNamespace(
+            call_id="c2", name="plugin_web_search", arguments={"entry_id": "search"},
+        ))
+        assert first.call_id == "r", "recall 那条没被分发到原来的 handler"
+        assert second.call_id == "c2"
+
+    asyncio.run(_run())
+    assert len(recall_calls) == 1
+    assert plugin.calls == [("web_search:search", {}, 20.0)]
+
+
+def test_arming_failure_clears_the_slots():
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    service = _generation_service(plugin)
+
+    class _Boom(_Session):
+        def set_tools(self, tools):
+            raise RuntimeError("session gone")
+
+    session = _Boom()
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+    assert (armed, bridge) == (False, False)
+
+
+def test_the_candidate_ids_are_never_qq_plugins():
+    """自指检查：候选里永远不该出现自己，也不该出现 qq* 家族。"""
+    plugin = _plugin(plugins_result=_plugins_payload(
+        _candidate("qq_auto_reply"), _candidate("qq_anything"), _candidate("web_search"),
+    ))
+    rows = asyncio.run(_refresh(plugin.plugin_tool_service))
+    assert all(not row["plugin_id"].startswith("qq") for row in rows)
+
+
+# ── 8. 界面契约（拖拽分档位）────────────────────────────────────────
+
+_PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "open_platform.html"
+
+
+def _page_text() -> str:
+    return _PAGE.read_text(encoding="utf-8")
+
+
+def test_the_page_has_the_three_drop_zones():
+    """可用区 + 两个档位区，各自带 data-tier（空串 = 撤销/未添加）。"""
+    text = _page_text()
+    for zone, tier in (("pt-zone-available", ""), ("pt-zone-all", "all"), ("pt-zone-admin", "admin")):
+        assert f'id="{zone}"' in text, f"缺拖拽区 {zone}"
+        assert f'id="{zone}"' in text and f'data-tier="{tier}"' in text, (
+            f"{zone} 的 data-tier 不是 {tier!r} —— 落点判据会错"
+        )
+
+
+def test_cards_are_draggable_and_the_drop_saves_the_tier():
+    """卡片要 draggable，落点要真的调 ptSetTier（拖完即保存）。"""
+    text = _page_text()
+    assert 'draggable="true"' in text, "卡片不可拖"
+    assert "dragstart" in text and "text/plain" in text, "拖拽没有携带 plugin_id"
+    assert "ptSetTier(pid" in text, "落点没有把 pid 交给保存逻辑"
+    assert "qq_open_plugin_tools" in text, "保存没有带上那个设置键"
+
+
+def test_the_page_reports_when_the_channel_is_not_the_open_platform():
+    """配置只在开放平台生效 —— 别的通道下界面必须说出来，而不是让人以为配了没用。"""
+    text = _page_text()
+    assert "enabled_on_this_channel" in text, "没有按通道提示生效范围"
+    assert "not_openplat" in text
+
+
+def test_every_plugin_tools_label_exists_in_both_bundles():
+    import json
+
+    base = pathlib.Path(__file__).resolve().parents[1] / "i18n"
+    zh = json.loads((base / "zh-CN.json").read_text(encoding="utf-8"))
+    en = json.loads((base / "en.json").read_text(encoding="utf-8"))
+    keys = [key for key in zh if key.startswith("ui.openplat.plugintools.")]
+    assert keys, "一个插件工具面板的文案键都没有"
+    assert set(keys) == {key for key in en if key.startswith("ui.openplat.plugintools.")}, (
+        "两个语种的键集合不一致"
+    )
+    for required in ("title", "tier_all", "tier_admin", "btn_add", "btn_remove", "saved"):
+        assert f"ui.openplat.plugintools.{required}" in zh, f"缺键 {required}"

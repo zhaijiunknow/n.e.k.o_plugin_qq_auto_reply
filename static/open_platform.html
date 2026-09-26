@@ -211,6 +211,28 @@ body{display:flex;height:100vh;overflow:hidden}
         <button class="btn btn-sm btn-ghost" onclick="loadIdentityClaims()" style="margin-bottom:10px" data-i18n="ui.shared.btn.refresh">刷新</button>
         <table class="data-table"><thead><tr><th data-i18n="ui.openplat.identity.col_group">群</th><th data-i18n="ui.shared.table.user_id">用户ID</th><th data-i18n="ui.openplat.identity.col_seen">发言数</th><th data-i18n="ui.shared.table.actions">操作</th></tr></thead><tbody id="claim-table"><tr><td colspan="4" style="color:var(--text-secondary)" data-i18n="ui.shared.topbar.loading">点击刷新加载</td></tr></tbody></table>
     </div>
+    <!-- 插件工具桥：添加别的插件 → 拖拽卡片分到两个档位。只在开放平台生效。 -->
+    <div class="card" id="plugin-tools-card">
+        <div class="card-title" data-i18n="ui.openplat.plugintools.title">插件工具</div>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:8px" data-i18n="ui.openplat.plugintools.hint">让她可以调用本体的其它插件。只有**已启动**的非 QQ 插件能加进来；加进来之后把卡片拖到下面两个分区，决定谁能用。</p>
+        <div class="form-hint" id="plugin-tools-channel" style="margin-bottom:10px"></div>
+        <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+            <div style="flex:1;min-width:230px">
+                <div class="form-label" data-i18n="ui.openplat.plugintools.available">可添加的插件</div>
+                <div id="pt-zone-available" class="drop-zone" data-tier="" style="min-height:120px;text-align:left;padding:10px;font-size:13px"></div>
+            </div>
+            <div style="flex:1;min-width:230px">
+                <div class="form-label" data-i18n="ui.openplat.plugintools.tier_all">所有人都可以用</div>
+                <div id="pt-zone-all" class="drop-zone" data-tier="all" style="min-height:120px;text-align:left;padding:10px;font-size:13px"></div>
+            </div>
+            <div style="flex:1;min-width:230px">
+                <div class="form-label" data-i18n="ui.openplat.plugintools.tier_admin">只有管理员可以用</div>
+                <div id="pt-zone-admin" class="drop-zone" data-tier="admin" style="min-height:120px;text-align:left;padding:10px;font-size:13px"></div>
+            </div>
+        </div>
+        <div class="form-hint" style="margin-top:8px" data-i18n="ui.openplat.plugintools.drag_hint">拖拽卡片换分区；拖回左边即撤销。改动立刻保存。</div>
+        <div id="plugin-tools-note" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+    </div>
 </div>
 <div class="page" id="page-sticker">
     <div class="card"><div class="card-title" data-i18n="ui.shared.card.sticker_upload">上传新表情包</div>
@@ -261,7 +283,7 @@ async function call(entry,args){args=args||{};let r=await fetch(RUNS,{method:'PO
 function toast(msg,ok){let e=document.getElementById('toast');e.textContent=msg;e.style.background=ok?'var(--success)':'var(--danger)';e.style.opacity='1';e.style.transform='translateY(0)';setTimeout(()=>{e.style.opacity='0';e.style.transform='translateY(-10px)'},2000)}
 let currentPage='status',currentSub='overview';
 function switchPage(page){currentPage=page;document.querySelectorAll('#sidebar .nav-item').forEach(e=>e.classList.toggle('active',e.dataset.page===page));document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));let tb=document.getElementById('topbar-tabs'),tabs=[];if(page==='status')tabs=[{id:'overview',label:t('ui.shared.topbar.tab_overview','概览')}];else if(page==='config')tabs=[{id:'connection',label:t('ui.shared.topbar.tab_connection','连接')},{id:'gating',label:t('ui.napcat.topbar.tab_gating','门控')},{id:'accounts',label:t('ui.shared.topbar.tab_users','用户')}];tb.innerHTML=tabs.map(tt=>`<span class="tb-tab${currentSub===tt.id?' active':''}" data-sub="${tt.id}">${tt.label}</span>`).join('');tb.querySelectorAll('.tb-tab').forEach(tt=>tt.addEventListener('click',()=>switchSub(tt.dataset.sub)));switchSub(tabs.length?tabs[0].id:'');if(page==='guide'){loadDashboard();updateGuide()}else if(page==='status')loadDashboard();else if(page==='config')loadDashboard();else if(page==='sticker')loadStickers();else if(page==='prompts')loadPromptEditorState();else if(page==='logs'){loadLogs();startLogPoll()}else{stopLogPoll()}}
-function switchSub(sub){currentSub=sub;document.querySelectorAll('#topbar .tb-tab').forEach(tt=>tt.classList.toggle('active',tt.dataset.sub===sub));let pageId='page-'+currentPage+'-'+sub;let el=document.getElementById(pageId);if(!el)el=document.getElementById('page-'+currentPage);if(el){document.querySelectorAll('.page.active').forEach(e=>e.classList.remove('active'));el.classList.add('active')}if(sub==='accounts'&&(state.identityScope||{}).actor_scope==='per_conversation')loadIdentityClaims()}
+function switchSub(sub){currentSub=sub;document.querySelectorAll('#topbar .tb-tab').forEach(tt=>tt.classList.toggle('active',tt.dataset.sub===sub));let pageId='page-'+currentPage+'-'+sub;let el=document.getElementById(pageId);if(!el)el=document.getElementById('page-'+currentPage);if(el){document.querySelectorAll('.page.active').forEach(e=>e.classList.remove('active'));el.classList.add('active')}if(sub==='accounts'&&(state.identityScope||{}).actor_scope==='per_conversation')loadIdentityClaims();if(sub==='accounts')loadPluginTools()}
 async function updateGuide(){
 var done=0,total=5,items=[];
 function add(id,label,ok,hint){items.push({id:id,label:label,ok:ok,hint:hint});if(ok)done++}
@@ -306,6 +328,44 @@ function renderUsers(){let tb=document.getElementById('user-table');if(!state.us
 function renderGroups(){let tb=document.getElementById('group-table');if(!state.groups.length){tb.innerHTML='<tr><td colspan="3" style="color:var(--text-secondary)">'+t('ui.shared.render.no_groups','暂无信任群聊')+'</td></tr>';return}tb.innerHTML=state.groups.map(g=>`<tr><td>${escapeHtml(g.group_id)}</td><td>${escapeHtml(g.level)}</td><td><button class="btn btn-danger btn-sm" onclick="doRemoveGroup('${escapeOnclick(g.group_id)}')">${t('ui.shared.btn.remove','移除')}</button></td></tr>`).join('')}
 function renderKeywords(){let tb=document.getElementById('kw-table');let lbls=state.backlogLabels||[];if(!lbls.length){tb.innerHTML='<tr><td colspan="5" style="color:var(--text-secondary)">'+t('ui.shared.render.no_labels','暂无标签')+'</td></tr>';return}tb.innerHTML=lbls.map(l=>{let kw=escapeHtml((l.keywords||[]).join(', ')),isBl=(l.priority||0)<0;return`<tr><td>${escapeHtml(l.id)}</td><td>${escapeHtml(l.label)}</td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${kw}</td><td style="color:${isBl?'var(--danger)':'var(--success)'}">${escapeHtml(String(l.priority||0))}</td><td><button class="btn btn-danger btn-sm" onclick="doRemoveKeyword('${escapeOnclick(l.id)}')">${t('ui.shared.btn.remove','移除')}</button></td></tr>`}).join('')}
 async function loadDashboard(){try{let d=await call('query', {action:'dashboard'});applyDashboard(d)}catch(e){console.error('loadDashboard failed',e)}}
+/* ── 插件工具桥：添加别的插件 → 拖拽卡片分档位 ──────────────────────────
+   候选与"配了但此刻没启动"分开展示（后端分好字段）：后者挂不上去，界面必须如实
+   说出来，否则使用者会以为配好了就能用。拖拽落点就是保存动作 —— 拖完还要再找
+   一次"保存"按钮是更差的交互。 */
+let _pluginTools={tiers:{},candidates:[],configured_not_running:[],max:8,enabled_on_this_channel:false,connection_mode:''};
+async function loadPluginTools(){let box=document.getElementById('pt-zone-available');if(!box)return;try{let d=await call('query',{action:'plugin_tools'});_pluginTools=Object.assign(_pluginTools,d||{});renderPluginTools()}catch(e){toast(t('ui.openplat.plugintools.load_failed','加载插件列表失败: ')+e.message)}}
+function _ptCard(c,tier){
+  let warn=c._missing?` <span class="tag tag-offline">${t('ui.openplat.plugintools.not_running','未启动')}</span>`:'';
+  let entries=(c.entries||[]).length;
+  return `<div class="pt-card" draggable="true" data-pid="${escapeHtml(c.plugin_id)}" data-tier="${escapeHtml(tier||'')}"
+      style="background:var(--overlay);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 10px;margin-bottom:6px;cursor:grab">
+      <div style="font-weight:600;font-size:13px">${escapeHtml(c.name||c.plugin_id)}${warn}</div>
+      <div style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(c.plugin_id)} · ${t('ui.openplat.plugintools.entry_count','可用功能 ')}${entries}</div>
+      <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="ptSetTier('${escapeOnclick(c.plugin_id)}',${tier?"''":'null'})">${tier?t('ui.openplat.plugintools.btn_remove','撤销'):t('ui.openplat.plugintools.btn_add','添加')}</button></div>
+    </div>`;
+}
+function renderPluginTools(){
+  let tiers=_pluginTools.tiers||{},cands=_pluginTools.candidates||[];
+  let byId={};cands.forEach(c=>{byId[c.plugin_id]=c});
+  let missing=(_pluginTools.configured_not_running||[]).map(pid=>({plugin_id:pid,name:pid,entries:[],_missing:true}));
+  let all=missing.concat(cands);
+  let avail=all.filter(c=>!tiers[c.plugin_id]);
+  let zAll=all.filter(c=>tiers[c.plugin_id]==='all');
+  let zAdmin=all.filter(c=>tiers[c.plugin_id]==='admin');
+  let zone=(id,rows,hint)=>{let el=document.getElementById(id);if(!el)return;el.innerHTML=rows.length?rows.map(c=>_ptCard(c,tiers[c.plugin_id]||'')).join(''):`<span style="color:var(--text-secondary);font-size:12px">${hint}</span>`};
+  zone('pt-zone-available',avail,t('ui.openplat.plugintools.empty_available','没有可添加的插件（只有已启动的非 QQ 插件能加）'));
+  zone('pt-zone-all',zAll,t('ui.openplat.plugintools.drop_hint','把卡片拖到这里'));
+  zone('pt-zone-admin',zAdmin,t('ui.openplat.plugintools.drop_hint','把卡片拖到这里'));
+  document.querySelectorAll('#plugin-tools-card .pt-card').forEach(card=>{
+    card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',card.dataset.pid);ev.dataTransfer.effectAllowed='move'});
+  });
+  let ch=document.getElementById('plugin-tools-channel');
+  if(ch){let modeTxt=_pluginTools.connection_mode||'?';ch.textContent=_pluginTools.enabled_on_this_channel?tf('ui.openplat.plugintools.only_openplat','当前通道是开放平台，配置生效中（最多 {n} 个）',{n:_pluginTools.max}):tf('ui.openplat.plugintools.not_openplat','当前通道是 {mode}，这些配置只在开放平台生效',{mode:modeTxt});ch.style.color=_pluginTools.enabled_on_this_channel?'var(--success)':'var(--warning)'}
+  let note=document.getElementById('plugin-tools-note');
+  if(note){let miss=_pluginTools.configured_not_running||[];note.textContent=miss.length?tf('ui.openplat.plugintools.missing_note','这些已配置但当前没启动，挂不上去：{ids}',{ids:miss.join('、')}):''}
+}
+async function ptSetTier(pid,tier){let t2=Object.assign({},_pluginTools.tiers||{});if(tier)t2[pid]=tier;else delete t2[pid];try{await call('config',{action:'save',qq_open_plugin_tools:t2});_pluginTools.tiers=t2;renderPluginTools();toast(t('ui.openplat.plugintools.saved','分级已保存'),true)}catch(e){toast(t('ui.openplat.plugintools.save_failed','保存失败: ')+e.message)}}
+(function(){['pt-zone-available','pt-zone-all','pt-zone-admin'].forEach(id=>{let z=document.getElementById(id);if(!z)return;['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.add('drag-over')}));['dragleave','drop'].forEach(ev=>z.addEventListener(ev,e=>{e.preventDefault();z.classList.remove('drag-over')}));z.addEventListener('drop',e=>{let pid=e.dataTransfer.getData('text/plain');if(pid)ptSetTier(pid,z.dataset.tier||null)})})})();
 async function doSave(){try{let args={qq_connection_mode:MODE,qq_open_app_id:document.getElementById('cfg-appid').value.trim(),qq_open_client_secret:document.getElementById('cfg-secret').value,qq_open_sandbox_enabled:document.getElementById('cfg-sandbox').checked,qq_open_identity_probe_enabled:document.getElementById('cfg-identity-probe').checked,group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1){toast(t('ui.shared.toast.save_not_persisted','写盘失败，设置已回滚（记忆开关未生效）'))}else{toast(t('ui.shared.toast.saved','设置已保存'),!0)}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
 async function doStart(){try{await call('config', {action:'save', qq_connection_mode:MODE});await call('runtime',{action:'start'});toast(t('ui.shared.toast.started','已启动'),!0);await loadDashboard()}catch(e){toast(t('ui.shared.toast.start_failed_prefix','启动失败: ')+e.message)}}
 async function doStop(){try{await call('runtime',{action:'stop'});toast(t('ui.shared.toast.stopped','已停止'),!0);await loadDashboard()}catch(e){toast(t('ui.shared.toast.stop_failed_prefix','停止失败: ')+e.message)}}

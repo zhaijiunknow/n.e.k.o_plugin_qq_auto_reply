@@ -59,6 +59,7 @@ from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
 from .napcat_service import QQNapcatService
 from .permission import PermissionManager
+from .plugin_tool_service import PLUGIN_TOOL_MAX_MOUNTED, QQPluginToolService
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
 from .relay_service import QQRelayService
@@ -174,6 +175,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.memory_bridge = QQMemoryBridge(self)
         self.display_name_service = QQDisplayNameService(self)
         self.memory_tool_service = QQMemoryToolService(self)
+        # 插件工具桥（只在开放平台启用）：把别的插件的能力按分级挂到 QQ 会话上。
+        self.plugin_tool_service = QQPluginToolService(self)
         self.relay_service = QQRelayService(self)
         self.reply_generation_service = QQReplyGenerationService(self)
         self.reply_decision_node = QQReplyDecisionNode(self)
@@ -837,6 +840,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if task is None or task.done():
             self._purge_task = asyncio.create_task(self._purge_old_reviewed_loop())
 
+        # 插件工具桥的候选表：**必须在这里起**（常驻 loop）。真机实测在 entry
+        # handler 里同步查宿主会超时（`Plugin query timed out after 15.0s`），
+        # 而后台任务里跑正常 —— 所以这条查询只能由后台循环承担。
+        # `getattr`：轻量调用方/测试可能没有这个服务，缺了也只是没有候选表。
+        tool_bridge = getattr(self, "plugin_tool_service", None)
+        if tool_bridge is not None:
+            tool_bridge.ensure_refresh_loop()
+
     async def _autostart_on_launch(self) -> None:
         """开机自启：起监听 / 拉起 NapCat。
 
@@ -1251,10 +1262,41 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._query_napcat_webui(kw)
         if action == "bots":
             return await self._query_bots(kw)
+        if action == "plugin_tools":
+            return await self._query_plugin_tools(kw)
         return Err(SdkError(
             f"BAD_ACTION: query 不支持 {action!r}"
             f"（可选 dashboard/buffer/logs/prompt_editor/group_prompts/"
-            f"user_profiles/backlog_summary/backlog_detail/napcat_webui/bots）"))
+            f"user_profiles/backlog_summary/backlog_detail/napcat_webui/bots/plugin_tools）"))
+
+    async def _query_plugin_tools(self, kw: dict[str, Any]):
+        """插件工具桥的配置视图：候选（只列已启动的非 QQ 插件）+ 当前分级。
+
+        **候选与分级分开给**：界面左边是"可添加的插件"（宿主注册表里此刻在跑的），
+        右边两个分区是"已添加 + 各自的档位"。配了但此刻没启动的插件会出现在
+        ``configured_not_running`` 里 —— 它挂不上去，界面要如实说，而不是让使用者
+        以为配好了就能用。
+        """
+        _ = kw
+        service = self.plugin_tool_service
+        tiers = service.tiers()
+        # refresh=True：界面要看**实时**的启停状态（配置页刚启动一个插件就该能加它），
+        # 而每轮生成那条路径吃的是 60s 缓存（见 CANDIDATES_TTL_SECONDS）。
+        candidates = await service.list_started_candidates(refresh=True)
+        by_id = {row["plugin_id"]: row for row in candidates}
+        configured_not_running = sorted(pid for pid in tiers if pid not in by_id)
+        current = (
+            str(self.qq_client.mode if self.qq_client is not None else "")
+            or str(self._qq_settings.get("qq_connection_mode") or "")
+        )
+        return Ok({
+            "enabled_on_this_channel": current == "open_platform",
+            "connection_mode": current,
+            "tiers": tiers,
+            "candidates": candidates,
+            "configured_not_running": configured_not_running,
+            "max_plugins": PLUGIN_TOOL_MAX_MOUNTED,
+        })
 
     async def _query_dashboard(self, kw: dict[str, Any]):
         _ = kw

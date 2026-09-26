@@ -89,16 +89,21 @@ def test_the_description_inputs_are_seeded_from_the_shared_box():
 
 
 def test_dropping_files_rebuilds_the_description_inputs():
-    """拖入那条路也必须重建描述框（三个页面都要）。"""
+    """拖入那条路也必须重建描述框（三个页面都要）。
+
+    判据**锚在表情包拖拽区**上，而不是"文件里第一个 drop 监听"：页面后来多了别的
+    拖拽（`open_platform.html` 的插件工具桥卡片也是 drag & drop），按顺序取片段会
+    因为谁写在前面而误判 —— 那是测试脆，不是页面坏。
+    """
     for name in PAGES:
         text = _code(name)
         assert "skBuildDescList" in text, f"{name}: 找不到 skBuildDescList"
-        # 拖入处理里（drop 监听附近）应当出现 skBuildDescList 或 skFilePicked
-        m = re.search(r"addEventListener\('drop'.{0,1200}", text, re.S)
-        assert m, f"{name}: 找不到 drop 监听"
+        m = re.search(r"getElementById\('sk-drop'\).{0,2000}", text, re.S)
+        assert m, f"{name}: 找不到表情包拖拽区 #sk-drop 的处理代码"
         seg = m.group(0)
         assert ("skBuildDescList" in seg) or ("skFilePicked" in seg), (
-            f"{name}: 拖入之后没有重建描述框（既没调 skBuildDescList 也没调 skFilePicked）"
+            f"{name}: 表情包拖拽区拖入之后没有重建描述框"
+            "（既没调 skBuildDescList 也没调 skFilePicked）"
         )
 
 

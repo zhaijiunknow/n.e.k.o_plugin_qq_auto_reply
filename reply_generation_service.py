@@ -8,7 +8,7 @@ from main_logic.tool_calling import ToolResult
 from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
-from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS
+from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
 from .pipeline_models import (
     QQModelResult,
     QQPipelineStageTrace,
@@ -314,7 +314,7 @@ class QQReplyGenerationService:
             # 本轮 context 重建，绝不能在建会话时冻结（那会让所有人都用首
             # 个发言者的 subject）。consent_before 传给闭包：工具读发生在
             # 生成中途，运行时记录要能被生成结束的撤销比对看到。
-            armed_recall_tool = self._arm_recall_tool(
+            armed_recall_tool, armed_bridge_tools = await self._arm_turn_tools(
                 context=context,
                 user_session=user_session,
                 consent_before=consent_before,
@@ -332,6 +332,13 @@ class QQReplyGenerationService:
                     turn_timeout = (
                         turn_timeout * 2 + RECALL_TOOL_HTTP_TIMEOUT_SECONDS
                     )
+                if armed_bridge_tools:
+                    # 插件工具那条更慢：跨插件是一次 IPC 往返，而且结果多半还要
+                    # 再进一轮 LLM。按调用超时加预算，别让"慢但会成功"变成超时
+                    # （超时会丢弃共享群会话，代价同上）。
+                    from .plugin_tool_service import CALL_TIMEOUT_SECONDS
+
+                    turn_timeout += CALL_TIMEOUT_SECONDS
                 await asyncio.wait_for(
                     user_session.stream_text(context.prompt_message),
                     timeout=turn_timeout,
@@ -451,6 +458,119 @@ class QQReplyGenerationService:
             user_data["nonconsent_history_end"] = len(
                 getattr(user_session, "_conversation_history", []) or []
             )
+
+    async def _arm_turn_tools(
+        self,
+        *,
+        context: Any,
+        user_session: Any,
+        consent_before: dict,
+        on_tool_round_start: Callable[[], Awaitable[None]] | None = None,
+    ) -> tuple[bool, bool]:
+        """本轮挂到会话上的工具。返回 ``(挂了任何工具, 挂了插件工具)``。
+
+        **没有配置任何插件工具时，这条路径退化成原来的 `_arm_recall_tool`** ——
+        功能默认关闭，未启用的人拿到的行为与之前逐字节一致。
+
+        插件工具（把别的插件的能力给模型用）**只在开放平台挂**：使用者定的范围。
+        NapCat 那边是"群里什么样的人都有"的通道，多给一层工具面就多一层风险；
+        等这边跑顺了再谈。
+        """
+        bridge = getattr(self.plugin, "plugin_tool_service", None)
+        bridge_tools: list[Any] = []
+        mounted: list[tuple[dict[str, Any], str]] = []
+        if bridge is not None:
+            try:
+                mounted, bridge_tools = await self._build_bridge_tools(context)
+            except Exception:
+                self.plugin.logger.warning("插件工具桥构建失败（本轮不挂插件工具）", exc_info=True)
+                mounted, bridge_tools = [], []
+
+        if not bridge_tools:
+            armed = self._arm_recall_tool(
+                context=context,
+                user_session=user_session,
+                consent_before=consent_before,
+                on_tool_round_start=on_tool_round_start,
+            )
+            return armed, False
+
+        # 合并挂载：recall（如果本轮该有）+ 插件工具，走一个按名字分发的 handler。
+        set_tools = getattr(user_session, "set_tools", None)
+        set_handler = getattr(user_session, "set_tool_call_handler", None)
+        set_round_start = getattr(user_session, "set_tool_round_start_callback", None)
+        if not callable(set_tools) or not callable(set_handler):
+            return False, False
+
+        recall_enabled = bool(getattr(context, "use_memory_context", False))
+        definitions: list[Any] = []
+        recall_handler = None
+        if recall_enabled:
+            definitions.append(self.plugin.memory_tool_service.build_recall_tool_definition())
+            recall_handler = self._build_recall_tool_handler(
+                context=context, consent_before=consent_before,
+            )
+        definitions.extend(bridge_tools)
+        bridge_handler = bridge.build_handler(mounted, session_key=str(
+            getattr(context, "session_key", "") or "",
+        ))
+
+        async def _dispatch(tool_call: Any) -> Any:
+            name = str(getattr(tool_call, "name", "") or "")
+            if recall_handler is not None and name == RECALL_TOOL_NAME:
+                return await recall_handler(tool_call)
+            return await bridge_handler(tool_call)
+
+        try:
+            set_tools(definitions)
+            set_handler(_dispatch)
+            if on_tool_round_start is not None and callable(set_round_start):
+                set_round_start(on_tool_round_start)
+        except Exception as exc:
+            self.plugin.logger.warning(f"本轮工具挂载失败（本轮无工具）: {exc}")
+            for clear_slot in (set_tools, set_handler):
+                try:
+                    clear_slot(None)
+                except Exception:
+                    pass
+            return False, False
+        self.plugin._emit_log(
+            "INFO",
+            f"[PluginTool] 本轮挂载 {len(bridge_tools)} 个插件工具"
+            f"（权限 {getattr(context, 'permission_level', '') or 'unknown'}）: "
+            + "、".join(row["plugin_id"] for row, _tier in mounted),
+        )
+        return True, True
+
+    async def _build_bridge_tools(self, context: Any) -> tuple[list[tuple[dict[str, Any], str]], list[Any]]:
+        """把「白名单 ∧ 已启动 ∧ 这个人有权用」的插件变成工具定义。"""
+        from . import connector_seam
+        from .plugin_tool_service import QQPluginToolService
+
+        client = getattr(self.plugin, "qq_client", None)
+        if client is None or not connector_seam.open_platform_media.is_open_platform(client):
+            return [], []
+        service = self.plugin.plugin_tool_service
+        tiers = service.tiers()
+        if not tiers:
+            return [], []
+        allowed = service.allowed_tiers_for(getattr(context, "permission_level", ""))
+        if not allowed:
+            # 认不出来的人（权限 none）：一个插件工具都不给。
+            self.plugin._emit_log("INFO", "[PluginTool] 说话人不在名册里，本轮不挂插件工具")
+            return [], []
+        candidates = await service.list_started_candidates()
+        mounted = service.select_mounted(candidates, allowed_tiers=allowed)
+        skipped = sorted(set(tiers) - {row["plugin_id"] for row, _tier in mounted})
+        if skipped:
+            # 留痕：配了但没挂上，通常是"那个插件此刻没在跑"或"档位不对这个人开放"。
+            self.plugin._emit_log(
+                "INFO", f"[PluginTool] 本次未挂载: {'、'.join(skipped)}（未启动 / 档位不符）",
+            )
+        return mounted, [
+            QQPluginToolService.build_tool_definition(self.plugin.plugin_tool_service, row, tier)
+            for row, tier in mounted
+        ]
 
     def _arm_recall_tool(
         self,

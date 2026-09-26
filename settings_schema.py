@@ -347,6 +347,11 @@ MISC = (
     SettingSpec("qq_open_identity_probe_enabled", "bool", False, saveable=True,
                 description="save：身份作用域取证（往持久日志写标识符）",
                 handler="consent_opt_in"),
+    # 插件工具桥：``{plugin_id: "all"|"admin"}``。**只有开放平台会用它**（见
+    # `plugin_tool_service` 的模块说明）。键 = 允许被猫娘调用的插件，值 = 谁可以用。
+    # 只认"已经启动"的插件：没启动的那些挂不上工具，也不会出现在提示词里。
+    SettingSpec("qq_open_plugin_tools", "dict", {}, saveable=True,
+                description="save：开放平台上允许猫娘调用的插件及其分级（JSON 对象）"),
     # ── 名单与账本 ──
     SettingSpec("trusted_users", "list", [], description="可信用户名单",
                 ui=UIInput("", kind="text")),
