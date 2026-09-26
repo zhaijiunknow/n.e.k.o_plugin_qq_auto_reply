@@ -42,23 +42,49 @@ grep -rn "LOCAL-PATCH" _vendor/connection_onebot/
 `qq_open_platform_media.py`，**却没有动本文件** —— 于是"副本不是逐字一致"这件事在文档里
 只剩 lint 那一半，功能性差异一点痕迹都没有。补这一节 + 文件头标记就是补这个缺口。
 
-| 位置（副本） | 上游 | 副本里改成了什么 |
-|---|---|---|
-| `qq_open_plat.py` import 块 | 无 | `from . import qq_open_platform_media` |
-| `QQOpenPlatformConnection.send_private_message` | 只把图当文字 `[图片]` 发 | 单聊真发图：`qq_open_platform_media.send_private_image(...)`（`msg_type=7`），上传失败才退回文字 |
-| `QQOpenPlatformConnection.send_private_image`（新方法） | 不存在 | 薄转发到 `qq_open_platform_media.send_private_image` |
-| `QQOpenPlatformConnection._upload_group_image` | 内联的旧式直传（56 行） | 薄转发到 `qq_open_platform_media.upload_image(scope="groups", …)`：旧式直传仍是首选，文档里的 URL / 分片作回退 |
-| `QQOpenPlatformConnection._extract_attachments` | 只产出 `{"type", "url"}` | 平台给了文件名就带 `"name"`（消费方回退到 URL 尾巴） |
-| `qq_open_platform_media.py`（整个文件） | **不存在** | 上传流程的**自由函数**版（第一个参数是连接对象），好让**宿主那份**连接器也能用 |
+| 位置（副本） | 上游 | 副本里改成了什么 | 真机是否生效 |
+|---|---|---|---|
+| `qq_open_plat.py` import 块 | 无 | `from . import qq_open_platform_media` | 仅回退部署（见下） |
+| `QQOpenPlatformConnection.send_private_message` | 只把图当文字 `[图片]` 发 | 单聊真发图：`qq_open_platform_media.send_private_image(...)`（`msg_type=7`），上传失败才退回文字 | 仅回退部署 |
+| `QQOpenPlatformConnection.send_private_image`（新方法） | 不存在 | 薄转发到 `qq_open_platform_media.send_private_image` | 仅回退部署（插件**刻意不用**它，见下） |
+| `QQOpenPlatformConnection._upload_group_image` | 内联的旧式直传（56 行） | 薄转发到 `qq_open_platform_media.upload_image(scope="groups", …)`：旧式直传仍是首选，文档里的 URL / 分片作回退 | 仅回退部署 |
+| `QQOpenPlatformConnection._extract_attachments` | 只产出 `{"type", "url"}` | 平台给了文件名就带 `"name"`（消费方回退到 URL 尾巴） | 仅回退部署 → **真机上拿不到文件名**，见下 |
+| `qq_open_platform_media.py`（整个文件） | **不存在** | 上传流程的**自由函数**版（第一个参数是连接对象），好让**宿主那份**连接器也能用 | ✅ **真机生效**（群图 + 单聊图都走它） |
+
+### 真机生效面（2026-09-27 核实）
+
+运行时连的是**宿主那份**连接器（插件日志每轮都打
+`[QQ] 连接器来源: host (utils.connection.onebot)`），所以上表里**只有最后一行的
+`qq_open_platform_media` 在真机路径上**；`qq_open_plat.py` 那 5 个 hunk 只有在"宿主没带
+连接器"的回退部署里才会跑到。插件侧对应的调用点是
+`reply_delivery_node._send_sticker`：开放平台的群图与单聊图**一律直调** media 里的自由函数
+（私聊刻意不走连接器上那个 `send_private_image()` —— 它固定 `record_sent=True`，而表情包
+一直是 `record_sent=False`）。
+
+**真机证据（2026-09-27 03:19，开放平台正式环境）**::
+
+    03:19:39  WARNING - [QQOpenPlatform] 图片直传上传未拿到 file_info
+    03:19:41  INFO    - [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJ4t6
+
+两行都出自 `qq_open_platform_media`（`[QQOpenPlatform]` 前缀是它打的），结论是：
+**旧式直传在真机上已经失效，文档里的分片上传是活的** —— 这正是当初"两条都试"要回答的问题
+（2026-09-26 那次实测同结论，见 `reply_delivery_node._send_sticker` 的 docstring；
+上面是 09-27 的又一次独立复现）。所以这个自撰模块是**在役代码**，不是历史遗留。
+
+**已知缺口**：`_extract_attachments` 那个 `"name"` 只在回退部署里生效，用宿主连接器时
+`enrichment._attachment_files` 只能拿 URL 尾巴当标签（只影响 prompt 里那行标签，不影响
+内容）。原始 `att` 字段在连接器归一化后就没了，插件侧接不住 —— 要真修得推宿主 PR。
 
 **丢了会怎样**（这正是要标记的原因 —— 重新同步上游会**静默**回退，不报错）：
 
-1. 单聊发图能力消失（退回只发 `[图片]` 三个字）；
-2. 群图上传退回"只试旧式直传"，文档里的 URL / 分片两条路没了；
-3. 附件文件名丢失；
-4. 最糟的一种：只拷 5 个上游文件、顺手 `rm` 掉 `qq_open_platform_media.py` ——
-   副本里的 `from . import qq_open_platform_media` 会让**整个副本包 import 失败**
-   （宿主没带连接器时，插件直接起不来）。
+1. `qq_open_platform_media.py` 被删或被改名：**真机立刻坏**。文件层面是
+   `connector_seam` 一解析就抛 `ModuleNotFoundError`（启动自动回复直接失败），
+   函数层面是表情包投递 `AttributeError` —— 群图与单聊图都直调它；
+2. `qq_open_plat.py` 那 5 个 hunk 被上游覆盖回去：**真机不变**（连的是宿主那份），
+   但回退部署丢能力 —— 单聊发图退回只发 `[图片]`、群图退回只试（真机已失效的）旧式直传、
+   附件文件名丢失；
+3. 最糟的一种：只拷 5 个上游文件、顺手 `rm` 掉 `qq_open_platform_media.py` ——
+   同第 1 条，而且这次是"以为自己在做正确的事"。
 
 ### 重新同步上游的顺序
 

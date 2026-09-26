@@ -3588,3 +3588,43 @@ qq_open_platform_media` 会让**整个副本包 import 失败**（宿主没带�
 - 变异取证 `tests/verify_vendored_patch_marker_fail_to_pass.py`：4 处变异（抹掉文件头标记 /
   把群图上传那处接线换成上游写法 / 从清单里删掉 media 模块 / 抹掉出处 commit）→ 目标全红、
   控制组 `test_qq_permission_levels.py` 全绿，**5/5**。
+
+### 16.4 补记：真机生效面（2026-09-27 03:19 核实）
+
+使用者问「现在用的是上游的连接器嘛」。答案是**连接器本体是**（每轮启动都打
+`[QQ] 连接器来源: host (utils.connection.onebot)`），但**富媒体上传走的是副本里那个自撰
+模块**（宿主没有 `qq_open_platform_media`，`connector_seam` 单独解析后回退到副本）。
+于是把「真机生效面」补进了 PROVENANCE 的差异表（新增一列「真机是否生效」）：
+
+| 副本改动 | 真机 |
+|---|---|
+| `qq_open_platform_media.py`（整模块） | ✅ 在役 —— 群图 + 单聊图都由 `reply_delivery_node._send_sticker` 直调它的自由函数（私聊刻意不用连接器上那个 `send_private_image()`，它固定 `record_sent=True`） |
+| `qq_open_plat.py` 的 5 个 hunk | 只在"宿主没带连接器"的回退部署里跑 |
+
+真机证据（使用者 03:19 切到开放平台后的一条私聊表情包）::
+
+    03:19:39  WARNING - [QQOpenPlatform] 图片直传上传未拿到 file_info
+    03:19:41  INFO    - [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJ4t6
+
+两行都出自 `qq_open_platform_media` —— **旧式直传在真机上已失效、分片上传是活的**，
+这正是当初"两条都试、等真机日志回答"要的答案（09-26 那次实测同结论，这是 09-27 的独立
+复现）。所以那个模块是**在役代码**不是遗留物：删/改名 → `connector_seam` 一解析就抛
+`ModuleNotFoundError`，启动自动回复直接失败。
+
+**已知缺口**（记进队列）：`_extract_attachments` 的 `"name"` 同样只在回退部署生效，用宿主
+连接器时 `enrichment._attachment_files` 只能拿 URL 尾巴当标签（只影响 prompt 里那行标签）。
+原始 `att` 字段在连接器归一化后就没了，插件侧接不住 —— 要真修得推宿主 PR。
+
+顺带一个白捡的现场：03:19:16 使用者切模式时，本轮加的两行日志正好在真机上跑了一遍
+（就是 00:18:53 炸掉的那个场景）：
+
+```
+03:19:16  [运行时] 连接模式不匹配（连接对象=napcat 配置=open_platform），断开旧连接并重建
+03:19:16  [增强] enricher 已重绑到新连接对象
+03:19:17  [QQOpenPlatform] 环境: 正式 → token 已获取 → WebSocket 已连接 → 已就绪
+```
+
+零 AttributeError。验证：`test_qq_connector_seam.py` 10 passed（新增
+`test_provenance_records_which_patches_are_live`，钉住那一列与两行真机证据）；
+全量 **1195 passed**（上一轮 1194 + 1）；ruff All checks passed；
+变异取证扩到 **7/7**（新增"差异表不写生效面"与"抹掉真机证据"两处变异）。

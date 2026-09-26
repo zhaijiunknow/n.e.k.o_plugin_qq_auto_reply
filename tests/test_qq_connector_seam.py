@@ -178,3 +178,19 @@ def test_provenance_documents_the_local_patch():
     assert "LOCAL-PATCH" in text, "PROVENANCE.md 里没有标记约定的说明"
     assert "4302a9ea" in text, "PROVENANCE.md 没记这次功能性改动的出处 commit"
     assert "qq_open_platform_media.py" in text, "PROVENANCE.md 没登记自撰的 media 模块"
+
+
+def test_provenance_records_which_patches_are_live():
+    """差异表必须写出「真机是否生效」+ 真机证据。
+
+    为什么单钉这一条：副本里 6 处改动**只有 media 模块在真机路径上**（运行时连的是宿主
+    那份连接器，`reply_delivery_node._send_sticker` 又刻意直调 media 自由函数）。不写清楚
+    的话，下一个读这份文档的人会以为 `qq_open_plat.py` 里那些转发是活的，从而在
+    "优化掉用不上的代码"时把唯一在役的那部分一起删掉。
+    """
+    text = _PROVENANCE.read_text(encoding="utf-8")
+
+    assert "真机是否生效" in text, "PROVENANCE.md 的差异表缺少「真机是否生效」一列"
+    assert "图片直传上传未拿到 file_info" in text, "没记真机证据：旧式直传已失效"
+    assert "图片上传成功(分片)" in text, "没记真机证据：分片上传是活的"
+    assert "connector_seam" in text and "host" in text, "没写清运行时装的是宿主那份连接器"

@@ -3,13 +3,20 @@
 背景：2026-09-26 的 `4302a9ea` 改了 `_vendor/connection_onebot/qq_open_plat.py`（5 个
 hunk）并新增 `qq_open_platform_media.py`，**却没更新 PROVENANCE.md** —— 文档里"副本不是
 逐字一致"只剩 lint 那一半。重新同步上游时这些改动会**静默**回退：单聊发图退回只发
-`[图片]`、群图上传退回只试旧式直传；漏拷 media 模块更会让整个副本包 import 失败。
+`[图片]`、群图上传退回只试旧式直传；漏拷 media 模块更会让整个副本包 import 失败
+（`connector_seam` 解析直接抛，启动自动回复就失败）。
 
-四处变异，覆盖三组守卫：
+2026-09-27 补：差异表还要写清**真机生效面** —— 运行时连的是宿主那份连接器，6 处改动里
+只有 `qq_open_platform_media` 在真机路径上（`reply_delivery_node._send_sticker` 直调它），
+其余几处只在回退部署里跑。不写清楚，下一个人"清理用不上的代码"就会把唯一在役的那部分删掉。
+
+六处变异，覆盖四组守卫：
 1. 抹掉 `qq_open_plat.py` 文件头的 LOCAL-PATCH 标记；
 2. 抹掉一处本地接线（群图上传转发）；
 3. 从 PROVENANCE 的文件名清单里删掉自撰的 media 模块；
-4. 从 PROVENANCE 里删掉出处 commit。
+4. 从 PROVENANCE 里删掉出处 commit；
+5. 差异表不再写「真机是否生效」；
+6. 抹掉真机证据（分片上传成功那行）。
 
 铁律（沿用 verify_runtime_transition_lock_fail_to_pass.py）：
 1. **先确认目标用例在干净树上绿**；
@@ -59,6 +66,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "出处 commit 被抹掉（改动又变成无痕）",
         "`4302a9ea6280954929b644fe9404adebc69f10a2`",
         "`某次未记录的 commit`",
+    ),
+    (
+        "_vendor/connection_onebot/PROVENANCE.md",
+        "差异表不再写「真机是否生效」（读者会以为副本那些转发是活的）",
+        "| 位置（副本） | 上游 | 副本里改成了什么 | 真机是否生效 |",
+        "| 位置（副本） | 上游 | 副本里改成了什么 |",
+    ),
+    (
+        "_vendor/connection_onebot/PROVENANCE.md",
+        "真机证据（分片上传成功）被抹掉",
+        "图片上传成功(分片)",
+        "图片上传成功",
     ),
 ]
 
@@ -130,7 +149,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 标记、接线、清单、出处都是必要条件")
+    print(f"[PASS] {len(results)}/{len(results)} —— 标记、接线、清单、出处、真机生效面都是必要条件")
     return 0
 
 
