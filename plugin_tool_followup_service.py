@@ -38,6 +38,7 @@ import time
 from typing import Any
 
 from .pipeline_models import KIND_PLUGIN_TOOL_RESULT, QQReplyRequest
+from .plugin_tool_service import emit_bridge_log
 
 #: 落盘文件名（走 `plugin.data_path`）。宿主重启后仍在等的任务要能接着等 ——
 #: 否则"我告诉你"又会变成一句空话，而且这次连日志都没有。
@@ -205,7 +206,7 @@ class QQPluginToolFollowupService:
         if not _conversation_target(dict(conversation or {})):
             return False
         if not await self.probe_is_watchable(probe):
-            self.plugin._emit_log(
+            emit_bridge_log(self.plugin, 
                 "INFO",
                 f"[PluginTool·回投] {probe['plugin_id']}:{probe['poller']} 查不到 "
                 f"{probe['task_id']} 的进度，不登记（也就不会承诺）",
@@ -263,14 +264,14 @@ class QQPluginToolFollowupService:
         if key in self._pending:
             return False
         if len(self._pending) >= MAX_PENDING:
-            self.plugin._emit_log(
+            emit_bridge_log(self.plugin, 
                 "INFO",
                 f"[PluginTool·回投] 已在等 {len(self._pending)} 个任务，"
                 f"{key} 不再登记（上限 {MAX_PENDING}）",
             )
             return False
         if self._conversation_pending(convo) >= MAX_PENDING_PER_CONVERSATION:
-            self.plugin._emit_log("INFO", f"[PluginTool·回投] 这个会话已经在等结果了，{key} 不再登记")
+            emit_bridge_log(self.plugin, "INFO", f"[PluginTool·回投] 这个会话已经在等结果了，{key} 不再登记")
             return False
         self._pending[key] = {
             "key": key,
@@ -290,7 +291,7 @@ class QQPluginToolFollowupService:
             "last_block_at": 0.0,
         }
         self._save()
-        self.plugin._emit_log(
+        emit_bridge_log(self.plugin, 
             "INFO",
             f"[PluginTool·回投] 已登记异步任务 {key}（{_conversation_label(convo)}），"
             f"到点后去问 {plugin_id}:{poller}",
@@ -363,7 +364,7 @@ class QQPluginToolFollowupService:
         if not ok:
             record["errors"] = int(record.get("errors") or 0) + 1
             if int(record["errors"]) >= ERRORS_BEFORE_LOST:
-                self.plugin._emit_log(
+                emit_bridge_log(self.plugin, 
                     "WARN",
                     f"[PluginTool·回投] {key} 连续 {record['errors']} 次查不到"
                     f"（{record.get('last_error') or ''}），按「跟丢了」处理",
@@ -390,7 +391,7 @@ class QQPluginToolFollowupService:
             self._mark_terminal(record, "failed")
         else:
             if changed:
-                self.plugin._emit_log(
+                emit_bridge_log(self.plugin, 
                     "INFO", f"[PluginTool·回投] {key} 进度：{token or '（认不出，继续等）'}"
                 )
             self._save()
@@ -425,7 +426,7 @@ class QQPluginToolFollowupService:
         if not record.get("output"):
             record["output"] = self._fallback_output(terminal)
         self._save()
-        self.plugin._emit_log(
+        emit_bridge_log(self.plugin, 
             "INFO",
             f"[PluginTool·回投] {record.get('key')} 终态：{terminal}",
         )
@@ -456,7 +457,7 @@ class QQPluginToolFollowupService:
         ):
             record["last_block_reason"] = reason
             record["last_block_at"] = now
-            self.plugin._emit_log(
+            emit_bridge_log(self.plugin, 
                 "INFO", f"[PluginTool·回投] {key} 暂时发不出去（{reason}），先留着"
             )
         self._save()
@@ -527,7 +528,7 @@ class QQPluginToolFollowupService:
             )
         except Exception:
             pass
-        self.plugin._emit_log(
+        emit_bridge_log(self.plugin, 
             "INFO",
             f"[PluginTool·回投] {record.get('key')} 已回投到"
             f"{_conversation_label(convo)}：{record['delivered_text'][:80]}",
@@ -638,7 +639,7 @@ class QQPluginToolFollowupService:
                 # 上次是在"正要发"的时候停的（宿主重启/进程挂了）：这条多半已经
                 # 发出去了，只是没来得及记账。主动消息宁可少一条，不能重复 ——
                 # 所以放弃它，而不是重启后再发一遍。
-                self.plugin._emit_log(
+                emit_bridge_log(self.plugin, 
                     "INFO",
                     f"[PluginTool·回投] {key} 上次停在「正要发」，重启后不再重发（可能已经发出）",
                 )

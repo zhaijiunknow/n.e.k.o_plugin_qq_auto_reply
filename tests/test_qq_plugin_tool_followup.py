@@ -128,6 +128,7 @@ def _plugin(
         client.mode = "napcat"
 
     emitted: list[tuple[str, str]] = []
+    logged: list[str] = []
     outcomes: list = []
     settings = {"qq_open_plugin_followup_enabled": enabled}
     settings.update(extra_settings or {})
@@ -139,12 +140,16 @@ def _plugin(
         _qq_settings=settings,
         _running=running,
         _admin_qq=admin_qq,
-        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        logger=SimpleNamespace(
+            info=lambda msg, *a, **k: logged.append(str(msg)),
+            warning=lambda msg, *a, **k: logged.append(str(msg)),
+        ),
         _emit_log=lambda level, msg: emitted.append((level, msg)),
         data_path=lambda name: tmp_path / name,
         calls=calls,
         requests=requests,
         emitted=emitted,
+        logged=logged,
         outcomes=outcomes,
     )
     plugin.plugin_tool_followup_service = QQPluginToolFollowupService(plugin)
@@ -334,6 +339,16 @@ def test_registering_persists_to_disk(tmp_path):
     _remember(plugin)
     saved = json.loads((tmp_path / "plugin_tool_followups.json").read_text(encoding="utf-8"))
     assert [row["key"] for row in saved["pending"]] == ["writer:t1"]
+
+
+def test_the_key_decisions_go_into_the_file_log_too(tmp_path):
+    """登记与回投都要**双写文件日志** —— ring 在插件重载时清空，事后就没法复盘了。"""
+    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "结论"})])
+    _remember(plugin)
+    _tick_sync(plugin, 2)
+
+    assert any("已登记异步任务" in line for line in plugin.logged), "登记没进文件日志"
+    assert any("已回投到" in line for line in plugin.logged), "回投没进文件日志"
 
 
 def test_state_survives_a_restart_and_stale_rows_are_dropped(tmp_path):

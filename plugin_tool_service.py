@@ -153,6 +153,27 @@ def redact_text(text: str) -> str:
     return out
 
 
+def emit_bridge_log(plugin: Any, level: str, msg: str) -> None:
+    """桥的关键日志**双写**：UI ring + 文件日志。
+
+    教训（真机 16:53）：`plugin._emit_log` 只往内存 ring 里塞（见 `__init__.py` 的
+    `_emit`），而 ring 在**插件重载时就清空**了。于是"这一轮到底挂没挂工具、她到底调没调
+    那个 entry"事后完全查不到 —— 只能靠别的插件的日志反推，还推不准。所以桥的
+    **判定性**日志（挂载 / 调用结果 / 登记 / 终态 / 回投）一律双写：ring 给界面看，
+    文件日志给"事后复盘"看。
+    """
+    try:
+        plugin._emit_log(level, msg)
+    except Exception:
+        pass
+    try:
+        logger = plugin.logger
+        write = logger.warning if level in ("WARN", "ERROR") else logger.info
+        write(msg)
+    except Exception:
+        pass
+
+
 class QQPluginToolService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -667,7 +688,8 @@ class QQPluginToolService:
             return f"调用 {target} 失败：{type(exc).__name__}", None
         is_err = getattr(result, "is_err", None)
         failed = bool(callable(is_err) and is_err())
-        self.plugin._emit_log(
+        emit_bridge_log(
+            self.plugin,
             "INFO",
             f"[PluginTool] {target} -> {'err' if failed else 'ok'}"
             + (f" (会话 {session_key})" if session_key else ""),

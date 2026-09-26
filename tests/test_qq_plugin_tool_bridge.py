@@ -75,14 +75,19 @@ def _plugin(
         client.needs_attention = True
 
     emitted: list[tuple[str, str]] = []
+    logged: list[str] = []
     plugin = SimpleNamespace(
         plugins=_Plugins(),
         qq_client=client,
         _qq_settings={"qq_open_plugin_tools": dict(tiers or {})},
-        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        logger=SimpleNamespace(
+            info=lambda msg, *a, **k: logged.append(str(msg)),
+            warning=lambda msg, *a, **k: logged.append(str(msg)),
+        ),
         _emit_log=lambda level, msg: emitted.append((level, msg)),
         calls=calls,
         emitted=emitted,
+        logged=logged,
         queries=queries,
     )
     service = QQPluginToolService(plugin)
@@ -660,6 +665,42 @@ def test_a_failed_call_tells_her_not_to_quote_the_error():
     """失败原文里有账号/端点/内部 id：告诉她用大白话说一句，别复述。"""
     assert "不要把它念给对方" in QQPluginToolService.render_result("boom", ok=False)
     assert "不要把它念给对方" not in QQPluginToolService.render_result("fine", ok=True)
+
+
+# ── 6c. 关键日志双写：否则事后完全查不到 ─────────────────────────────
+#
+# 真机 16:53 的教训：`plugin._emit_log` 只进内存 ring，而 ring 在插件重载时清空 ——
+# "这一轮到底挂没挂工具、她到底调没调那个 entry"只能靠别的插件的日志反推。
+# 所以桥的判定性日志必须**同时**落到文件日志。
+
+def test_the_call_result_goes_into_the_file_log_too():
+    plugin = _plugin()
+
+    class _Plugins:
+        @staticmethod
+        async def call_entry(entry_ref, params=None, *, timeout=10.0):
+            return SimpleNamespace(value={"ok": True}, is_err=lambda: False)
+
+    plugin.plugins = _Plugins()
+    asyncio.run(plugin.plugin_tool_service.call_plugin_entry("web_search", "search", {}))
+
+    assert any("web_search:search -> ok" in line for line in plugin.logged), (
+        "调用结果没进文件日志（重载后就查不到了）"
+    )
+
+
+def test_the_mount_decision_goes_into_the_file_log_too():
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    service = _generation_service(plugin)
+    session = _Session()
+
+    asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+
+    assert any("本轮挂载 1 个插件工具" in line for line in plugin.logged), (
+        "挂载决定没进文件日志"
+    )
 
 
 def test_result_rendering_never_leaks_a_raw_object():

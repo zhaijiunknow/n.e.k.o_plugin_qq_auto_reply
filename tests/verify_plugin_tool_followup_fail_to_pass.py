@@ -176,6 +176,17 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     return bool(reply_text), ("没生成出可发送的内容" if not reply_text else "已发出")""",
     ),
     (
+        "plugin_tool_service.py",
+        "桥的日志不再双写文件（重载后「挂没挂工具/她调没调」就查不到了）",
+        """    try:
+        logger = plugin.logger
+        write = logger.warning if level in ("WARN", "ERROR") else logger.info
+        write(msg)
+    except Exception:
+        pass""",
+        """    return""",
+    ),
+    (
         "pipeline_models.py",
         "新的 source_kind 不算「名义发言人」（会拿别人的成员记忆公开发言）",
         """    KIND_GROUP_JOIN_NOTICE,

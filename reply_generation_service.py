@@ -15,6 +15,7 @@ from .pipeline_models import (
     QQReplyContext,
     is_synthetic_source,
 )
+from .plugin_tool_service import emit_bridge_log
 
 
 class QQReplyGenerationService:
@@ -536,7 +537,7 @@ class QQReplyGenerationService:
                 except Exception:
                     pass
             return False, False
-        self.plugin._emit_log(
+        emit_bridge_log(self.plugin, 
             "INFO",
             f"[PluginTool] 本轮挂载 {len(bridge_tools)} 个插件工具"
             f"（权限 {getattr(context, 'permission_level', '') or 'unknown'}）: "
@@ -581,7 +582,7 @@ class QQReplyGenerationService:
         allowed = service.allowed_tiers_for(getattr(context, "permission_level", ""))
         if not allowed:
             # 认不出来的人（权限 none）：一个插件工具都不给。
-            self.plugin._emit_log("INFO", "[PluginTool] 说话人不在名册里，本轮不挂插件工具")
+            emit_bridge_log(self.plugin, "INFO", "[PluginTool] 说话人不在名册里，本轮不挂插件工具")
             return [], []
         # 候选表是**全量非 QQ 插件**（界面也是它）；挂不挂由 select_mounted 的启动闸决定。
         candidates = await service.list_candidates()
@@ -589,7 +590,7 @@ class QQReplyGenerationService:
         skipped = sorted(set(tiers) - {row["plugin_id"] for row, _tier in mounted})
         if skipped:
             # 留痕：配了但没挂上，通常是"那个插件此刻没在跑"或"档位不对这个人开放"。
-            self.plugin._emit_log(
+            emit_bridge_log(self.plugin, 
                 "INFO", f"[PluginTool] 本次未挂载: {'、'.join(skipped)}（未启动 / 档位不符）",
             )
         return mounted, [
