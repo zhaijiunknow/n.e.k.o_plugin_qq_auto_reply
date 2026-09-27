@@ -452,7 +452,23 @@ MISC = (
     # 0 = 不按（退回旧行为，便于对照复现）。
     SettingSpec("icebreaker_hold_seconds", "int", 120, saveable=True,
                 floor=0,
-                description="save：主动破冰后按住焦点的秒数（0=不按，破冰后立刻回到分数仲裁）"),
+                description="save：主动破冰后按住焦点的秒数（0=不按，破冰后立刻回到分数仲裁）",
+                ui=UIInput("cfg-icebreaker-hold", min=0, max=1800, step=10,
+                           label="ui.attention.icebreaker_hold",
+                           hint="ui.attention.icebreaker_hold.hint")),
+    # 破冰没人接 → 这个群休眠多久（秒）。使用者 2026-09-27 的口径：
+    # 「如果破冰一次还是没有人接话，可以直接把这个群拖入休眠状态，用其他群竞态。
+    #   休眠的群可以用 @ 唤醒。」
+    # 「没人接」用的是现成的接话反馈窗口（`attention_feedback_window_seconds`，90s），
+    # 不另开计时器 —— 同一个结论不该有两个判据。
+    # 默认 30 分钟：比自然回落（0.015/s，从满分掉到焦点线约 11 分钟）果断，
+    # 又不至于把一个群一整天判死。0 = 不启用休眠（退回旧行为）。
+    SettingSpec("icebreaker_dormant_seconds", "int", 1800, saveable=True,
+                floor=0,
+                description="save：破冰后无人接话 → 该群休眠秒数（0=不休眠；@ 或到期即醒）",
+                ui=UIInput("cfg-icebreaker-dormant", min=0, max=86400, step=60,
+                           label="ui.attention.icebreaker_dormant",
+                           hint="ui.attention.icebreaker_dormant.hint")),
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。

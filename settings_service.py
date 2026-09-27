@@ -1096,6 +1096,10 @@ class QQSettingsService:
         icebreaker_hold_seconds = kwargs.get("icebreaker_hold_seconds")
         if icebreaker_hold_seconds is not None:
             self.plugin._qq_settings["icebreaker_hold_seconds"] = max(0, int(icebreaker_hold_seconds))
+        # 破冰没人接 → 群休眠秒数（0=不休眠）。
+        icebreaker_dormant_seconds = kwargs.get("icebreaker_dormant_seconds")
+        if icebreaker_dormant_seconds is not None:
+            self.plugin._qq_settings["icebreaker_dormant_seconds"] = max(0, int(icebreaker_dormant_seconds))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))
