@@ -35,17 +35,19 @@ from plugin.plugins.qq_auto_reply.session_instruction_service import (
     QQSessionInstructionService,
 )
 
-#: 「固定模板」= 与记忆开关无关、每轮都在的静态层之和（实测 5,971）。
-#: 预算贴着实测值给：要加东西就得先删东西，或者明确改这个数字（并在 §4.0u 记一笔）。
-FIXED_TEMPLATE_BUDGET = 6_100
+#: 「固定模板」= 与记忆开关无关、每轮都在的静态层之和。
+#:
+#: 2026-09-27 审计**前**实测 5,971（上限当时是 6,100，几乎没余量）。那次删掉：
+#: 角色设定段 91（与本体人设冲突）、时间信息段 342（死文本）、旧纯文本 Format 141、
+#: 三个死场景模板 1,713，并把注意事项/细节约束/输出要求里与人设重复的句子删掉
+#: （700→491、128→60、111→68）。**现在实测 5,218**，预算收到这里并留一点余量。
+FIXED_TEMPLATE_BUDGET = 5_300
 CATALOG_BUDGET = 2_200
 
 FIXED_TEMPLATE_NAMES = (
-    "ROLE_PROMPT_SECTION",
     "ATTENTION_PROMPT_SECTION",
     "FORMAT_PROMPT_SECTION_NEKO_DYNAMIC",
     "CHARACTER_PROMPT_SECTION",
-    "TIME_PROMPT_SECTION",
     "CHAT_ENV_PROMPT_SECTION",
     "USER_PROFILE_PROMPT_SECTION",
     "DETAIL_CONSTRAINTS_SECTION",

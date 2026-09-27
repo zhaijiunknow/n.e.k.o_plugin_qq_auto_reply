@@ -25,9 +25,7 @@ from .prompt_fragment_templates import (
     PENDING_COMMITMENTS_SECTION,
     RECALL_TRIGGER_HINT,
     ROLE_CARD_SECTION,
-    ROLE_PROMPT_SECTION,
     SESSIONS_PROMPT_SECTION,
-    TIME_PROMPT_SECTION,
     USER_PROFILE_PROMPT_SECTION,
     pick_locale,
 )
@@ -85,15 +83,22 @@ def resolve_prompt_override(
 
 class QQSessionInstructionService:
     # 提示词层定义（供编辑器 + 运行时覆盖解析使用）
+    #
+    # 2026-09-27 审计删掉了四类层（见 docs/SESSION-HANDOFF.md §25）：
+    #   · `role`（角色设定）—— 与本体的角色扮演前言/人设**直接冲突**（它说"你是 AI 数字生命"，
+    #     人设说"NOT a system… never think of herself as a system"）；
+    #   · `time` 的静态模板 —— 从来没进过提示词（运行时用的是 `build_time_context()`），
+    #     layer 本身改成运行时层；
+    #   · `scene_group_collective / shared / directed` 与 `naming_with_title / without_title`
+    #     —— 只在已删除的 neko_scene 分支里可达，删除后没人再构造它们；
+    #   · `format_prompt_section`（旧纯文本版）—— 本来就不在这一层表里。
     _PROMPT_LAYERS: list[dict[str, Any]] = [
         # === 静态层（可编辑） ===
         {"id": "init",                  "i18n_key": "",                      "required_placeholders": ["{name}"],                       "format_after": True},
-        {"id": "role",                  "i18n_key": "role_prompt_section",   "required_placeholders": [],                                "format_after": False},
         {"id": "attention",             "i18n_key": "attention_prompt_section", "required_placeholders": [],                            "format_after": False},
         {"id": "format_neko_dynamic",   "i18n_key": "format_prompt_section_neko_dynamic", "required_placeholders": ["{emoji_catalog}", "{sticker_catalog}"],  "format_after": True},
         {"id": "format_open_platform",  "i18n_key": "format_prompt_section_open_platform", "required_placeholders": ["{sticker_catalog}"], "format_after": True},
         {"id": "persona_wrapper",       "i18n_key": "character_prompt_section", "required_placeholders": ["{character_prompt}"],       "format_after": True},
-        {"id": "time",                  "i18n_key": "time_prompt_section",   "required_placeholders": ["{time_str}"],                   "format_after": True},
         {"id": "detail",                "i18n_key": "detail_constraints_section", "required_placeholders": [],                          "format_after": False},
         {"id": "output",                "i18n_key": "output_prompt_section", "required_placeholders": [],                               "format_after": False},
         # kira_unified 是纯软指令，模板本身一个占位符都没有（见
@@ -101,17 +106,10 @@ class QQSessionInstructionService:
         # 护栏对每一份 i18n bundle 都判"缺占位符"，把非中文用户的这一段整个
         # 换回中文默认常量，还每轮打一条 warning。要求必须以模板实际内容为准。
         {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": [], "format_after": True},
-        {"id": "scene_group_collective","i18n_key": "prompts.group.collective", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
-        {"id": "scene_group_shared",    "i18n_key": "prompts.group.shared_session", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
-        # directed 的加固默认模板本身不含 {group_id}（身份边界只点名发言人
-        # 与主人/管理员），把它声明成必需就是一条**永远无法满足**的判据，
-        # 再完整的翻译也会被判缺占位符。其余四个是真正的身份边界，保留。
-        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "scene_private",         "i18n_key": "prompts.private.body",  "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
-        {"id": "naming_with_title",     "i18n_key": "prompts.group.naming_with_title", "required_placeholders": ["{user_title}"],       "format_after": False},
-        {"id": "naming_without_title",  "i18n_key": "prompts.group.naming_without_title", "required_placeholders": [],                "format_after": False},
         {"id": "core_memory_section",   "i18n_key": "core_memory_section",    "required_placeholders": ["{memory_context}", "{context_ready}"], "format_after": True},
         # === 运行时层（只读，不参与覆盖） ===
+        {"id": "time",                  "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "accounts",              "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "sessions",              "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "chat_environment",      "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
@@ -174,9 +172,14 @@ class QQSessionInstructionService:
             pass
 
     def _resolve_time_section(self, locale: str) -> str:
-        """解析时间层：动态时间上下文（当前时间/星期/时段 + 时间表达提示）。"""
+        """解析时间层：动态时间上下文（当前时间/星期/时段 + 时间表达提示）。
+
+        **这里曾经有两行 return**：第一行 `build_time_context()`、第二行指向
+        `time_prompt_section` 静态模板（含七条作息表）—— 第二行永远到不了，于是那段
+        342 字符的作息表从没进过提示词，只在提示词编辑器里假装可编辑（2026-09-27 审计，
+        见 docs/SESSION-HANDOFF.md §25）。现在死模板已删，`time` 层是运行时层。
+        """
         return build_time_context()
-        return self._resolve_static_layer("time_prompt_section", TIME_PROMPT_SECTION, locale, time_str=self._format_current_time())
 
     def _resolve_static_layer(self, i18n_key: str, default_template: str, locale: str = "", **format_kwargs) -> str:
         """解析静态提示词层：先查 prompt_overrides，再回退 i18n/默认模板。"""
@@ -431,7 +434,8 @@ class QQSessionInstructionService:
         )
         sections = [
             self._resolve_init_template(user_language).format(name=her_name),
-            self._resolve_static_layer("role_prompt_section", ROLE_PROMPT_SECTION, user_language),
+            # 「角色设定（Role）」段已删除：她是谁由本体的角色扮演前言与人设决定，
+            # 插件再声明一次「你是 AI 数字生命」会与人设直接冲突（§25）。
             self._resolve_static_layer("attention_prompt_section", ATTENTION_PROMPT_SECTION, user_language),
             format_section,
             self._build_accounts_section(
