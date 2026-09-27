@@ -652,4 +652,15 @@ PostgreSQL + `[message_bus]`）是**两条分叉**而非版本先后，引用时
   本轮落到字段：AstrBot 9 阶段的 `WakingCheck` 排在 `SessionStatusCheck`/`RateLimit` 之前、
   唤醒条件取「或」；LangBot 12 阶段 + `group-respond-rules` 取「或」且 `random` 只是兜底）。
 
+## 6. 这份文档的定位（补记）
+
+本文写的是「**别人**有什么、值不值得学」。**「我们**已经有什么、是从哪来的」是另一份：
+`docs/UPSTREAM-LINEAGE.md`（血统与署名 + 许可缺口）。两者的关系要说清楚，免得读岔：
+
+- 本文 §3 那 25 条建议**目前一条都没进代码** —— 它是待办清单，不是现状说明；
+- 反过来，我们**代码级借鉴过的只有三条线**：MaiBot 的 necessity 打分表、
+  **KiraAI 的提示词骨架 + `<msg>` 协议**、宿主本体的连接层副本；
+- 本文里被当作"外部做法"来对比的 `kira_unified`/`<feeling>` 那套，**文字其实是我们自己写的**
+  （见 UPSTREAM-LINEAGE §2.2）；真正逐字来自 KiraAI 的是提示词骨架。
+
 （未交付的一律保持"未验证"，不用默认值外推。）

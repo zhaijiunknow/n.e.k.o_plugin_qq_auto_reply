@@ -1,7 +1,12 @@
-"""Message-chain model -- mirrors KiraAI's recursive MessageChain structure.
+"""Message-chain model.
 
-Each message element exposes a ``.repr`` for LLM prompt injection; a
-``MessageChain`` can be nested (``reply.chain``, ``forward.chains``).
+数据模型借用 KiraAI 的**嵌套消息链形状**（``Reply.chain`` / ``Forward.chains``），但
+``.repr`` 的用途与上游不同：上游 ``repr`` 是**日志表示**（docstring 原文 "Returns a
+string to display in logs"，且 ``Reply.repr`` 是不递归的 ``[Reply <id>]``），真正的
+prompt 输入走另一条路径 ``MessageManager.message_format_to_text()``；本插件把这两件事
+合并到了 ``repr`` 上（日志与 prompt 注入共用一份表示）。
+
+一个 ``MessageChain`` 可以嵌套（``reply.chain``、``forward.chains``）。
 """
 
 from __future__ import annotations

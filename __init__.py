@@ -613,7 +613,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return None
 
     async def _describe_reply_image(self, image_url: str) -> str:
-        """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""
+        """对引用回复中的图片做简短 VLM 描述。
+
+        这是"VLM→文字入上下文"的**同族**做法（KiraAI 及多家都这么做），但不等价：
+        上游覆盖全部入站图（含引用链、递归无深度上限）、用专用 `default_vlm` 槽、
+        提示词可配置、按 md5 缓存，且支持 `native`（不描述、直接把图给多模态模型）；
+        我们固定 `conversation` 槽 + 固定中文提示词、无缓存、引用链深度限 3。
+        """
         return await self._vlm_describe_locator(
             image_url, prompt="用简短的中文描述这张图片的内容（不超过20字）",
         )

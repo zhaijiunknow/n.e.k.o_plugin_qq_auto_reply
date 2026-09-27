@@ -307,7 +307,11 @@ class QQRelayResult:
 
 @dataclass(slots=True)
 class QQMessageBlock:
-    """KiraAI-style 消息块：对应 LLM 输出的一个 <msg>...</msg>"""
+    """一个 `<msg>...</msg>` 块：容器形态借自 KiraAI，字段集合是本插件自己的。
+
+    上游的子标签由 `TagSet` 动态注册（没有固定的块 dataclass），`keyboard`/`ark` 等
+    字段上游并不存在 —— 所以这里的 "KiraAI-style" 只指容器形态，不指字段级等价。
+    """
     text: str = ""
     emoji: str = ""        # QQ 表情 ID（如 "277"）
     at_user: str = ""       # @的QQ号

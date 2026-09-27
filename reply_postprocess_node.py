@@ -35,7 +35,12 @@ class QQReplyPostprocessNode:
 
     @staticmethod
     def _parse_blocks(raw_text: str) -> list[QQMessageBlock]:
-        """KiraAI-style `<msg>` 块解析器。将 LLM 输出解析为消息块列表。
+        """`<msg>` 块解析器。将 LLM 输出解析为消息块列表。
+
+        容器形态（`<msg>` 挂子标签、块外内容不作为消息）借自 KiraAI；**标签集合是本插件
+        自己的**：上游还有 `img/video/selfie/file` 与操作 message_id 的 `forward`，我们有
+        `keyboard/ark`、块外 `<emoji>`、`<mark/>`、`<feeling>`、`<forward to=…>`；并且上游
+        明令禁止 `<msg>` 内裸文本，我们显式接受（见 `_parse_blocks` 的裸文本分支）。
 
         支持格式:
           <msg><text>文字</text><emoji>277</emoji></msg>

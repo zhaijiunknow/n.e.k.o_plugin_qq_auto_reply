@@ -1436,7 +1436,7 @@ delete_sticker(id=46) → total 45，探针文件无残留
 |---|---|---|---|
 | **输出格式 Format** | **4,190** | 44% | `<msg>` 协议 + 标签表 + **emoji 目录 80 行（870）** + **表情包目录 45 行（1,194）** + 颜文字清单 |
 | **角色扮演 Persona** | **3,217** | 34% | 本体角色人设原文（`characters.json`，占位符已替换） |
-| **群聊回复意愿**（Kira 场景） | **1,652** | 17% | 何时该回/不该回 + `<feeling>` 情绪与焦点后果 |
+| **群聊回复意愿**（~~Kira 场景~~ 自撰，见 §22.2） | **1,652** | 17% | 何时该回/不该回 + `<feeling>` 情绪与焦点后果 |
 | 注意事项 Attention | 415 | | 反注入、禁 emoji、话题自检/主动找话题 |
 | 角色卡额外设定 | 319 | | 昵称/性别/种族/自称/核心特质 |
 | 核心规则 | 285 | | 反注入硬约束（谁是主人） |
@@ -1526,8 +1526,13 @@ subject id。按需召回还有 `recall_memory` 工具兜底，所以损失可�
 想做时按 §4.0u 的实测值直接落地。
 
 **不建议动的**：Persona（身份本体，而且**它就是让免费线放行的那段**，见 §4.0t）、
-核心规则/反注入、Format 的协议本身、Kira 回复意愿（"该不该说话"的核心行为）、
+核心规则/反注入、Format 的协议本身、~~Kira 回复意愿（"该不该说话"的核心行为）~~、
 时间段的作息表（深夜犯困/早晨问候靠它）。
+
+> ⚠️ **归因更正（见 §22.2）**：上面那句"Kira 回复意愿"的说法不对。那段"该不该回"的文字
+> **是我们自己写的**（KiraAI 全仓相关词零命中）；真正逐字来自 KiraAI 的是
+> **提示词骨架**（8 个段落标题 + 4 处整句，见 `UPSTREAM-LINEAGE.md` §2.2-⑥）。
+> 结论（"不建议动"）不变，改的只是它叫什么。
 
 **验证**：`tests/test_qq_prompt_budget.py`（8 条：固定模板预算、模板里不许有 HTML
 注释、不许宣传未实现标签、情绪清单必须到得了提示词、表情包目录超限要截断且留日志、
@@ -2774,6 +2779,11 @@ Plugin writer_power_analysis runtime_auto_start overridden by user preference: F
 1. **注意力不是频率控制**。频率闸实际是 `reply_burst_*`（60s/3 条）和缓冲延迟；注意力管的是**多个群里选哪个**。
 2. **相位机不是设计跑偏**，是用户为防"冷群饿死"刻意加的。**不要改成"每群独立令牌桶"**——那会让热群恒热、冷群恒冷，恰好毁掉相位。
 3. **"注意力"这套跨群机制是插件原创的，不在 Kira 里**。KiraAI 里 `attention` 只出现在 prompt 标题，`affinity`/`fatigue`/`mood` 全仓计数为 0；AstrBot 和 KiraAI **都不做跨群仲裁**；只有 MaiBot 做（配额上限表 + 停最久不活跃）。
+   > ⚠️ **更正（见 §22.4）**：本条后半句**写虚了**。"插件原创"不成立 —— MaiBot 官方配置里有
+   > `experimental.focus_mode` + `focus_cool_time 120` + `focus_groups`（跨聊天焦点竞争），
+   > AstrBot 生态插件有**用户级**注意力（0~1、半衰期 300s、30% 溢出），bl-chat-plugin 有焦点状态机。
+   > 前半句（"不在 Kira 里"）**是对的**：KiraAI 的整套群聊判定只有 127 行，零跨群、零情绪状态。
+   > 准确说法：我们做的是**群级连续打分 + 显式 reason 的门控表**，概念不是首创。
 
 ### 4.2 缺的机制
 
@@ -3962,3 +3972,63 @@ necessity 那段的注释担心的正是这件事（「若在这里返回 ignore
 - 已有的历史（记忆 / 画像）**不会被追溯删除**；要清就单独说一声（`config action=memory_forget`
   已经能做群维度，用户维度要另加）。
 - 群级别没有加黑名单：群不参与回复已有 `none`（未配置即忽略）。
+
+---
+
+## 22. 血统审计：我们这些机制分别抄了谁（含许可缺口）
+
+使用者一句「我们其实谁都抄，还抄了 kira 的」触发的盘点。产出：新文档 **`docs/UPSTREAM-LINEAGE.md`**。
+
+### 22.1 做法
+
+- **全量扫描**插件树 379 个文本文件，按上游项目名逐个统计命中（脚本 `.dsh-artifacts/audit-lineage.py`，
+  完整输出 `.dsh-artifacts/lineage-audit.txt`）—— 这一步的作用是**把"抄了"和"只是读过"一刀切开**。
+- KiraAI 从第一轮的"DeepWiki + 12 个源文件"升级为 **v2.34.7 全量 clone**（405 文件，`ghfast.top` 通路）
+  逐段核对；另派两个子代理做机制勘察与保真度取证。
+- 判据四档：**照搬 / 改写 / 自撰 / 调研未采用**（定义见文档 §0）。
+
+### 22.2 结论（要点）
+
+- **代码级借鉴只有三条线**：MaiBot 的 necessity 打分表（常量逐字、注释标了出处，阈值 40 是有意分叉）、
+  **KiraAI 的提示词骨架 + `<msg>` 输出协议**、宿主本体的连接层副本（有 `LOCAL-PATCH` + `PROVENANCE.md`）。
+- **AstrBot / LangBot / ChatLuna / llmchat / Yunzai / NoneBot / bl-chat / OpenClaw / MoFox 九家
+  代码零命中**（AstrBot 只有一条描述协议形态的注释）—— **ROUND2 那 25 条建议目前一条都没进代码**，
+  那份文档是待办清单，不是现状说明。
+- **新发现（最要紧）**：`prompt_fragment_templates.py:1-83` 的提示词骨架与 KiraAI
+  `core/prompts/agent_tmpl.py:1-162` 逐段对得上：**8 个段落标题逐字相同、4 处整句逐字或近逐字**
+  （Persona 正文 / Time 正文 / Attention 首句 / Role 正文），Chat Environment 的六个字段同序。
+  这是**受版权保护的表达**层面的重合 —— 与"抄了 `@100/引用80` 这种事实性常数"是两件事。
+- **反面澄清**：`kira_unified` 那段"该不该回"的文字**是我们自己写的**（上游全仓相关词零命中）；
+  真正借的是 KiraAI `group_chat_prompt` 的**空槽位**与注入位置。旧文档把它记成"Kira 场景/意愿"
+  是归因错误，已在 `UPSTREAM-LINEAGE.md` §4.4 更正。
+- 另外查实：KiraAI 的群聊判定全部只有 127 行（`chat/main.py`），**零情绪状态、零跨群仲裁、
+  记忆是全局单文件跨群共享**；"未被提及就按 0.1 插话"这句话漏了前提（两个开关默认都是关的）。
+
+### 22.3 写错的标注（已改，全部只动注释/docstring）
+
+五处：`message_chain.py`（`.repr` 的用途与上游不同：上游是日志，我们兼作 prompt 注入）、
+`reply_postprocess_node.py:38` 与 `pipeline_models.py:310`（"KiraAI-style" 过宽：标签集合双向差异、
+且"`<msg>` 内裸文本"两边行为相反 —— 上游禁止、我们显式接受）、`scene_prompt_templates.py:65`
+（"Kira 风格"只在协议那一半成立）、`__init__.py:616`（引用图 VLM 只是同族做法，上游有专用槽/缓存/`native`）。
+
+**证据**：`verify-comment-only-edit.py` 把两版 AST 的 docstring 归一化后逐字符比较，
+5/5 文件完全相等 ⇒ **可执行代码零改动**；随后全量 **1219 passed**、ruff **All checks passed**。
+
+### 22.4 顺带修掉的两个认知
+
+- **ROUND2 §3.2 第 2 条结案**：necessity 的频率因子**确实**是 `0.5 + 0.5×min(1.0, ·)`
+  （`reply_necessity.py:258`），与 MaiBot **同式**；能到 1.8 的是**另一个**旋钮
+  （`attention_frequency_min/max_multiplier`，作用在注意力涨速）。**两个"频率"同名不同物，别混调。**
+- **「注意力这套跨群机制是插件原创的」（§4.1 第 3 条）写虚了**：MaiBot 有 `focus_mode` /
+  `focus_groups`（跨聊天焦点竞争）、AstrBot 生态插件有用户级注意力、bl-chat 有焦点状态机。
+  准确说法：我们做的是**群级连续打分 + 显式 reason 的门控表**，概念不是首创。
+
+### 22.5 未做的（等使用者拍板）
+
+- 插件仓库**没有 LICENSE**，也没有 CREDITS/NOTICE；查实的许可：**KiraAI = AGPL-3.0**（+ 另附 EULA）、
+  **MaiBot = GPL-3.0**、**本体 = Apache-2.0**、**NapCat = Limited Redistribution**（我们只运行时下载、
+  不再分发）。要不要加 LICENSE、§22.2 那批逐字文字是**改写**还是**署名保留**，见
+  `UPSTREAM-LINEAGE.md` §5.3（三个选项）。
+- **低概率行为问题**：解析器不认自闭合 `<msg/>`（会掉进纯文本回退、记为"回复过"，到投递层才被
+  标签清洗剥成空串而不发）。模型没被教这个写法所以罕见，但兜底应该是"自闭合 = 空回复"。
+  建议先补一条单测钉住现状，再改入口正则。
