@@ -376,6 +376,29 @@ MISC = (
     SettingSpec("necessity_human_pair_min_streak", "int", 3,
                 floor=1, ceiling=100,
                 description="连续多少条「没在跟她说话」才算「这群人在互相聊」"),
+    # ── 「谁在跟谁说话」（addressee，见 `addressing.py`）──
+    # 与上面两条同类：**调参项不是日常开关**，所以不 saveable、不给 UIInput
+    # （saveable 键有硬契约：必须同时出现在 dashboard 快照与 save_settings 参数里，
+    # 两条看门狗盯着）。改 `business_config.json` 生效。
+    #
+    # 减分**默认就生效**（30）—— 这点与 `necessity_human_pair_penalty` 的 0.0 相反，
+    # 理由写在 `score_necessity` 的 docstring：人对人 streak 是要攒的结构量，而
+    # "这条明确 @ 了别人 / 引用的是别人"是**逐条可判的事实**，拿事实减分不必等数据。
+    # 取 30 而不是 40：阈值恰好是 40，罚满就等于硬门控（那是另一个开关），
+    # 30 的语义是「要靠内容分或积压压力把这条捞回来」。
+    SettingSpec("addressee_penalty", "float", 30.0,
+                floor=0.0, ceiling=100.0,
+                description="明确在跟别人说话（@别人 / 引用别人）时扣多少分（0=不扣）"),
+    # AstrBot 的唤醒判据：群聊里**首段**是 At、但 @ 的不是她也不是全体 → 不唤醒。
+    # 默认**关**：真机里"@ 了别人但话是问她的"并不罕见，硬拦会误伤；
+    # 默认只走上面的减分，想复刻 AstrBot 就打开这个开关。
+    SettingSpec("addressee_ignore_first_at_other", "bool", False,
+                description="首段 @ 的是别人时直接不唤醒（默认只减分，不硬拦）"),
+    # 群里怎么叫她。本体的名字（`get_character_data()[1]`）**自动生效**，
+    # 不需要在这里抄一遍 —— 抄一遍就会随本体改名人设而漂移。这里只补
+    # "群里怎么叫她"那部分（猫娘 / 喵喵 / 小名），本体不可能知道。
+    SettingSpec("addressee_names", "list", [],
+                description="她的别名/昵称（本体人设名字之外的叫法，命中即视为在叫她）"),
     SettingSpec("normal_relay_probability", "float", 0.1, saveable=True,
                 floor=0.0, ceiling=1.0, description="save：转发给管理员的概率",
                 handler="probability",
@@ -427,10 +450,11 @@ MISC = (
     # 下次保存配置时自然消失。见 docs/SESSION-HANDOFF.md §24。
     SettingSpec("neko_dynamic_idle_timeout_seconds", "float", 10.0, floor=0.0,
                 description="已废弃（注意力系统下不再使用）"),
-    SettingSpec("neko_dynamic_waking_users", "list", [],
-                description="已废弃（改用 attention + backlog_labels）"),
-    SettingSpec("neko_dynamic_waking_keywords", "list", [],
-                description="已废弃（改用 backlog_labels 的 keywords）"),
+    # 曾在这里的 `neko_dynamic_waking_users` / `neko_dynamic_waking_keywords` 已删除
+    # （2026-09-27）：它们的描述一直写着「已废弃（改用 attention + backlog_labels）」，
+    # 却留在表里当着两个"看起来能调、实际零消费方"的旋钮。昵称/别名那一半能力
+    # 现在由 `addressee_names` + `addressing.py` 正式接管。
+    # 老配置里的残留值由 `config_store._LEGACY_ZOMBIE_KEYS` 清掉。
     # ── 回溯补回 ──
     SettingSpec("retroactive_review_max_messages", "int", 30, saveable=True,
                 floor=1, description="save：回溯最多取多少条被忽略消息",

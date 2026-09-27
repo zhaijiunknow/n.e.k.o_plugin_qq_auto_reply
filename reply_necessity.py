@@ -30,6 +30,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from . import addressing
+
 # ── 打分常量（MaiBot reply_necessity 对照；注释标出处）─────────────────────────
 AT_SCORE = 100                 # MaiBot: has_at → 100
 MENTION_SCORE = 80             # MaiBot: has_mention → 80
@@ -52,6 +54,28 @@ PRESSURE_IDLE_BONUS = 15        # 有积压且已到平均间隔 → 补分
 SELF_RATIO_FREE = 0.25          # 近窗口内自己发言占比 ≤ 此值不罚
 SELF_RATIO_FULL = 0.60          # 占比 ≥ 此值罚满
 SELF_PENALTY_MAX = 25.0         # 存在感惩罚上限
+
+# ── addressee（谁在跟谁说话）────────────────────────────────────────────────
+#
+# 见 `addressing.py`。这两项与上面那批 MaiBot 常数**不是同一种东西**：那批是"她多想
+# 聊这个群"的量，这两项是"这句话是不是冲她来的"的量 —— 一个减分、一个加分，都作用在
+# 同一个总分上，但依据完全不同（所以进 breakdown 的字段也分开，便于日志归因）。
+#
+#: 「明确在跟别人说话」（@别人 / 引用别人）的默认减分。
+#:
+#: 取 30 而不是 40 的理由：阈值恰好是 40，罚到 40 就等于"这类消息一律不接"，那是硬
+#: 门控、不是减分（硬门控另有一个开关，见 `attention_gate_service`）。30 的语义是
+#: 「她要靠内容分或积压压力把这一条捞回来」——一条"@了别人但顺手问她"的消息仍然接得住。
+ADDRESSED_ELSEWHERE_PENALTY_DEFAULT = 30.0
+
+#: 文本里出现她的名字/别名（没 @ 她）时的**内容分**加成。
+#:
+#: 刻意不进"相关分"阶梯（那 5 个常数是 MaiBot 的、注释标了出处，动它会同时改变
+#: 阈值 40 的标定）：它加在内容分里，于是"叫了她的名字"这件事**恰好压在阈值线上**
+#: （40 × 频率因子 0.5~1.0 = 20~40）—— 群够活跃（factor 拉满）时她独自过线，
+#: 否则要靠提问/请求/积压把它推过去。群里提到她名字未必是在叫她，这个量级就是
+#: 那个判断的体现；觉得太敏感就在 `addressee_names` 里少放几个别名。
+NAMED_BOT_SCORE = 40
 
 #: 判定阈值默认值。
 #:
@@ -149,6 +173,13 @@ class NecessitySignals:
     #: 2026-09-27 先把它算出来、写进日志，**默认不参与打分**（见 `score_necessity`
     #: 的 `human_pair_penalty` 默认 0.0）—— 等真机数据够了再决定扣多少。
     human_pair_streak: int = 0
+    #: 「谁在跟谁说话」的结论档位（`addressing.KIND_*`）与指向对象。
+    #: 空串 = 没有结论（开放平台通道 / 旁路调用 / 旧调用方）→ 完全退回改动前的行为。
+    addressee_kind: str = ""
+    addressee_target: str = ""
+    #: 段首 @ 的就是别人（`addressing.AddresseeVerdict.first_at_other`）。
+    #: 只用于日志措辞：减分不看它（@ 别人无论在第几段都要减），硬门控在门控层。
+    addressee_first_at_other: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +190,8 @@ class NecessityBreakdown:
     presence: int = 0
     #: 「人对人」惩罚（默认 0：先只出数据，见 NecessitySignals.human_pair_streak）
     human_pair: int = 0
+    #: addressee 净增减（负数=明确在跟别人说话；正数=文本里叫了她的名字）
+    addressee: int = 0
     frequency_factor: float = 1.0
     raw: float = 0.0
     score: int = 0
@@ -253,6 +286,7 @@ def score_necessity(
     frequency: float = 1.0,
     human_pair_penalty: float = 0.0,
     human_pair_min_streak: int = 3,
+    addressee_penalty: float = ADDRESSED_ELSEWHERE_PENALTY_DEFAULT,
 ) -> NecessityVerdict:
     """给一条消息打分并给出 trigger / wait。
 
@@ -263,17 +297,26 @@ def score_necessity(
     真机日志里能看到 `人对人×N`，等数据够了再决定扣多少（改一个配置键即可，
     不用改代码）。这一点是刻意的：阈值 40 恰好等于焦点分 40，任何"顺手也调一下"
     都会让必要性的行为一次性变动两处，事后分不清是谁的功劳。
+
+    ``addressee_penalty`` **默认就生效**（与上面那条相反，是有意的）：`human_pair_streak`
+    只知道"这群人连着几条没跟她说话"，而 addressee 知道**这条消息明确指向了别人**
+    （@别人 / 引用别人）—— 前者是需要慢慢攒的结构性信号，后者是逐条可判的事实，
+    拿事实去减分不需要再等数据。信号为空串（没有结论）时这一项恒为 0。
     """
     relevance, rel_reason = _relevance(signals)
     content, content_reason = _content(signals)
     pressure, pressure_reason = _pressure(signals)
     presence, presence_reason = _presence(signals)
     pair_penalty, pair_reason = _human_pair(signals, human_pair_penalty, human_pair_min_streak)
+    addressee_delta, addressee_reason = _addressee(signals, addressee_penalty)
 
     reasons = tuple(
-        r for r in (rel_reason, content_reason, pressure_reason, presence_reason, pair_reason) if r
+        r for r in (
+            rel_reason, content_reason, pressure_reason, presence_reason,
+            pair_reason, addressee_reason,
+        ) if r
     )
-    raw = float(relevance + content + pressure + presence - pair_penalty)
+    raw = float(relevance + content + pressure + presence + addressee_delta - pair_penalty)
     # 频率因子：把「这个群我本来就不怎么说话」乘进总分（MaiBot 同款 0.5~1.0）。
     factor = 0.5 + 0.5 * max(0.0, min(1.0, float(frequency or 0.0)))
     score = max(0, int(round(raw * factor)))
@@ -286,12 +329,36 @@ def score_necessity(
         pressure=pressure,
         presence=presence,
         human_pair=-pair_penalty,
+        addressee=addressee_delta,
         frequency_factor=factor,
         raw=raw,
         score=score,
         reasons=reasons,
     )
     return NecessityVerdict(decision=decision, score=score, breakdown=breakdown)
+
+
+def _addressee(signals: NecessitySignals, penalty: float) -> tuple[int, str]:
+    """「谁在跟谁说话」的净增减（与它的可读原因）。
+
+    两件事共用一个组件，因为它们是同一个判断的两面：
+
+    - 明确在跟别人说话（``@别人`` / ``引用别人``）→ 减 ``penalty``；
+    - 文本里叫了她的名字（没 @）→ 加 ``NAMED_BOT_SCORE``。
+
+    **只减到"能减"为止，不把分数压成硬零**：真正的"这条根本不该接"由门控层的
+    可选硬门控负责（`addressee_ignore_first_at_other`），打分器只表达倾向。
+    """
+    kind = str(getattr(signals, "addressee_kind", "") or "").strip()
+    if kind == addressing.KIND_NAMED_BOT:
+        return NAMED_BOT_SCORE, "叫名字"
+    if kind in addressing.POINTED_ELSEWHERE:
+        target = str(getattr(signals, "addressee_target", "") or "").strip()
+        reason = "指向别人" if not target else f"指向别人({target})"
+        if getattr(signals, "addressee_first_at_other", False):
+            reason = f"{reason}·首段@"
+        return -int(round(max(0.0, float(penalty or 0.0)))), reason
+    return 0, ""
 
 
 def _human_pair(

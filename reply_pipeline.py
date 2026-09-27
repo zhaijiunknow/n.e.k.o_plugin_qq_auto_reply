@@ -5,6 +5,7 @@ import re
 import time
 from typing import Any
 
+from . import addressing
 from .pipeline_models import (
     BUFFER_INTERNAL_SOURCE_KINDS,
     QQDeliveryResult,
@@ -200,6 +201,9 @@ class QQReplyPipelineRunner:
             quoted_message_id=getattr(request, "quoted_message_id", "") or "",
             mentions_other_user=getattr(request, "mentions_other_user", False),
             mentions_all=getattr(request, "mentions_all", False),
+            # 「谁在跟谁说话」的结论（门控算好的那份）。请求里没有结论时它是 None，
+            # 提示词层据此退回改动前的 6 个标签 —— 见 `addressing.verdict_from_request`。
+            addressee=addressing.verdict_from_request(request),
             reply_context=getattr(request, "reply_context", "") or "",
             force_reply=request.force_reply,
             source_kind=getattr(request, "source_kind", ""),

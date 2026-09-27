@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
+from . import addressing
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import QQReplyRequest
 
@@ -755,6 +756,12 @@ class QQMessageDispatcher:
             is_reply_to_bot = message.get("is_reply_to_bot", False)
             current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
             quoted_message_id = str(message.get("quoted_message_id") or "").strip()
+            # 被引用的那条是**谁**发的：连接器解析回复段时就取出来了
+            # （`_extract_interaction_context` 的 `quoted_sender_id`），此前从没被读过。
+            quoted_sender_id = str(message.get("quoted_sender_id") or "").strip()
+            # 原始段（数组或 CQ 串）：判"首段 @ 的是谁"要用段序，而连接器给的是布尔量。
+            # 取段的办法复用 QQMessageEnricher._message_segments（"段在哪个键下"的唯一真相）。
+            segments = addressing.segments_of(message, getattr(self.plugin, "enricher", None))
             mentioned_user_ids = [
                 str(user_id or "").strip()
                 for user_id in list(message.get("mentioned_user_ids") or [])
@@ -802,6 +809,8 @@ class QQMessageDispatcher:
                 user_nickname=user_nickname,
                 current_message_id=current_message_id,
                 quoted_message_id=quoted_message_id,
+                quoted_sender_id=quoted_sender_id,
+                segments=segments,
                 mentioned_user_ids=mentioned_user_ids,
                 mentions_other_user=mentions_other_user,
                 mentions_all=mentions_all,
@@ -910,6 +919,8 @@ class QQMessageDispatcher:
         user_nickname: Optional[str] = None,
         current_message_id: str = "",
         quoted_message_id: str = "",
+        quoted_sender_id: str = "",
+        segments: Any = None,
         mentioned_user_ids: Optional[list[str]] = None,
         mentions_other_user: bool = False,
         mentions_all: bool = False,
@@ -943,6 +954,10 @@ class QQMessageDispatcher:
                     permission_mgr.get_permission_level(str(sender_id))
                 )
         force_reply = False
+        # 「谁在跟谁说话」的结论。门控跑得到就有值，跑不到（新人入群这类绕过门控的
+        # 合成轮、没有门控服务的轻量宿主）保持 None → 请求里三个字段留空 →
+        # 提示词层退回改动前的 6 个标签。
+        addressee: Any = None
         # 新人入群：绕过门控，必定让猫娘欢迎
         if synthetic_source == "group_join_notice":
             force_reply = True
@@ -957,6 +972,27 @@ class QQMessageDispatcher:
                 sender_nickname=user_nickname or "",
                 timestamp=message_timestamp,
                 is_reply_to_bot=is_reply_to_bot,
+                # 「谁在跟谁说话」的原料：连接器早就算好了这三个字段
+                # （`_extract_interaction_context`），此前插件侧一个都没读。
+                mentioned_user_ids=list(mentioned_user_ids or []),
+                mentions_all=mentions_all,
+                quoted_sender_id=quoted_sender_id,
+                segments=segments,
+            )
+            # 结论再算一次（纯函数），这次是给**提示词层**用的：此刻
+            # `msgs_after_reply` 已被 evaluate 推进过，正是"她刚说完之后的第一条"
+            # 那个口径。门控内部那次是为了打分与硬门控 —— 两处同一个 resolver，
+            # 不会漂移。
+            addressee = self.plugin.attention_gate_service.resolve_addressee_for(
+                message_text=message_text,
+                is_at_bot=is_at_bot,
+                is_reply_to_bot=is_reply_to_bot,
+                mentions_all=mentions_all,
+                mentioned_user_ids=list(mentioned_user_ids or []),
+                quoted_message_id=quoted_message_id,
+                quoted_sender_id=quoted_sender_id,
+                segments=segments,
+                group_id=group_id,
             )
             # 群友复读 → 跟着复读一次（>5 个不同的人 + 这个群是焦点才触发，
             # 见 repeat_echo_service）。刻意放在门控**之后**（那条 evaluate
@@ -1016,6 +1052,7 @@ class QQMessageDispatcher:
                 group_speaker_permission_level_at_receipt
             ),
             speaker_channel_at_receipt=speaker_channel_at_receipt,
+            **addressing.verdict_kwargs(addressee),
         )
         if synthetic_source:
             # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，

@@ -64,8 +64,10 @@ FROZEN_DEFAULTS: dict[str, object] = {
     # 调 attention_gate_service）。现在注意力账本恒开（attention_service._enabled），
     # 是否门控由调用方按连接模式决定。
     "neko_dynamic_idle_timeout_seconds": 10.0,
-    "neko_dynamic_waking_users": [],
-    "neko_dynamic_waking_keywords": [],
+    # 有意删除（不在此快照里）：`neko_dynamic_waking_users` /
+    # `neko_dynamic_waking_keywords`（原默认 []）。两条都是"已废弃"的墓碑键，
+    # 却留在表里当着零消费方的旋钮；昵称/别名能力已由 `addressee_names` +
+    # `addressing.py` 接管，键进 `_LEGACY_ZOMBIE_KEYS`，见 `test_waking_keys_are_gone`。
     "retroactive_review_max_messages": 30,
     "retroactive_review_max_reply": 5,
     "group_buffer_enabled": True,
@@ -381,6 +383,29 @@ def test_reply_strategy_setting_is_gone():
     assert "strategy_mode" not in settings_schema.defaults(), "策略模式又写进默认值了"
     assert not hasattr(QQAutoReplyConfigStore, "_normalize_strategy_mode"), "归一化助手被加回来了"
     assert not hasattr(QQAutoReplyConfigStore, "VALID_STRATEGY_MODES"), "枚举集合被加回来了"
+
+
+def test_waking_keys_are_gone():
+    """两条 `neko_dynamic_waking_*` 墓碑键的删除契约（2026-09-27）。
+
+    它们的描述一直写着「已废弃（改用 attention + backlog_labels）」，但键留在真源表
+    里 —— 于是配置里挂着两个**看起来能调、实际全仓零消费方**的旋钮（与
+    `strategy_mode`、`enable_group_attention` 同一类假旋钮）。
+
+    昵称/别名那一半能力现在由 `addressee_names` + `addressing.py` 正式接管：
+    本体的名字自动生效，用户只需补别名。谁把这两条加回来，这条会红。
+    """
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
+
+    for key in ("neko_dynamic_waking_users", "neko_dynamic_waking_keywords"):
+        assert key not in settings_schema.BY_KEY, f"{key} 被加回真源表了"
+        assert key not in settings_schema.defaults(), f"{key} 又写进默认值了"
+        assert key in QQAutoReplyConfigStore._LEGACY_ZOMBIE_KEYS, (
+            f"{key} 不在僵尸键名单里 —— 老配置文件里的残留值会被原样传下去"
+        )
+    # 新机制的键在位（删旧的不是把功能删掉）。
+    assert "addressee_names" in settings_schema.BY_KEY
+    assert "addressee_penalty" in settings_schema.BY_KEY
 
 
 def test_legacy_strategy_key_is_dropped_on_load(tmp_path):

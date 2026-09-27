@@ -127,7 +127,7 @@ if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
 | @ bot | ✅ | ✅ | ✅（`at`，删 @ 段） | ✅（`allowAtReply`，比对元素 id） | ✅（`event.is_tome()`） | ✅ | ✅（但通道上恒真） |
 | @ 全体 | — | ✅（`ignore_at_all` 可关） | — | — | — | ⚠️ **误判为提及 bot**【原文 `qq.py:564`】 | `mentions_all`（open_plat 里恒 False） |
 | 引用 bot 消息 | — | ✅ | — | ⚠️ `allowQuoteReply` 默认 **false** | — | ✅（`type=="reply"` 比 `user_id`） | `is_reply_to_bot`（在门控链里，当前不可达） |
-| **首段 @ 别人 → 不唤醒** | — | ✅ | — | — | — | — | ❌ |
+| **首段 @ 别人 → 不唤醒** | — | ✅ | — | — | — | — | ⚠️ **2026-09-27 补**：判据已建（`addressing.first_at_target`），硬门控开关默认**关**（默认只减分），见 SESSION-HANDOFF §33 |
 | 昵称/别名 | `alias_names`（`is_mentioned_bot_in_message`，当前版本该函数在 heartflow 里被注释掉了） | — | — | ✅ `isNickname`(默认 true，**开头**匹配) / `isNickNameWithContent`(默认 false，任意位置) | — | ✅（`waking_words` 子串） | ❌ |
 | 前缀唤醒 | — | ✅ `wake_prefix` | ✅ `prefix` | ✅（命令/预设） | ✅ `ignore_prefixes`（反向） | ❌ | 无 |
 | 正则 | — | — | ✅ `regexp` | — | — | — | backlog 标签关键词 |
@@ -150,7 +150,7 @@ if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
 | 多维评分 | — | — | ✅ 五维加权 `0.25/0.2/0.2/0.15/0.2` + 阈值 `0.6` + 权重可配 | — | — | ⚠️ 注意力单标量 0–10 |
 | 情绪/心情 | ✅（`emotion` 影响进退速率与抢/让焦点） | ❌ | — | — | — | ✅ 9 档倍率（半活，见 §7） |
 | 「上次回复后群里怎么反应了」 | ✅ retro review（回溯补回） | ⚠️ Follow-up 门票（同发送者才抢占） | ✅ **接话反馈**：上次回复后 ≥3 条 → 注入「（上次回复后群里进行了热烈讨论）」；0 条 → 「（上次回复后无人接话）」 | — | — | ❌（只有回溯补回，不喂回评分） |
-| 谁在跟谁说话（addressee） | ⚠️ 仅 `is_mentioned` 标记 + `⚠️[DIRECTED AT YOU]` 风格提示（AstrBot 有） | ✅ 提示层标记 | ❌ | ⚠️ 非 bot 的 @ 渲染成 `<at name=... id=.../>` | ❌ | ❌（只有 `mentions_other_user` 布尔） |
+| 谁在跟谁说话（addressee） | ⚠️ 仅 `is_mentioned` 标记 + `⚠️[DIRECTED AT YOU]` 风格提示（AstrBot 有） | ✅ 提示层标记 | ❌ | ⚠️ 非 bot 的 @ 渲染成 `<at name=... id=.../>` | ❌ | ✅ **2026-09-27 落地**：`addressing.py` 八档判据（含"被引用的是谁"与段序），进打分与门控，见 SESSION-HANDOFF §33。**仍未做**：用户级注意力、话题级漂移 |
 
 ---
 

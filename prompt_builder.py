@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from . import addressing
 
 
 class QQPromptBuilder:
@@ -90,6 +93,7 @@ class QQPromptBuilder:
         quoted_message_id: str = "",
         mentions_other_user: bool = False,
         mentions_all: bool = False,
+        addressee: "addressing.AddresseeVerdict | None" = None,
     ) -> str:
         if is_group and not group_facing:
             return self.plugin._build_group_turn_message(
@@ -104,6 +108,7 @@ class QQPromptBuilder:
                 mentions_other_user=mentions_other_user,
                 mentions_all=mentions_all,
                 first_reply_after_own_speech=self._is_first_reply_after_her_own_speech(group_id),
+                addressee=addressee,
             )
         return message
 

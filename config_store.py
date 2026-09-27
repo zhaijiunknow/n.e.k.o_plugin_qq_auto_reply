@@ -155,6 +155,12 @@ class QQAutoReplyConfigStore:
         # 也就是个假旋钮：界面选不动、代码里恒真。与 enable_group_attention 一样，
         # 删掉的是**配置键**而不是某个功能 —— 回复策略就是动态注意力那一条路。
         "strategy_mode",
+        # neko_scene 时代的两条"唤醒"键（2026-09-27）。它们的描述一直写着
+        # 「已废弃（改用 attention + backlog_labels）」，但键本身留在 schema 里 ——
+        # 于是配置里挂着两个看起来能调、实际零消费方的旋钮。昵称/别名那一半能力
+        # 现在由 `addressee_names` + `addressing.py` 正式接管，这两条没有存在理由了。
+        "neko_dynamic_waking_users",
+        "neko_dynamic_waking_keywords",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现

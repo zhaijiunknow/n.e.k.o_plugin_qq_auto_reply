@@ -5069,3 +5069,96 @@ different loop`（一天 6 条）。成因是重载后 `self._napcat_process` �
    `_choose_focus_state` 的挑战者门槛（现在只要求"更高分"，没有滞后量）。
 
 全量 **1383 passed**；两道 ruff 门全过。
+
+---
+
+## 33. 「谁在跟谁说话」（addressee）接进打分与门控
+
+> 使用者 2026-09-27 拍板：「**谁在跟谁说话需要优先做**」。三项决策也由使用者当场定下：
+> ① 默认**强减分**、另给开关可切硬门控；② 昵称/别名**一起做**，现有两个死键接上或删掉；
+> ③ 本轮**只管 NapCat 通道**。
+
+### 33.1 现状：不是没数据，是没接线
+
+改之前 addressee 只以 **6 个互斥字符串**活在提示词里（`prompting._build_group_turn_message`），
+**不进任何分数、不进任何门控**：一条明确「@ 了别人」的消息，必要性相关分与「谁都没提她」
+完全一样（都是 `PLAIN_SCORE = 0`），只能靠模型自己读那句"不要自作多情"收敛。
+调研文档 §1.6 也指向同一件事（preceding-speaker 启发式在长会话里 Acc 仅 13.08%）。
+
+**真正的发现是原料早就在线上**：`_vendor/connection_onebot/onebot_client.py:232-284` 的
+`_extract_interaction_context` 一直在算
+
+| 字段 | 含义 | 插件侧改动前的消费方 |
+|---|---|---|
+| `quoted_sender_id` | **被引用的那条是谁发的** | **零**（全仓 0 命中） |
+| `mentioned_user_ids` | @ 了哪些人（不只是布尔） | 只进了 trace，没有消费者 |
+| `mentions_bot` | 她在不在 @ 名单里 | 零 |
+
+`attention_gate_service._record_human_pair` 的 docstring 甚至写着「NapCat 侧要拿被引用者的
+uid 得额外 `get_msg`」——**这个前提是错的**，uid 就在回复段的 `data.user_id` 里。那句
+docstring 本次一并改对（保留原文作为"错在哪"的记录）。
+
+### 33.2 判据阶梯（新模块 `addressing.py`）
+
+`@她 > 引用她 > @全体 > 引用别人 > @别人 > 叫她的名字 > 她刚说完的第一条 > 群内闲聊`。
+前 3 档＝冲她来的，4/5 档＝明确指向别人（`POINTED_ELSEWHERE`），6/7 档＝可能是她。
+结论做成**只读的 `AddresseeVerdict`**（含 `first_at` 段序与可读 `evidence`），
+门控／打分／提示词三层共用同一份 —— 各算一遍就会漂移。
+
+- **段序**：连接器只给布尔量，"**首段** @ 的是谁"得自己从原始段读
+  （`first_at_target`，数组段与 CQ 串两种形态都认；复用
+  `QQMessageEnricher._message_segments` 这一"段在哪个键下"的唯一真相）。
+- **昵称/别名**：本体的名字自动生效（`get_character_data()[1]`，60s TTL 缓存），
+  用户只补 `addressee_names`。**单字名不参与匹配**（`NAME_MIN_CHARS = 2`）——
+  误判的代价是她对每句闲聊都当点名，漏判只是退回 LLM 自判。
+
+### 33.3 三个决定怎么落的
+
+1. **减分默认生效、硬门控默认关**（`addressee_penalty=30` / `addressee_ignore_first_at_other=False`）。
+   减分与 `necessity_human_pair_penalty` 的默认 0 刻意相反：人对人 streak 是要攒的**结构量**，
+   而"这条明确 @ 了别人"是**逐条可判的事实**，拿事实减分不必等数据。取 30 而不是 40：
+   阈值恰好是 40，罚满就等于硬门控（那是另一个开关）。
+2. **两条墓碑键删除**：`neko_dynamic_waking_users` / `neko_dynamic_waking_keywords`。
+   它们的描述一直写着「已废弃（改用 attention + backlog_labels）」，却留在真源表里当着
+   零消费方的旋钮（与 `strategy_mode`、`enable_group_attention` 同类假旋钮）。键进
+   `_LEGACY_ZOMBIE_KEYS`（老配置残留值下次 load/save 清掉），删除契约由
+   `test_waking_keys_are_gone` 钉住。`neko_dynamic_idle_timeout_seconds` **没动** ——
+   它属于另一件事，且 `verify_no_reply_strategy_fail_to_pass.py` 拿它当变异锚点。
+3. **开放平台通道一律给 `None`**：那条通道每条群消息本来都是 @ 她的（`evaluate` 第一步就
+   `no_attention_needed` 返回），硬套这套判据只会把已有的引用信息误当信号。给 `None` ＝
+   退化成改动前的行为，**不是"另一份实现"**。
+
+### 33.4 改动面
+
+| 文件 | 改动 |
+|---|---|
+| `addressing.py`（新） | 判据阶梯、段序、名字清单、文案渲染、请求字段往返 |
+| `reply_necessity.py` | `NecessitySignals` 三个新字段、`NecessityBreakdown.addressee`、`_addressee()`、`addressee_penalty` 参数 |
+| `attention_gate_service.py` | `evaluate()` 收 4 个新原料、`resolve_addressee_for()`（唯一入口）、3.6 可选硬门控、`[Addressee]` 判定日志、名字 TTL 缓存、`_record_human_pair` docstring 更正 |
+| `message_dispatcher.py` | 群分支取出 `quoted_sender_id` 与原始段，传给门控与请求 |
+| `pipeline_models.py` | `QQReplyRequest` 三个字段（无结论时为空串） |
+| `reply_pipeline.py` / `reply_context_node.py` / `prompt_builder.py` / `prompting.py` | 结论透传到文案层：有结论用更具体的措辞，**没结论逐字退回老标签（一行没删）** |
+| `settings_schema.py` / `config_store.py` | 三个新键（不 saveable、无 UI，与 `reply_necessity_threshold` 同类）；两条墓碑键删除 + 僵尸名单 |
+| `tests/test_qq_addressee.py`（新） | 44 条：判据阶梯、段序、名字、减分翻盘、硬门控开关与作用域、文案三层透传 |
+
+### 33.5 证据
+
+- 新文件 **44 passed**；全量 **1452 passed**（改动前基线 1407，差值 = 44 + 1 条删除契约）。
+- `neko-plugin check -r qq_auto_reply`：**check --release passed**，`tests=passed`，
+  `package_sha256=e2f0d67…`。
+- ruff（`--ignore-noqa --isolated --select E4,E7,E9,F,I`）：**新文件零告警**；
+  仓库里另有 35 条 I001 是本地 ruff 0.15.4 与 CI 钉的 0.12.4 的版本差（未改动的
+  `voice_reply_service.py` 等同样命中），不是本次引入。
+
+### 33.6 这次**没做**的（边界，别当成已解决）
+
+- 硬门控默认**关**：想复刻 AstrBot「首段 @ 别人就不唤醒」要把
+  `addressee_ignore_first_at_other` 打开。
+- 减分是**倾向**不是硬零：指别人的消息只要积压/内容够重仍然接得住（有测试钉着
+  这个"捞得回来"的行为）。
+- 名字命中只覆盖"本体名字 + `addressee_names`"；**没做** alias 的模糊匹配、
+  没做"@ 别人但 @ 错了其实在说她"的推断。
+- 三者正交的另外两维仍然缺：**用户级注意力**（AstrBot 那套）与 **话题级漂移**
+  （MaiBot `attention_drift`），以及 `focus_groups`（姊妹群互通焦点）。
+- 开放平台通道的引用/昵称信息没有接（本轮范围外）。
+

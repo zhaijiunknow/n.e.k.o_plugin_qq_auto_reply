@@ -12,11 +12,20 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
+from . import addressing
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import backlog_sender_label
-from .reply_necessity import DEFAULT_TRIGGER_SCORE, GroupSpeechTracker, IdleBackoff, NecessitySignals, score_necessity
+from .reply_necessity import (
+    ADDRESSED_ELSEWHERE_PENALTY_DEFAULT,
+    DEFAULT_TRIGGER_SCORE,
+    GroupSpeechTracker,
+    IdleBackoff,
+    NecessitySignals,
+    score_necessity,
+)
 
 
 class GateDecision:
@@ -80,6 +89,7 @@ class QQAttentionGateService:
 
     def _evaluate_necessity(
         self, *, group_id: str, sender_id: str, message_text: str, is_reply_to_bot: bool, now: float,
+        addressee: addressing.AddresseeVerdict | None = None,
     ):
         """组装信号并打分。信号全部来自本进程已有的状态，不额外查库。"""
         threshold = self._necessity_threshold()
@@ -101,6 +111,9 @@ class QQAttentionGateService:
             self_ratio=self._speech.self_ratio(group_id, now=now),
             idle_reached_average=self._speech.last_gap_seconds(group_id, now=now) >= 30.0,
             human_pair_streak=self._human_pair_streak.get(str(group_id or "").strip(), 0),
+            addressee_kind=(addressee.kind if addressee is not None else ""),
+            addressee_target=(addressee.target_id if addressee is not None else ""),
+            addressee_first_at_other=bool(addressee is not None and addressee.first_at_other),
         )
         return score_necessity(
             signals,
@@ -108,6 +121,7 @@ class QQAttentionGateService:
             frequency=frequency,
             human_pair_penalty=self._human_pair_penalty(),
             human_pair_min_streak=self._human_pair_min_streak(),
+            addressee_penalty=self._addressee_penalty(),
         )
 
     def _human_pair_penalty(self) -> float:
@@ -125,12 +139,115 @@ class QQAttentionGateService:
         except (TypeError, ValueError):
             return 3
 
+    def resolve_addressee_for(
+        self,
+        *,
+        message_text: str,
+        is_at_bot: bool = False,
+        is_reply_to_bot: bool = False,
+        mentions_all: bool = False,
+        mentioned_user_ids: list[str] | None = None,
+        quoted_message_id: str = "",
+        quoted_sender_id: str = "",
+        segments: Any = None,
+        group_id: str = "",
+    ) -> addressing.AddresseeVerdict:
+        """算出「这条消息在跟谁说话」。
+
+        **唯一的入口**：`evaluate()` 与 dispatcher 都走它（后者是为了把结论带进
+        `QQReplyRequest`、再喂给提示词层）。dispatcher 在 `evaluate()` **之后**再
+        调一次不算浪费：那一次拿到的 `msgs_after_reply` 已经推进过，正是提示词
+        要的"她刚说完之后的第一条"口径；而它是纯函数，重算一次不产生新真源。
+
+        `self_id` 与名字清单在这里补齐（调用方不需要知道它们从哪来）。
+        """
+        return addressing.resolve_addressee(
+            self_id=str(getattr(self.plugin.qq_client, "self_id", "") or ""),
+            text=message_text,
+            is_at_bot=is_at_bot,
+            is_reply_to_bot=is_reply_to_bot,
+            mentions_all=mentions_all,
+            mentioned_user_ids=mentioned_user_ids or (),
+            quoted_message_id=quoted_message_id,
+            quoted_sender_id=quoted_sender_id,
+            segments=segments,
+            names=self._addressee_names(),
+            first_reply_after_own_speech=self._first_reply_after_own_speech(group_id),
+        )
+
+    def _addressee_penalty(self) -> float:
+        """「明确在跟别人说话」时扣多少分（`addressing` 的减分力度）。
+
+        与 `_human_pair_penalty` 的默认值刻意相反：那条默认 0（先出数据），这条默认
+        30（当场生效）。理由是两者的证据强度不同，见 `score_necessity` 的 docstring。
+        """
+        settings = self.plugin._qq_settings or {}
+        try:
+            return max(
+                0.0,
+                float(settings.get(
+                    "addressee_penalty", ADDRESSED_ELSEWHERE_PENALTY_DEFAULT,
+                ) or 0.0),
+            )
+        except (TypeError, ValueError):
+            return ADDRESSED_ELSEWHERE_PENALTY_DEFAULT
+
+    def _addressee_ignore_first_at_other(self) -> bool:
+        """首段 @ 的就是别人时，是否**直接不唤醒**（AstrBot 的唤醒判据）。
+
+        默认关：群里 @ 别人但话题确实落在她身上时，硬拦会误伤（那种消息本来还能
+        靠内容分或积压压力把这一条捞回来）。想复刻 AstrBot 的"第一句 @ 别人 =
+        不叫它"，把这个开关打开即可 —— 改一个配置键，不用改代码。
+        """
+        settings = self.plugin._qq_settings or {}
+        return bool(settings.get("addressee_ignore_first_at_other", False))
+
+    def _addressee_names(self) -> tuple[str, ...]:
+        """她的名字/别名清单（本体人设里的名字 + 用户补的别名），带 TTL 缓存。
+
+        为什么要缓存：`host_names()` 会读一次本体角色数据（JSON），而这是**每条群
+        消息**都要走的路。换人格时人设会变，所以不能永久缓存 —— 60 秒足够让
+        "改完名字下一分钟生效"，又不至于每条消息读一次盘。
+        """
+        now = time.time()
+        cached = getattr(self, "_addressee_names_cache", None)
+        if cached is not None and now - cached[0] < self.ADDRESSEE_NAMES_TTL_SECONDS:
+            return cached[1]
+        names = addressing.configured_names(
+            self.plugin._qq_settings or {}, host_names=addressing.host_names(self.plugin),
+        )
+        self._addressee_names_cache = (now, names)
+        return names
+
+    def _first_reply_after_own_speech(self, group_id: str) -> bool:
+        """她刚说完、而这是之后的第一条发言（判据在注意力服务，这里只做容错转发）。
+
+        与 `prompt_builder._is_first_reply_after_her_own_speech` 同一个判据的同一个
+        来源（`msgs_after_reply`）。提示词层还会自己再问一次 —— 两处都问不是重复：
+        门控这里问是为了**打分**，那边问是为了**文案**，各自都要能在对方缺席时工作。
+        取不到注意力服务（或它炸了）时返回 False：退回改动前的行为，不抛。
+        """
+        attention = getattr(self.plugin, "attention_service", None)
+        if attention is None or not group_id:
+            return False
+        try:
+            return bool(attention.is_first_reply_after_own_speech(group_id))
+        except Exception:
+            return False
+
     def _record_human_pair(self, group_id: str, *, addressed_to_bot: bool) -> int:
         """维护「连续多少条别人的消息没在跟她说话」。
 
-        判据只有两条，刻意保守：**@ 她** 或 **引用她** → 归零；其余别人的消息 +1。
-        不做"谁回谁"的推断 —— NapCat 侧要拿被引用者的 uid 得额外 `get_msg`，
-        而我们只需要"这群人是不是在互相聊"这一个量（`human_pair_streak`）。
+        判据只有两条：**@ 她** 或 **引用她** → 归零；其余别人的消息 +1。
+
+        ⚠️ 这里曾经写着「NapCat 侧要拿被引用者的 uid 得额外 `get_msg`，所以不做
+        "谁回谁"的推断」——**这个前提是错的**（2026-09-27 核对）：被引用者的 uid 就在
+        回复段的 `data.user_id` 里，连接器早已解析成 `quoted_sender_id`
+        （`_vendor/connection_onebot/onebot_client.py:261`），不需要任何额外请求。
+        逐条的"谁在跟谁说话"现在由 `addressing.resolve_addressee` 负责（它读
+        `quoted_sender_id` / `mentioned_user_ids` / 段序），**本计数器仍然是粗粒度的
+        结构量**（"这群人连着几条没理她"）—— 两者是不同尺度，不是一个东西的两个实现：
+        前者逐条可判、当场减分；后者要攒够 streak 才有意义，且默认惩罚 0（先出数据）。
         """
         key = str(group_id or "").strip()
         if not key:
@@ -327,6 +444,9 @@ class QQAttentionGateService:
     _speech: GroupSpeechTracker
     _backoff: IdleBackoff
 
+    #: 她的名字/别名清单的缓存时长（秒）。见 `_addressee_names`。
+    ADDRESSEE_NAMES_TTL_SECONDS = 60.0
+
     async def evaluate(
         self,
         *,
@@ -339,6 +459,10 @@ class QQAttentionGateService:
         sender_nickname: str = "",
         timestamp: int = 0,
         is_reply_to_bot: bool = False,
+        mentioned_user_ids: list[str] | None = None,
+        mentions_all: bool = False,
+        quoted_sender_id: str = "",
+        segments: Any = None,
     ) -> GateDecision:
         """评估群聊消息：先更新注意力，再做焦点门控，输出跳过原因。
 
@@ -346,6 +470,12 @@ class QQAttentionGateService:
         - @bot 直接点名 → 唯一旁路，任何群都强制回复
         - 其余消息（含关键词、回复猫娘的消息）→ 非焦点群一律 block，
           不生成回复，但注意力照常累计，并输出跳过原因
+
+        后四个参数（`mentioned_user_ids` / `mentions_all` / `quoted_sender_id` /
+        `segments`）是**「谁在跟谁说话」的原料**，由 dispatcher 从已规范化的消息里
+        原样带下来（见 `addressing.py`）。它们全都有默认值：老调用方（单测桩、
+        合成轮、旁路）不传时结论退化成"没结论"，减分与硬门控都不生效 ——
+        也就是**改动前的行为**。
         """
         # 无需注意力的连接（如 QQ 开放平台）：直接回复
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
@@ -392,6 +522,27 @@ class QQAttentionGateService:
             and quoted_message_id in getattr(self.plugin.qq_client, "sent_message_ids", {})
         )
 
+        # 1.2 「谁在跟谁说话」：结论算一次，下面三处都用它（减分 / 硬门控 / 提示词）。
+        #     判据本身在 addressing.py，这里是它唯一的调用点 —— 门控、打分、文案
+        #     三层共用同一份结论，各自重算一遍就会漂移。
+        addressee = self.resolve_addressee_for(
+            message_text=message_text,
+            is_at_bot=is_at_bot,
+            is_reply_to_bot=is_reply_to_bot,
+            mentions_all=mentions_all,
+            mentioned_user_ids=mentioned_user_ids,
+            quoted_message_id=quoted_message_id,
+            quoted_sender_id=quoted_sender_id,
+            segments=segments,
+            group_id=normalized_group_id,
+        )
+        if participates:
+            # 只报数据不改行为的那一类也留痕：判据失效（比如段没拿到）时要看得见。
+            self._log_decision(
+                f"[Addressee] 群{normalized_group_id} {addressee.kind}"
+                f"（{addressee.evidence or '—'}）"
+            )
+
         # 1.5 记录到「近期发言窗口」：积压压力与存在感惩罚都吃它（也只服务 trusted 那条路）。
         if participates:
             self._speech.record(normalized_group_id, now=float(timestamp or attention._current_time()),
@@ -432,6 +583,18 @@ class QQAttentionGateService:
                 "INFO", f"[Gate] 群{normalized_group_id} 不参与注意力竞争，放行给下游（回/转达由权限层决定）",
             )
             return GateDecision("reply", reason="normal_group_passthrough")
+
+        # 3.6 可选的硬门控：**第一句就在跟别人说话** → 这一轮不唤醒。
+        #     复刻 AstrBot 的唤醒判据（首段是 At 且不是 At 她/全体 → 不唤醒），
+        #     但默认**关**（`addressee_ignore_first_at_other`）：默认只走 8.5 的减分，
+        #     因为"@ 了别人但话其实是问她的"在真机里并不罕见，硬拦会误伤。
+        #     放在这里而不是更早：@ 她（步骤 2）与黑名单（步骤 3）都必须先判，
+        #     而且只对**参与注意力竞争**的群生效 —— normal 群的 relay 语义不动。
+        if addressee.first_at_other and self._addressee_ignore_first_at_other():
+            self._log_decision(
+                f"[Gate] 群{normalized_group_id} 首段 @ 的是别人（{addressee.first_at}），不唤醒"
+            )
+            return GateDecision("ignore", reason=f"addressee_first_at_other({addressee.first_at})")
 
         # 4. 焦点门控前置：非焦点群 → block（注意力已在步骤 1 累计），
         #    输出跳过原因。关键词/回复猫娘的消息同样在此被拦下。
@@ -499,6 +662,7 @@ class QQAttentionGateService:
                 message_text=message_text,
                 is_reply_to_bot=is_reply_to_bot,
                 now=now_ts,
+                addressee=addressee,
             )
             if verdict.decision != "trigger":
                 backoff = self._backoff.record_wait(normalized_group_id, now=now_ts)

@@ -144,6 +144,14 @@ class QQReplyRequest:
     mentioned_user_ids: list[str] = field(default_factory=list)
     mentions_other_user: bool = False
     mentions_all: bool = False
+    #: 「谁在跟谁说话」的结论（`addressing.AddresseeVerdict` 的三个字段）。
+    #: 空 `addressee_kind` = **没有结论**（开放平台通道 / 合成轮 / 旁路调用），
+    #: 提示词层据此退回改动前的 6 个标签 —— 刻意不是"另有一份实现"。
+    #: 只带 kind/target/evidence：`first_at`（段序）与 `matched_name` 只服务减分与
+    #: 硬门控，在门控内部就用完了，进请求只会多一份没消费者的数据。
+    addressee_kind: str = ""
+    addressee_target: str = ""
+    addressee_evidence: str = ""
     reply_message_id: str = ""
     reply_context: str = ""
     at_user_id: str = ""
