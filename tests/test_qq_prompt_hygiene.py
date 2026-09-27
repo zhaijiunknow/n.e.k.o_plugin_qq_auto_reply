@@ -153,7 +153,36 @@ def test_no_rule_is_stated_three_times():
     )
 
 
-# ── 4. 编辑器与层表一致 ─────────────────────────────────────────────
+# ── 4. 颜文字：使用者要求"尽量少发" ──────────────────────────────────
+
+def test_kaomoji_is_discouraged_not_encouraged():
+    """颜文字规则必须是**克制**的（2026-09-27 使用者：「颜文字也尽量少发」）。
+
+    改前的写法是「可以在文字中自然地穿插猫系颜文字表达情绪，但严禁每次回复都加」——
+    "自然地穿插"读起来是鼓励，实测她确实带得多。现在要求：
+    默认不带 + 一段对话里最多一次 + 不许用它代替说话内容。
+    """
+    text = frag.FORMAT_PROMPT_SECTION_NEKO_DYNAMIC
+    assert "颜文字" in text, "颜文字规则整段没了 —— 这不是本次要求的（要求是少发，不是删掉标签能力）"
+    for needle in ("尽量少发", "默认**不带**颜文字", "最多一次"):
+        assert needle in text, f"颜文字规则里缺少约束: {needle}"
+
+
+def test_kaomoji_rule_is_not_encouraging_again():
+    """鼓励式措辞不许回来（否则频率会立刻反弹）。"""
+    text = frag.FORMAT_PROMPT_SECTION_NEKO_DYNAMIC
+    for permissive in ("自然地穿插", "积极使用颜文字", "可以多用颜文字", "经常使用颜文字"):
+        assert permissive not in text, f"颜文字又变成鼓励式了: {permissive}"
+
+
+def test_kaomoji_list_stays_available():
+    """只是"少发"，不是"删掉能力"：清单里那几个猫系颜文字还得在（否则她只能用通用的）。"""
+    text = frag.FORMAT_PROMPT_SECTION_NEKO_DYNAMIC
+    listed = [k for k in ("(=^～ω～^=)", "(=ↀωↀ=)", "(ΦωΦ)") if k in text]
+    assert listed, "颜文字清单被删空了 —— 这次只要求少发，不是禁用"
+
+
+# ── 5. 编辑器与层表一致 ─────────────────────────────────────────────
 
 def test_layer_name_i18n_keys_match_the_layer_table():
     """`ui.napcat.prompts.layer.<id>.name` 必须与层表一一对应（多的是死键，少的是空白标签）。"""

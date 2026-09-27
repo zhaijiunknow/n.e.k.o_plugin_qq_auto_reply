@@ -91,6 +91,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '  "ui.napcat.prompts.layer.role.name": "角色",\n'
         '  "ui.napcat.prompts.layer.output.name": "输出格式",',
     ),
+    (
+        "prompt_fragment_templates.py",
+        "把颜文字规则改回鼓励式（使用者要求「尽量少发」）",
+        "### 颜文字（kaomoji）：**尽量少发**\n默认**不带**颜文字。",
+        "### 颜文字（kaomoji）使用指南：\n可以在文字中自然地穿插猫系颜文字表达情绪。",
+    ),
 ]
 
 
