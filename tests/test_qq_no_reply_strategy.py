@@ -24,7 +24,6 @@ import pathlib
 import re
 
 import pytest
-
 from _ui_source import code_of, fn_body, read
 
 PLUGIN = pathlib.Path(__file__).resolve().parents[1]
