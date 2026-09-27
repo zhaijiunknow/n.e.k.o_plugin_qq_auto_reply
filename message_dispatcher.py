@@ -25,6 +25,16 @@ class QQMessageDispatcher:
     OPEN_PLATFORM_CLAIM_MAX_GROUPS = 64
     OPEN_PLATFORM_CLAIM_MAX_PER_GROUP = 32
 
+    #: 戳一戳：多久内的戳算同一场「风暴」（只用于留痕，不改变行为 ——
+    #: 现在不管几个人戳都只跟戳、不回话）。
+    POKE_STORM_WINDOW_SECONDS = 30.0
+    #: 同一窗口内多少个**互不相同**的人戳她，日志里才写一句"风暴"。
+    POKE_STORM_MIN_POKERS = 2
+    #: 跟戳的闸：同一个人在这个窗口内最多被回戳几次。
+    #: 「跟戳」不等于陪到底 —— 没有这道闸就是无限互戳（对方戳一下、她戳一下…）。
+    POKE_BACK_WINDOW_SECONDS = 300.0
+    POKE_BACK_MAX_PER_POKER = 2
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._open_platform_bootstrap_lock = asyncio.Lock()
@@ -534,7 +544,17 @@ class QQMessageDispatcher:
                 f"用户黑名单过滤: user={blacklist_sender} type={message.get('message_type')}",
             )
             return
-        # 戳一戳通知：少量 → 回戳不说话；大量 → 说话不回戳；戳别人 → LLM 决定是否也戳
+        # 戳一戳通知：戳她 → **一律只跟戳、不回话**；戳别人 → LLM 决定是否也戳。
+        #
+        # 使用者 2026-09-27：「戳戳风暴就不需要回复了，只需要跟戳」。
+        # 改之前这里是反的：「人少 → 回戳不说话；人多（风暴）→ 不回戳、丢给 LLM 让她
+        # 在群里说点什么」。真机 15:20 那次风暴就因此多花了一轮生成 —— 她要的语义是
+        # 戳一戳本来就是轻量互动，**不管几个人戳都只跟戳**，不必说话、也不必为它
+        # 开一轮对话（顺带不再把它当成"有人在点名她"，不再抢焦点/上锁）。
+        #
+        # 保留的两道闸：
+        #   · 每人 5 分钟内最多回戳 2 次（跟戳不等于陪到底，否则就是无限互戳）；
+        #   · 黑名单用户的戳在更早的位置已被拦掉（见 handle_message 顶部的用户黑名单）。
         if message.get("message_type") == "notice" and message.get("notice_type") == "poke":
             group_id = str(message.get("group_id") or "").strip()
             poker_id = str(message.get("user_id") or "").strip()
@@ -548,42 +568,32 @@ class QQMessageDispatcher:
             target_name = self._resolve_poke_nickname(target_id, message) if target_id and not is_poke_me else ""
 
             if is_poke_me:
-                # 统计短时间窗内戳猫娘的人数
+                # 统计短时间窗内戳她的**不同人**（只用于留痕：风暴是"好几个人一起戳"）。
                 storm = self.plugin._poke_storm.setdefault(group_id, [])
-                storm[:] = [(t, p) for t, p in storm if now - t < 30]
+                storm[:] = [(t, p) for t, p in storm if now - t < self.POKE_STORM_WINDOW_SECONDS]
                 if not any(p == poker_id for p in (p for _, p in storm)):
                     storm.append((now, poker_id))
                 storm_count = len(storm)
-
-                # 人数少 → 逐个回戳，不进入 LLM
-                if storm_count < 2:
-                    timestamps = self.plugin._poke_timestamps.setdefault(poker_id, [])
-                    timestamps[:] = [t for t in timestamps if t > now - 300]
-                    if len(timestamps) < 2:
-                        timestamps.append(now)
-                        try:
-                            await self.plugin.qq_client.send_group_poke(group_id, poker_id)
-                        except Exception as e:
-                            self.plugin._emit_log("INFO", f"回戳失败: {e}")
-                    return  # 不回话
-                # 人数多 → 不回戳，注入 LLM 让猫娘在群里反应（60秒冷却，避免反复刷屏）
-                last_storm_key = f"poke_storm_text_{group_id}"
-                now_ts = __import__("time").time()
-                if now_ts - getattr(self, "_last_poke_storm_text", {}).get(last_storm_key, 0) < 60:
-                    return
-                if not hasattr(self, "_last_poke_storm_text"):
-                    self._last_poke_storm_text = {}
-                self._last_poke_storm_text[last_storm_key] = now_ts
-                self.plugin._emit_log("INFO", f"戳一戳风暴: group={group_id} {storm_count}人戳猫娘 → 会话模式")
-                poke_text = f"[戳一戳] {storm_count}个人戳了戳你，包括 {poker_name}"
-                message["is_at_bot"] = True
+                if storm_count >= self.POKE_STORM_MIN_POKERS:
+                    self.plugin._emit_log(
+                        "INFO",
+                        f"[Poke] 群{group_id} 戳一戳风暴（{storm_count} 人）→ 只跟戳，不回复",
+                    )
+                timestamps = self.plugin._poke_timestamps.setdefault(poker_id, [])
+                timestamps[:] = [t for t in timestamps if t > now - self.POKE_BACK_WINDOW_SECONDS]
+                if len(timestamps) < self.POKE_BACK_MAX_PER_POKER:
+                    timestamps.append(now)
+                    try:
+                        await self.plugin.qq_client.send_group_poke(group_id, poker_id)
+                    except Exception as e:
+                        self.plugin._emit_log("INFO", f"回戳失败: {e}")
+                return  # 一律不回话：戳一戳不进管线，也不抢焦点
+            # 戳别人 → LLM 决定是否也戳一下
+            if target_name:
+                poke_text = f"[戳一戳] {poker_name} 戳了戳 {target_name}"
             else:
-                # 戳别人 → LLM 决定是否也戳一下
-                if target_name:
-                    poke_text = f"[戳一戳] {poker_name} 戳了戳 {target_name}"
-                else:
-                    poke_text = f"[戳一戳] {poker_name} 戳了戳某人"
-                message["is_at_bot"] = False
+                poke_text = f"[戳一戳] {poker_name} 戳了戳某人"
+            message["is_at_bot"] = False
 
             message["message_type"] = "group"
             message["group_id"] = group_id

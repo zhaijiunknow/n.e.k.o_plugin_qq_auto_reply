@@ -242,8 +242,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._backlog_issue_notify_threshold = 1
         self._relay_backlog_items: list[dict[str, Any]] = []
         self._recent_pipeline_traces: list[dict[str, Any]] = []
-        self._poke_timestamps: dict[str, list[float]] = {}  # user_id → 最近回戳时间戳列表（5分钟窗口）
-        self._poke_storm: dict[str, list[tuple[float, str]]] = {}  # group_id → [(timestamp, poker_id)] 戳猫娘风暴检测
+        self._poke_timestamps: dict[str, list[float]] = {}  # user_id → 最近回戳时间戳列表（5分钟窗口，每人最多2次）
+        #: group_id → [(timestamp, poker_id)]：短窗内戳她的**不同人**。
+        #: 现在**只用于留痕**（日志里写一句"戳一戳风暴（N 人）"）——
+        #: 使用者 2026-09-27 定下「戳戳风暴就不需要回复了，只需要跟戳」，
+        #: 所以不管几个人戳都只跟戳、不回话，风暴本身不再改变行为。
+        self._poke_storm: dict[str, list[tuple[float, str]]] = {}
 
     def _create_backlog_store_from_settings(self, settings: dict[str, Any] | None) -> QQBacklogStore:
         return QQBacklogStore(
