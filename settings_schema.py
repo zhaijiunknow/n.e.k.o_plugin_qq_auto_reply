@@ -280,6 +280,31 @@ PACING = (
                 ui=UIInput("cfg-buffer-max-count", min=1, max=200, step=1,
                            label="ui.pacing.buffer_max_count",
                            hint="ui.pacing.buffer_max_count.hint")),
+    # 频率软提示：硬闸是断崖（到点直接静默 = "她突然不理我了"），软提示先在提示词里
+    # 让她自己收敛，硬闸只当兜底。窗口与上限直接复用上面的 reply_burst_*（单一真相）。
+    SettingSpec("pacing_hint_enabled", "bool", True, saveable=True,
+                description="save：频率软提示（到硬闸前先在提示词里提醒她收敛）"),
+    SettingSpec("pacing_hint_ratio", "float", 0.6, saveable=True,
+                floor=0.0, ceiling=1.0,
+                description="save：到硬闸的多少比例开始提醒（3 条闸 + 0.6 → 第 2 条开始）"),
+)
+
+#: 出站守门（内容安全 + 重复过滤）。见 ``outbound_guard_service``。
+#:
+#: 都是**往回收**的闸，所以默认开、且不进面板（D 档：面板只留 7 个行为旋钮）。
+#: 黑名单**复用关键词页里那份词表**（`backlog_labels` 里 priority<0 的条目）——
+#: 同一个词表双向生效，用户不用维护第二份名单。
+OUTBOUND = (
+    SettingSpec("outbound_guard_enabled", "bool", True, saveable=True,
+                description="save：出站守门总开关（内容安全 + 重复过滤）"),
+    SettingSpec("outbound_blacklist_enabled", "bool", True, saveable=True,
+                description="save：出站内容安全（命中黑名单词的文本不发出去）"),
+    SettingSpec("outbound_dedup_enabled", "bool", True, saveable=True,
+                description="save：出站重复过滤（同一个群窗口内不重发同一句）"),
+    SettingSpec("outbound_dedup_window_seconds", "int", 1800, saveable=True,
+                floor=0, description="save：重复过滤的窗口（秒）"),
+    SettingSpec("outbound_dedup_min_chars", "int", 4, saveable=True,
+                floor=1, description="save：短于此长度的文本不参与重复过滤（嗯嗯/？这类应答豁免）"),
 )
 
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。
@@ -340,6 +365,17 @@ MISC = (
     SettingSpec("reply_necessity_threshold", "float", 40.0,
                 floor=0.0, ceiling=100.0,
                 description="焦点群「这句该不该接」的判定阈值（0=关闭；改配置文件生效）"),
+    # 「人对人」惩罚（2026-09-27 先只出数据）。
+    # `human_pair_streak` = 连续多少条别人的消息既没 @ 她也没引用她。默认 **0.0 分**
+    # —— 分数不动，但 `[Necessity]` 的依据里会出现 `人对人×N`，攒够真机数据再决定扣多少。
+    # 学术上这是「谁在跟谁说话」那一维（结构性信号，净收益最大的非指称特征），
+    # 而我们此前只有布尔量 `mentions_other_user`。
+    SettingSpec("necessity_human_pair_penalty", "float", 0.0,
+                floor=0.0, ceiling=100.0,
+                description="连续多条「没在跟她说话」时扣多少分（0=只记数据不扣分）"),
+    SettingSpec("necessity_human_pair_min_streak", "int", 3,
+                floor=1, ceiling=100,
+                description="连续多少条「没在跟她说话」才算「这群人在互相聊」"),
     SettingSpec("normal_relay_probability", "float", 0.1, saveable=True,
                 floor=0.0, ceiling=1.0, description="save：转发给管理员的概率",
                 handler="probability",
@@ -447,7 +483,7 @@ MISC = (
     SettingSpec("group_prompts", "dict", {}, description="按群自定义提示词"),
 )
 
-SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + MISC
+SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + MISC
 
 BY_KEY: dict[str, SettingSpec] = {spec.key: spec for spec in SETTINGS}
 

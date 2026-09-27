@@ -287,6 +287,17 @@ class QQRepeatEchoService:
         message = plugin._validate_outbound_message(text)
         episode_key = (group, self.normalize(message))
         senders = len((self._episodes.get(episode_key) or {}).get("senders") or ())
+        # 出站守门：复读是**逐字把别人的话再喊一遍**，所以内容安全这一道必须过；
+        # 但重复过滤要豁免（跟读本身就是故意重复，去重会把这个功能整个关掉）。
+        guard = getattr(plugin, "outbound_guard_service", None)
+        if guard is not None:
+            verdict = guard.check(group_id=group, text=message, kind="echo")
+            if verdict.blocked:
+                plugin.logger.warning(
+                    f"[Repeat] 复读被出站守门拦下（{verdict.reason}: {verdict.detail}）: {message[:30]!r}"
+                )
+                plugin._emit_log("WARN", f"[Repeat] 复读内容被拦截（{verdict.reason}）")
+                return False
         mid = await plugin.qq_client.send_group_message(group, message)
         self._append_history_row(group, message)
         await self._bookkeep_reply(group)

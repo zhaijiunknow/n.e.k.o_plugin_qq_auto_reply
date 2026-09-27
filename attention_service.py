@@ -179,6 +179,11 @@ class QQAttentionService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._cache: dict[str, dict[str, Any]] = {}
+        #: 群 → 最近回复时刻（**只服务"频率软提示"**，内存态、重启即失）。
+        #: 与门控里那个硬闸计数器（`attention_gate_service._reply_timestamps`）是两份：
+        #: 那份决定"还能不能发"，这份决定"要不要在提示词里提醒她收敛"。刻意不复用 ——
+        #: 硬闸的计数口径一改就会连带改提示词行为，两者绑在一起以后没人敢动。
+        self._reply_times: dict[str, list[int]] = {}
 
     async def load_cached_state(self) -> None:
         if not getattr(self.plugin, "backlog_store", None):
@@ -796,6 +801,11 @@ class QQAttentionService:
         # 新的回复周期从这里开始：把「她上次发言之后的回应数」清零，
         # 于是上一次周期的计数（已结算或已作废）不会漏进这一轮。
         state.msgs_after_reply = 0
+        # 频率软提示用的回复时刻环（见 pacing_hint）。
+        times = self._reply_times.setdefault(normalized_group_id, [])
+        times.append(now)
+        window = self._pacing_window_seconds()
+        times[:] = [t for t in times if now - t < window][-20:]
         self._write_state(self._normalize_state(state))
         await self._persist()
         return self.get_snapshot()
@@ -879,6 +889,56 @@ class QQAttentionService:
         if ts - last_reply_at < self._feedback_window_seconds():
             return "你刚才发过言，群里还没有人回应（也可能只是还没打完字）。"
         return "你上次发言之后，群里一直没人接话 —— 这个话题大概没被接住。"
+
+    # ── 频率软提示（把硬崖变成坡）────────────────────────────────────
+
+    def _pacing_hint_enabled(self) -> bool:
+        """频率软提示开关（默认开：它只影响一句话，关掉也不会改变硬闸）。"""
+        return bool(self._setting("pacing_hint_enabled", True))
+
+    def _pacing_window_seconds(self) -> int:
+        """与硬闸**同一个窗口**（`reply_burst_window_seconds`）——单一真相。"""
+        return max(1, int(self._setting("reply_burst_window_seconds", 60) or 60))
+
+    def _pacing_max_replies(self) -> int:
+        return max(1, int(self._setting("reply_burst_max_replies", 3) or 3))
+
+    def _pacing_hint_ratio(self) -> float:
+        """到硬闸的百分之多少开始提醒（默认 0.6 ≈ 3 条闸里的第 2 条）。"""
+        return min(1.0, max(0.0, float(self._setting("pacing_hint_ratio", 0.6) or 0.0)))
+
+    def recent_reply_count(self, group_id: str, *, now: int | None = None) -> int:
+        """窗口内她在这个群回了几条（硬闸口径一致，供提示词与排查用）。"""
+        key = str(group_id or "").strip()
+        ts = int(now if now is not None else self._current_time())
+        window = self._pacing_window_seconds()
+        rows = [t for t in self._reply_times.get(key, []) if ts - t < window]
+        self._reply_times[key] = rows
+        return len(rows)
+
+    def pacing_hint(self, group_id: str, *, now: int | None = None) -> str:
+        """「你说得有点密了」——到硬闸前先提醒她收敛。
+
+        为什么要有它：硬闸（`reply_burst_max_replies` 条 / 窗口）是**断崖** ——
+        到点直接静默，用户看到的是"她突然不理我了"。软提示把这段变成坡：先让她自己
+        少说、说短，硬闸只作为兜底。触发点按硬闸的比例给（`pacing_hint_ratio`）。
+        """
+        if not self._pacing_hint_enabled():
+            return ""
+        count = self.recent_reply_count(group_id, now=now)
+        limit = self._pacing_max_replies()
+        # 触发点 = 硬闸 × 比例（3 条闸 + 0.6 → 第 2 条开始提醒）。
+        # 夹在 [1, limit-1]：上限留一条，否则"提醒"和"硬闸"同一刻发生、等于没有提示；
+        # limit=1 时没有可提醒的空间（`count >= limit` 那条会直接返回空）。
+        raw = limit * self._pacing_hint_ratio()
+        threshold = min(max(int(round(raw)) if raw > 0 else 0, 1), max(1, limit - 1))
+        if count < threshold or count >= limit:
+            return ""
+        window = self._pacing_window_seconds()
+        return (
+            f"注意节奏：你最近 {window} 秒内已经说了 {count} 条（上限 {limit} 条），"
+            "这一轮能不说就不说；要说就只说一句短的。"
+        )
 
     # ── 排序 ──
 
@@ -965,6 +1025,10 @@ class QQAttentionService:
         feedback = self.feedback_line(group_id)
         if feedback:
             parts.append(feedback)
+
+        pacing = self.pacing_hint(group_id)
+        if pacing:
+            parts.append(pacing)
 
         return "\n".join(parts)
 

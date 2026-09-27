@@ -142,6 +142,13 @@ class NecessitySignals:
     self_ratio: float = 0.0
     #: 已到平均消息间隔却仍无积压 → 补一点分（MaiBot 的 idle_reached_average）
     idle_reached_average: bool = False
+    #: 连续多少条**别人的**消息既没 @ 她也没引用她（"这群人正在互相聊"）。
+    #:
+    #: 这是**结构性**信号：学术上「谁在跟谁说话」是接话判定里净收益最大的非指称特征，
+    #: 而我们此前只有布尔量（`mentions_other_user`），没有"连续多少条"这个量。
+    #: 2026-09-27 先把它算出来、写进日志，**默认不参与打分**（见 `score_necessity`
+    #: 的 `human_pair_penalty` 默认 0.0）—— 等真机数据够了再决定扣多少。
+    human_pair_streak: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +157,8 @@ class NecessityBreakdown:
     content: int = 0
     pressure: int = 0
     presence: int = 0
+    #: 「人对人」惩罚（默认 0：先只出数据，见 NecessitySignals.human_pair_streak）
+    human_pair: int = 0
     frequency_factor: float = 1.0
     raw: float = 0.0
     score: int = 0
@@ -242,18 +251,29 @@ def score_necessity(
     *,
     threshold: float = DEFAULT_TRIGGER_SCORE,
     frequency: float = 1.0,
+    human_pair_penalty: float = 0.0,
+    human_pair_min_streak: int = 3,
 ) -> NecessityVerdict:
     """给一条消息打分并给出 trigger / wait。
 
     ``threshold <= 0`` ⇒ 恒 trigger（关闭这一关，回到「交给 LLM 自判」）。
+
+    ``human_pair_penalty`` 默认 **0.0**：连续 ``human_pair_min_streak`` 条别人的消息既没
+    @ 她也没引用她（= 这群人正在互相聊）时扣多少分。**先只出数据不扣分** ——
+    真机日志里能看到 `人对人×N`，等数据够了再决定扣多少（改一个配置键即可，
+    不用改代码）。这一点是刻意的：阈值 40 恰好等于焦点分 40，任何"顺手也调一下"
+    都会让必要性的行为一次性变动两处，事后分不清是谁的功劳。
     """
     relevance, rel_reason = _relevance(signals)
     content, content_reason = _content(signals)
     pressure, pressure_reason = _pressure(signals)
     presence, presence_reason = _presence(signals)
+    pair_penalty, pair_reason = _human_pair(signals, human_pair_penalty, human_pair_min_streak)
 
-    reasons = tuple(r for r in (rel_reason, content_reason, pressure_reason, presence_reason) if r)
-    raw = float(relevance + content + pressure + presence)
+    reasons = tuple(
+        r for r in (rel_reason, content_reason, pressure_reason, presence_reason, pair_reason) if r
+    )
+    raw = float(relevance + content + pressure + presence - pair_penalty)
     # 频率因子：把「这个群我本来就不怎么说话」乘进总分（MaiBot 同款 0.5~1.0）。
     factor = 0.5 + 0.5 * max(0.0, min(1.0, float(frequency or 0.0)))
     score = max(0, int(round(raw * factor)))
@@ -265,12 +285,32 @@ def score_necessity(
         content=content,
         pressure=pressure,
         presence=presence,
+        human_pair=-pair_penalty,
         frequency_factor=factor,
         raw=raw,
         score=score,
         reasons=reasons,
     )
     return NecessityVerdict(decision=decision, score=score, breakdown=breakdown)
+
+
+def _human_pair(
+    signals: NecessitySignals, penalty: float, min_streak: int,
+) -> tuple[int, str]:
+    """「这群人正在互相聊」的扣分（与它的可读原因）。
+
+    **罚 0 分时也出原因**（``人对人×N``）：这正是本次要收集的那份数据 ——
+    日志里看不见的话，"先出数据再决定"就成了一句空话。
+    """
+    streak = max(0, int(signals.human_pair_streak or 0))
+    floor = max(1, int(min_streak or 1))
+    if streak < floor:
+        return 0, ""
+    reason = f"人对人×{streak}"
+    if penalty <= 0:
+        return 0, reason
+    # 一句话没说给她的场合：扣分不超过内容分的量级（避免把"她本来想接的"直接掐死）
+    return int(round(float(penalty))), reason
 
 
 # ── 状态：近期发言窗口 + 空闲退避 ────────────────────────────────────────────

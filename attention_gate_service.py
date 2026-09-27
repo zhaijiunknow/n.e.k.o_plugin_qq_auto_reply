@@ -100,8 +100,47 @@ class QQAttentionGateService:
             pending_threshold=self._pending_threshold(),
             self_ratio=self._speech.self_ratio(group_id, now=now),
             idle_reached_average=self._speech.last_gap_seconds(group_id, now=now) >= 30.0,
+            human_pair_streak=self._human_pair_streak.get(str(group_id or "").strip(), 0),
         )
-        return score_necessity(signals, threshold=threshold, frequency=frequency)
+        return score_necessity(
+            signals,
+            threshold=threshold,
+            frequency=frequency,
+            human_pair_penalty=self._human_pair_penalty(),
+            human_pair_min_streak=self._human_pair_min_streak(),
+        )
+
+    def _human_pair_penalty(self) -> float:
+        """「人对人」惩罚分。**默认 0.0**：先出数据，不改行为（2026-09-27）。"""
+        settings = self.plugin._qq_settings or {}
+        try:
+            return max(0.0, float(settings.get("necessity_human_pair_penalty", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _human_pair_min_streak(self) -> int:
+        settings = self.plugin._qq_settings or {}
+        try:
+            return max(1, int(settings.get("necessity_human_pair_min_streak", 3) or 3))
+        except (TypeError, ValueError):
+            return 3
+
+    def _record_human_pair(self, group_id: str, *, addressed_to_bot: bool) -> int:
+        """维护「连续多少条别人的消息没在跟她说话」。
+
+        判据只有两条，刻意保守：**@ 她** 或 **引用她** → 归零；其余别人的消息 +1。
+        不做"谁回谁"的推断 —— NapCat 侧要拿被引用者的 uid 得额外 `get_msg`，
+        而我们只需要"这群人是不是在互相聊"这一个量（`human_pair_streak`）。
+        """
+        key = str(group_id or "").strip()
+        if not key:
+            return 0
+        if addressed_to_bot:
+            self._human_pair_streak[key] = 0
+            return 0
+        streak = int(self._human_pair_streak.get(key, 0)) + 1
+        self._human_pair_streak[key] = streak
+        return streak
 
     def _participates_in_attention(self, group_id: str) -> bool:
         """这个群参不参与注意力竞争（只有 trusted 群参与）。
@@ -217,6 +256,9 @@ class QQAttentionGateService:
         self._digest_tasks: set[asyncio.Task] = set()
         self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
         self._reply_timestamps: dict[str, list[int]] = {}  # 群 → 最近回复时间戳列表
+        #: 群 → 连续多少条"没在跟她说话"的消息（`human_pair_streak` 的存储）。
+        #: 先只出数据：默认惩罚 0，日志里能看到 `人对人×N`，等真机数据再决定扣多少。
+        self._human_pair_streak: dict[str, int] = {}
         # 「这句该不该接」的两个状态机（内存态，重启即失）
         self._speech = GroupSpeechTracker()
         self._backoff = IdleBackoff()
@@ -318,6 +360,11 @@ class QQAttentionGateService:
         if participates:
             self._speech.record(normalized_group_id, now=float(timestamp or attention._current_time()),
                                 speaker=sender_id)
+            # 「人对人」连击：@ 她 / 引用她 归零，其余别人的消息 +1（只出数据，见默认惩罚 0）。
+            self._record_human_pair(
+                normalized_group_id,
+                addressed_to_bot=bool(is_at_bot or is_reply_to_bot),
+            )
 
         # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
         #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。

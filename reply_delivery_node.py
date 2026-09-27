@@ -204,6 +204,19 @@ class QQReplyDeliveryNode:
         None means the message was not confirmed delivered."""
         if not text:
             return False
+        # 出站守门（内容安全 + 重复过滤）：**群发**的最后一道闸，语音分支也算
+        # （它发的是同一段文本的 TTS）。被拦 = 当作未投递，不写 mention、不清
+        # 未投递标 —— 与"她本来就没说"在记账上一致。
+        if plan.target_type == "group":
+            guard = getattr(self.plugin, "outbound_guard_service", None)
+            if guard is not None:
+                verdict = guard.check(group_id=plan.target_id, text=text)
+                if verdict.blocked:
+                    reason = f"内容安全：命中黑名单词 {verdict.detail!r}" if verdict.reason == "blacklist" \
+                        else f"重复过滤：{verdict.detail}"
+                    self.plugin.logger.warning(f"出站内容被拦截（{reason}）: {text[:40]!r}")
+                    self.plugin._emit_log("WARN", f"[Outbound] 拦截（{reason}）: {text[:20]}")
+                    return False
         mode = self.plugin._get_reply_mode()
         if mode == "voice":
             # voice-only 模式：走 TTS 发送语音——确认结果一路传播（开放

@@ -349,6 +349,19 @@ class QQProactiveMessageService:
             prompt_message = self.plugin._validate_outbound_message(message)
             if verbatim:
                 # 原文直发：不经过 reply_pipeline 的 LLM 生成，直接把内容发出去。
+                # 这是"别的插件让猫娘说一句"的路，内容不经过模型 —— 出站守门照样要过
+                # （别的插件可以把任何文本塞进来，包括从群里抄来的原话）。
+                guard = getattr(self.plugin, "outbound_guard_service", None)
+                if guard is not None:
+                    verdict = guard.check(
+                        group_id=normalized_group_id, text=prompt_message, kind="bridge",
+                    )
+                    if verdict.blocked:
+                        self.plugin._emit_log(
+                            "WARN",
+                            f"[Proactive·原文] 出站拦截（{verdict.reason}: {verdict.detail}）",
+                        )
+                        return Err(SdkError(f"OUTBOUND_BLOCKED: {verdict.reason}"))
                 mid = await self.plugin.qq_client.send_group_message(normalized_group_id, prompt_message)
                 self.plugin._emit_log("INFO", f"[Proactive·原文] 群聊已直发 group={normalized_group_id} mid={mid}")
                 return Ok({

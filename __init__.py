@@ -57,6 +57,7 @@ from .memory_bridge import QQMemoryBridge
 from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
 from .napcat_service import QQNapcatService
+from .outbound_guard_service import QQOutboundGuardService
 from .permission import PermissionManager
 from .plugin_tool_followup_service import QQPluginToolFollowupService
 from .plugin_tool_service import (
@@ -771,6 +772,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 群友复读 → 跟着复读一次（判定要按人去重、跨消息累积，所以单独一个服务；
         # 规则与理由见 repeat_echo_service 的模块 docstring）。
         self.repeat_echo_service = QQRepeatEchoService(self)
+        # 出站守门人：内容安全（复用关键词黑名单）+ 重复过滤。三条"把别人原文发出去"
+        # 的路（跟着复读 / 合并转发 / 别的插件原文直发）都从它过一道。
+        self.outbound_guard_service = QQOutboundGuardService(self)
         # 接续摘要：会话被回收（空闲 5 分钟 / 换人格 / 重启）时留一句"刚才聊到哪儿"，
         # 新会话开口就接得上（见 session_handoff_service 的模块 docstring）。
         self.session_handoff_service = QQSessionHandoffService(self)
