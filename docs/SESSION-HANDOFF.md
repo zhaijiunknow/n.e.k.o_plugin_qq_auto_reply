@@ -5010,3 +5010,62 @@ python .dsh-artifacts/measure-question-ratio.py 200
    而不在指令层 —— 那时该考虑的是换模板/加 few-shot 示例，而不是继续加规则。
 2. §28.7 / §29.7 的几项仍待定（necessity 的"存在感"项、破冰按住时长、冷场阈值偏高、
    那条"生成却没投递"的回复）。
+
+## 32. 一次「检查现在的插件」查出来的两处日志说谎
+
+### 32.1 检查结果（2026-09-27 18:16）
+
+**健康**：`plugin_running / auto_reply_running / onebot_connected` 全 true；
+登录态 `online`（皖萱 / 3281414178）；NapCat 由插件托管且在跑（pid 2096）；
+两个 trusted 群；缓冲区空；提示词 17 层、无 `role`、问句预算与"分享换话题"都在；
+服务端 `/plugin/qq_auto_reply/ui/` 吐出的就是 promo 分支的隐藏版首页
+（入口只剩 `open_platform.html` + `old.html`，且 `status.html` 的部署卡 `display:none`
+而 `btn-deploy` 仍在 DOM）。
+
+**今天真机计数**：焦点切换 63 次、`non_focus` 丢弃 222 次、发送 30 条、
+`[Pacing]` 10、`[Outbound]` 9、`[Icebreaker]` 19；休眠 0 次、戳一戳 0 次（新功能尚未被真实场景触发）。
+
+### 32.2 查出来的问题：失败日志里"失败原因"是空的
+
+```
+ERROR - [idle_timeout] 群 985066274 scoped 结算失败:            ← 冒号后面什么都没有
+ERROR - [idle_timeout] 群 1048307485 一批 1 个成员记忆结算失败:
+```
+
+`_error.log` 里也**没有 traceback**（是就地 catch 后 `logger.error` 打的），
+所以"查不到原因"是真的查不到。
+
+根因：`TimeoutError` / `asyncio.CancelledError` 这类异常的 **`str()` 就是空串**，
+`f"{exc}"` 于是渲染成空。这几条集中在**插件重载窗口**（14:46 / 15:27，正是本轮
+reload 探针的时间），即重载把在途的记忆结算请求拖成了超时 —— 功能上没事
+（游标停在最后一个成功批次，18:13 自动补结算成功，没丢数据），
+但日志既看不出是超时、也看不出是取消。
+
+第二处形态不同但同源：`等待 NapCat 进程退出失败 (PID=…)` 后面跟着**一整坨**
+`Task <Task pending name='Task-889' coro=<Process.wait()…>> got Future … attached to a
+different loop`（一天 6 条）。成因是重载后 `self._napcat_process` 那个 subprocess 对象
+属于**旧事件循环**，在新循环里 await 必然报 loop 不匹配。
+
+### 32.3 改法
+
+规矩：**catch 后写日志，异常一律带上 `type(...).__name__`**（仓库其它十几处早就是这个
+写法，例如 `repeat_echo_service` / `plugin_tool_followup_service`）。本次修掉 4 处：
+
+- `session_memory_service`：群 scoped 结算失败 / 私聊 scoped 结算失败 / 一批成员记忆结算失败；
+- `napcat_service`：等待 NapCat 进程退出失败 —— 除了类型，还**截断正文**
+  （`str(e)[:160]`），否则每次刷 300 字符的 Task repr。
+
+看门狗 `tests/test_qq_failure_log_says_why.py`（3 条）：三处结算日志必须写类型、
+停机那条必须写类型且截断、并**把根因钉成事实**（断言这几个异常的 `str()` 确实是空串 ——
+哪天 Python 改了行为，这条会先红，提醒重新看取舍）。它是源码级断言（那几处埋在
+大方法与收尸路径里，为"看见日志"搭一整套 harness 不划算），局限写在文件头。
+
+### 32.4 顺带记下的两条观察（未改，先说清）
+
+1. **`actual.groups` / `actual.friends` 是空的且 `stale: true`**（`refreshed_at: 0`）——
+   只影响"群/好友列表"这类展示，回复链路不依赖它；需要时点一次刷新即可。
+2. **焦点切换今天 63 次、`non_focus` 222 次**：机制在工作，但两个 trusted 群互相抢
+   的频次不低。若使用者觉得她"两个群来回跳"，下一步该看的是
+   `_choose_focus_state` 的挑战者门槛（现在只要求"更高分"，没有滞后量）。
+
+全量 **1383 passed**；两道 ruff 门全过。

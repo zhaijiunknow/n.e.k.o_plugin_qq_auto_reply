@@ -1587,7 +1587,7 @@ class QQSessionMemoryService:
                 except Exception as exc:
                     self.plugin.logger.error(
                         f"[{reason}] 群 {group_id} 一批 {len(batch_senders)} "
-                        f"个成员记忆结算失败: {exc}"
+                        f"个成员记忆结算失败: {type(exc).__name__}: {exc}"
                     )
                     return list(batch_senders)
                 failed: set[str] = set()
@@ -2426,7 +2426,8 @@ class QQSessionMemoryService:
                     )
                 except Exception as digest_error:
                     self.plugin.logger.error(
-                        f"[{reason}] 群 {group_id} scoped 结算失败: {digest_error}"
+                        f"[{reason}] 群 {group_id} scoped 结算失败: "
+                        f"{type(digest_error).__name__}: {digest_error}"
                     )
                     group_settled = False
                 member_memory_enabled = bool(
@@ -2526,7 +2527,7 @@ class QQSessionMemoryService:
                     except Exception as digest_error:
                         self.plugin.logger.error(
                             f"[{reason}] 私聊 {sender_id} scoped 结算失败: "
-                            f"{digest_error}"
+                            f"{type(digest_error).__name__}: {digest_error}"
                         )
                         participant_settled = False
                     if not participant_settled:

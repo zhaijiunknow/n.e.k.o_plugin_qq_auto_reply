@@ -452,4 +452,15 @@ class QQNapcatService:
                         pass
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"等待 NapCat 进程退出失败 (PID={pid}): {e}")
+                # 带上异常**类型**并截断正文：这里的 repr 会长成
+                # `Task <Task pending name='Task-889' coro=<Process.wait()…>> got Future … attached
+                # to a different loop` 那一大坨（真机 2026-09-27 一天 6 条），
+                # 既刷日志又看不清是哪一类失败。
+                #
+                # 典型成因：插件重载后，`self._napcat_process` 里那个 subprocess 对象
+                # 属于**旧事件循环**，在新循环里 await `process.wait()` 必然报
+                # "attached to a different loop"。停机收尸本来就是尽力而为
+                # （kill 已经发过），所以这里只降级成一行警告。
+                self.logger.warning(
+                    f"等待 NapCat 进程退出失败 (PID={pid}): {type(e).__name__}: {str(e)[:160]}"
+                )
