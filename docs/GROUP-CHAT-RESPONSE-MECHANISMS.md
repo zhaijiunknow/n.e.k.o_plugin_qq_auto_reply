@@ -404,7 +404,9 @@ else: delay_seconds = max(0.0, (trigger_threshold - pending_count) * average_mes
 ### 阶段 A（不依赖通道变更，立刻有价值）
 
 A1. **接通「频率闸」**：`reply_decision_node.py` 的 `neko_dynamic` 分支（`:73-83`）目前对 `trusted`/`open` 直接 `action="reply"`，概率闸只存在于 legacy 分支（`:98-106`）。把频率闸提到模式无关的位置，并允许用注意力倍率缩放（reuse `attention["multiplier"]`）。
-A2. **突发闸前移**：`reply_burst_limit`（60s/3 条）现在在门控链出口 1 之后；把它移到 `needs_attention` 判断之前，让它对所有通道生效。
+A2. ~~**突发闸前移**：`reply_burst_limit`（60s/3 条）现在在门控链出口 1 之后；把它移到 `needs_attention` 判断之前，让它对所有通道生效。~~
+    **2026-09-27 作废**：使用者拍板把这道硬闸**整条删掉**（「不要这个，有注意力控制频率了」），
+    频率改由注意力 + `pacing_hint` 软提示承担，见 SESSION-HANDOFF §34。同理 A1 的"接通频率闸"也只剩软提示那一半。
 A3. **门控决策落文件**：`[Gate]`/`[Attention]`/`[Emotion]`/`[LLM自判]` 走 `_emit_log` 只进内存环形缓冲（`__init__.py:154-161`，maxlen 500），重启即丢。照 `emit_bridge_log` 的双写办法把**被拒原因**写文件，否则「她为什么没回」永远查不到。
 A4. **`@` 排序与 @全体**：用官方 `mentions` 数组替代正则抠 `<@!id>`，实现「第一个 @ 的是别人 → 降低优先级」（AstrBot 规则）；`mentions_all` 目前是恒 False 的占位。
 

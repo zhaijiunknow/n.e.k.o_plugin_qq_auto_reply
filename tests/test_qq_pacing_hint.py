@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
-"""频率软提示：把「硬闸」那道断崖变成坡。
+"""频率软提示：**现在它是频率的唯一机制**（原来只是硬闸前面的一道坡）。
 
-现状的问题：硬闸（`reply_burst_max_replies` 条 / `reply_burst_window_seconds`）到点
-**直接静默** —— 用户看到的是"她突然不理我了"，而她并不知道自己刚才说多了。
-软提示在到点**之前**把这件事写进提示词，让她自己收敛；硬闸只当兜底。
+历史：这道软提示当初是为硬闸配的 —— 硬闸（`reply_burst_max_replies` 条 /
+`reply_burst_window_seconds`）到点**直接静默**，用户看到的是"她突然不理我了"，
+所以先在提示词里让她自己收敛，硬闸当兜底。
 
-口径刻意与硬闸共用两个键（`reply_burst_*`），不新开一份窗口/上限：两处漂移的话，
-"提醒她收敛"与"强制静默"会各说各话。
+2026-09-27 使用者口径「不要这个，有注意力控制频率了」→ **硬闸删除**（墓碑与三条理由见
+`attention_gate_service`，删除契约见 `test_qq_no_burst_gate.py`）。于是这里测的东西
+从"闸前的坡"变成了"唯一在管频率的那一层"：到参考条数的比例提醒少说/说短，
+**超过参考条数再给更强的一档**（这一档以前不可达 —— 硬闸会把第 N+1 条直接拦掉，
+计数根本到不了 limit 之上）。
+
+口径仍与那两个 `reply_burst_*` 键共用（不新开一份窗口/参考条数）：两处漂移的话，
+提示词里说的"你最近说了几条"与实际统计会各说各话。
 """
 
 from __future__ import annotations
@@ -88,8 +94,12 @@ def test_other_groups_do_not_share_the_counter():
 
 # ── 触发区间 ────────────────────────────────────────────────────────
 
-def test_hint_appears_before_the_hard_gate():
-    """3 条闸 + 0.6 → 第 2 条开始提醒；到第 3 条（硬闸）就不再提醒。"""
+def test_hint_appears_from_the_second_reply_and_gets_stronger_at_the_reference():
+    """参考 3 条 + 0.6 → 第 2 条开始提醒；**超过参考条数后换成更强的一档**。
+
+    2026-09-27 之后这里不再有硬闸（使用者：「不要这个，有注意力控制频率了」），
+    所以"到第 3 条就不再提醒"那条老行为改成了"第 3 条起提醒得更直接"。
+    """
     svc, clock = _service()
     _reply(svc)
     assert svc.pacing_hint(GROUP) == "", "第一条之后不该提醒"
@@ -98,10 +108,23 @@ def test_hint_appears_before_the_hard_gate():
     _reply(svc)
     hint = svc.pacing_hint(GROUP)
     assert "注意节奏" in hint and "已经说了 2 条" in hint
+    assert "让给群友" not in hint, "还没到参考条数就用最强的一档"
 
     clock.now += 3
     _reply(svc)
-    assert svc.pacing_hint(GROUP) == "", "已到硬闸，此时由强制静默接管（再提醒没有意义）"
+    stronger = svc.pacing_hint(GROUP)
+    assert "注意节奏" in stronger, "到参考条数之后反而闭嘴了 —— 现在没有硬闸接管"
+    assert "比平时密了" in stronger and "让给群友" in stronger
+
+
+def test_hint_keeps_firing_well_past_the_reference():
+    """没有硬闸兜底之后，说得越多提示越应该在（而不是到点就消失）。"""
+    svc, clock = _service()
+    for _ in range(6):
+        clock.now += 3
+        _reply(svc)
+    hint = svc.pacing_hint(GROUP)
+    assert "已经说了 6 条" in hint and "让给群友" in hint
 
 
 def test_hint_can_be_switched_off():
@@ -113,7 +136,7 @@ def test_hint_can_be_switched_off():
 
 
 def test_ratio_moves_the_trigger_point():
-    """比例 0.9 + 上限 10 → 第 9 条才开始提醒。"""
+    """比例 0.9 + 参考 10 条 → 第 9 条才开始提醒。"""
     svc, clock = _service(reply_burst_max_replies=10, pacing_hint_ratio=0.9)
     for _ in range(8):
         clock.now += 3
@@ -125,13 +148,25 @@ def test_ratio_moves_the_trigger_point():
 
 
 def test_window_and_limit_come_from_the_burst_keys():
-    """口径必须与硬闸共用 —— 改 burst 键，提示跟着改。"""
+    """口径仍与那两个 burst 键共用 —— 改键，提示跟着改（它们现在是软提示的参考频率）。"""
     svc, clock = _service(reply_burst_window_seconds=600, reply_burst_max_replies=5, pacing_hint_ratio=0.6)
     for _ in range(3):
         clock.now += 3
         _reply(svc)
     # 3 >= round(5*0.6)=3 → 提醒，且文案里的窗口是 600 秒
     assert "600 秒" in svc.pacing_hint(GROUP)
+
+
+def test_the_hint_never_says_she_will_be_silenced():
+    """措辞不许再暗示"会被强制静默"（那道闸已经删了，说了就是骗她）。"""
+    svc, clock = _service()
+    seen = []
+    for _ in range(5):
+        clock.now += 3
+        _reply(svc)
+        seen.append(svc.pacing_hint(GROUP))
+    for hint in seen:
+        assert "静默" not in hint and "上限" not in hint, f"措辞还在提闸: {hint}"
 
 
 def test_hint_logs_when_injected(caplog):

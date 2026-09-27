@@ -236,11 +236,15 @@ ATTENTION_NEW = (
 #: 「群聊明显等得比私聊久」那条设计不变量。
 PACING = (
     SettingSpec("reply_burst_window_seconds", "int", 60, saveable=True,
-                floor=1, description="save：回复频率窗口（秒）",
+                floor=1, description="save：频率软提示的统计窗口（秒）",
                 ui=UIInput("cfg-burst-window", min=1, max=3600, step=1,
                            label="ui.pacing.burst_window", hint="ui.pacing.burst_window.hint")),
+    # ⚠️ 这两个键的名字里还带着 "burst"，但**硬闸已删除**（2026-09-27 使用者口径：
+    #    「不要这个，有注意力控制频率了」）。它们现在是 `pacing_hint` 的**参考频率**：
+    #    窗口内她说得比这个密，就会在提示词里收到一句"你先少说两句"——不拦任何消息。
+    #    名字不改：改名要走别名迁移，而键名对使用者不可见（界面上是中文标签）。
     SettingSpec("reply_burst_max_replies", "int", 3, saveable=True,
-                floor=1, description="save：窗口内最多回复几条（第 N+1 条强制静默）",
+                floor=1, description="save：软提示的参考条数（说得比这密就提醒她收敛）",
                 ui=UIInput("cfg-burst-max", min=1, max=100, step=1,
                            label="ui.pacing.burst_max", hint="ui.pacing.burst_max.hint")),
     # 发送停顿：**生成完成之后**、真正发出去之前的一小块停顿，只为了让回复别
@@ -280,13 +284,15 @@ PACING = (
                 ui=UIInput("cfg-buffer-max-count", min=1, max=200, step=1,
                            label="ui.pacing.buffer_max_count",
                            hint="ui.pacing.buffer_max_count.hint")),
-    # 频率软提示：硬闸是断崖（到点直接静默 = "她突然不理我了"），软提示先在提示词里
-    # 让她自己收敛，硬闸只当兜底。窗口与上限直接复用上面的 reply_burst_*（单一真相）。
+    # 频率软提示：**硬闸已删除**（2026-09-27 使用者口径：「不要这个，有注意力控制频率了」，
+    # 墓碑与三条理由见 `attention_gate_service`）。所以这一对键现在是**频率的唯一机制**：
+    # 到参考条数的比例（默认 60%）→ 提醒她少说、说短；超过参考条数 → 换成更强的一档。
+    # 窗口与参考条数复用上面的 reply_burst_*（单一真相，不新开一份窗口/上限）。
     SettingSpec("pacing_hint_enabled", "bool", True, saveable=True,
-                description="save：频率软提示（到硬闸前先在提示词里提醒她收敛）"),
+                description="save：频率软提示（说得比参考条数密时，在提示词里提醒她收敛）"),
     SettingSpec("pacing_hint_ratio", "float", 0.6, saveable=True,
                 floor=0.0, ceiling=1.0,
-                description="save：到硬闸的多少比例开始提醒（3 条闸 + 0.6 → 第 2 条开始）"),
+                description="save：到参考条数的多少比例开始提醒（参考 3 条 + 0.6 → 第 2 条开始）"),
 )
 
 #: 出站守门（内容安全 + 重复过滤）。见 ``outbound_guard_service``。

@@ -205,9 +205,12 @@ class QQAttentionService:
         self.plugin = plugin
         self._cache: dict[str, dict[str, Any]] = {}
         #: 群 → 最近回复时刻（**只服务"频率软提示"**，内存态、重启即失）。
-        #: 与门控里那个硬闸计数器（`attention_gate_service._reply_timestamps`）是两份：
-        #: 那份决定"还能不能发"，这份决定"要不要在提示词里提醒她收敛"。刻意不复用 ——
-        #: 硬闸的计数口径一改就会连带改提示词行为，两者绑在一起以后没人敢动。
+        #: 门控里那个口径相同的硬闸计数器（`attention_gate_service._reply_timestamps`）
+        #: **已于 2026-09-27 随硬闸一起删除**，所以现在是**唯一**一份回复时刻环。
+        #: 当年刻意不复用它的理由（"硬闸的计数口径一改就会连带改提示词行为，两者绑在
+        #: 一起以后没人敢动"）随硬闸一同失效 —— 现在 `pacing_hint` 就是频率的唯一机制，
+        #: 口径由它自己定，不需要再与别人对齐。
+        #: 两个写入点：`update_on_reply`（普通回复）与 `note_proactive_speech`（破冰）。
         self._reply_times: dict[str, list[int]] = {}
 
     async def load_cached_state(self) -> None:
@@ -1110,25 +1113,31 @@ class QQAttentionService:
             return False
         return max(0, int(state.msgs_after_reply or 0)) == 1
 
-    # ── 频率软提示（把硬崖变成坡）────────────────────────────────────
+    # ── 频率软提示（现在**只剩它**在管频率）────────────────────────────
+    #
+    # 2026-09-27：门控里那道「窗口内发够 N 条就强制静默」的硬闸已按使用者口径删除
+    # （「不要这个，有注意力控制频率了」）。所以这一段的措辞也跟着改了 ——
+    # 它不再说"上限 N 条"（那是闸的口径），而是"你说得比平时密"的自省提示；
+    # 到了参考条数也**继续提示**（原来到点就闭嘴，因为那时由静默接管）。
 
     def _pacing_hint_enabled(self) -> bool:
-        """频率软提示开关（默认开：它只影响一句话，关掉也不会改变硬闸）。"""
+        """频率软提示开关（默认开：关掉之后频率就只剩注意力那一层在管）。"""
         return bool(self._setting("pacing_hint_enabled", True))
 
     def _pacing_window_seconds(self) -> int:
-        """与硬闸**同一个窗口**（`reply_burst_window_seconds`）——单一真相。"""
+        """统计窗口（秒）：`reply_burst_window_seconds` —— 与界面上的"回复频率窗口"同一个键。"""
         return max(1, int(self._setting("reply_burst_window_seconds", 60) or 60))
 
     def _pacing_max_replies(self) -> int:
+        """参考条数：`reply_burst_max_replies`（"比这密就该收一收"，不再触发静默）。"""
         return max(1, int(self._setting("reply_burst_max_replies", 3) or 3))
 
     def _pacing_hint_ratio(self) -> float:
-        """到硬闸的百分之多少开始提醒（默认 0.6 ≈ 3 条闸里的第 2 条）。"""
+        """到参考条数的百分之多少开始提醒（默认 0.6 ≈ 3 条里的第 2 条）。"""
         return min(1.0, max(0.0, float(self._setting("pacing_hint_ratio", 0.6) or 0.0)))
 
     def recent_reply_count(self, group_id: str, *, now: int | None = None) -> int:
-        """窗口内她在这个群回了几条（硬闸口径一致，供提示词与排查用）。"""
+        """窗口内她在这个群回了几条（供提示词与排查用）。"""
         key = str(group_id or "").strip()
         ts = int(now if now is not None else self._current_time())
         window = self._pacing_window_seconds()
@@ -1137,22 +1146,28 @@ class QQAttentionService:
         return len(rows)
 
     def pacing_hint(self, group_id: str, *, now: int | None = None) -> str:
-        """「你说得有点密了」——到硬闸前先提醒她收敛。
+        """「你说得有点密了」——提醒她自己收敛（**唯一的频率机制**，没有硬闸兜底了）。
 
-        为什么要有它：硬闸（`reply_burst_max_replies` 条 / 窗口）是**断崖** ——
-        到点直接静默，用户看到的是"她突然不理我了"。软提示把这段变成坡：先让她自己
-        少说、说短，硬闸只作为兜底。触发点按硬闸的比例给（`pacing_hint_ratio`）。
+        为什么要有它：频率不能只靠注意力（注意力回答的是"该看哪个群"，不是"这个群里
+        该说几句"）。原先这里配的是一道硬闸：到点直接静默，用户看到的是"她突然不理我了"
+        —— 而且那道闸不看上下文，真机 19:16 就把它按在一次正常的一来一往上
+        （她刚发 3 条、使用者回一句 → 被静默）。使用者口径：「不要这个，有注意力控制
+        频率了」。于是硬闸删除，只留这条"坡"：
+
+        * 到参考条数的比例（默认 60%，即 3 条里的第 2 条）→ 提醒少说、说短；
+        * 已经超过参考条数 → 换成更强的一档（"除非有人点名叫你，先把话说给群友"）。
+
+        它是**提示词里的一句话**，不拦任何消息 —— 说不说最终还是她的判断。
         """
         if not self._pacing_hint_enabled():
             return ""
         count = self.recent_reply_count(group_id, now=now)
         limit = self._pacing_max_replies()
-        # 触发点 = 硬闸 × 比例（3 条闸 + 0.6 → 第 2 条开始提醒）。
-        # 夹在 [1, limit-1]：上限留一条，否则"提醒"和"硬闸"同一刻发生、等于没有提示；
-        # limit=1 时没有可提醒的空间（`count >= limit` 那条会直接返回空）。
+        # 触发点 = 参考条数 × 比例（3 条 + 0.6 → 第 2 条开始提醒）。
+        # 夹在 [1, limit-1]：留一条缓冲，免得"第一句就提醒"；limit=1 时没有缓冲空间。
         raw = limit * self._pacing_hint_ratio()
         threshold = min(max(int(round(raw)) if raw > 0 else 0, 1), max(1, limit - 1))
-        if count < threshold or count >= limit:
+        if count < threshold:
             return ""
         window = self._pacing_window_seconds()
         # 落一条文件日志：真机验收时"提示到底有没有注入"只能靠它（提示词正文不进日志）。
@@ -1162,8 +1177,13 @@ class QQAttentionService:
             )
         except Exception:  # noqa: BLE001 —— 日志失败不该影响提示词
             pass
+        if count >= limit:
+            return (
+                f"注意节奏：你最近 {window} 秒内已经说了 {count} 条，比平时密了 —— "
+                "接下来除非有人点名叫你，先把话让给群友，等他们说完你再看要不要接。"
+            )
         return (
-            f"注意节奏：你最近 {window} 秒内已经说了 {count} 条（上限 {limit} 条），"
+            f"注意节奏：你最近 {window} 秒内已经说了 {count} 条（参考 {limit} 条），"
             "这一轮能不说就不说；要说就只说一句短的。"
         )
 

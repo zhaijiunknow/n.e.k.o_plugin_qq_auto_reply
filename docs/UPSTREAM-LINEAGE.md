@@ -245,8 +245,9 @@ Releases 下载、**不再分发**，因此不落在它的限制里 —— 但�
 1. **多群连续打分 + 焦点锁 + 显式 reason 的门控表**这一整套**形态**（`attention_service.py` 的 0~10 分、
    焦点线/保持线、锁与蜜月、情绪倍率表；`attention_gate_service.evaluate()` 里 15 个返回点、
    每个都带可读 `reason`，如 `non_focus(focus=…,score=…)` / `necessity_backoff(…)` /
-   `normal_group_passthrough` / `reply_burst_limit`）。
+   `normal_group_passthrough` / `addressee_first_at_other(…)`）。
    概念不是首创（§4.2），但这种"确定性打分 + 可读 reason 的决策表"在开源实现里没见到同款。
+   （返回点个数 2026-09-27 仍是 15：删掉 `reply_burst_limit`、新增 `addressee_first_at_other`。）
 2. **necessity 与门控的两层叠加**：MaiBot 的 necessity 是"攒够几条才思考"的省算力手段，
    我们把它挪到"焦点群内部这一层"，并重新标定了阈值（40）。
 3. **工程面**：宿主编排/插件市场/部署 NapCat/页面与 SSE 那一整套，与聊天算法无关，纯自研。

@@ -408,32 +408,34 @@ class QQAttentionGateService:
         self._retroactive_lock = asyncio.Lock()
         self._digest_tasks: set[asyncio.Task] = set()
         self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
-        self._reply_timestamps: dict[str, list[int]] = {}  # 群 → 最近回复时间戳列表
         #: 群 → 连续多少条"没在跟她说话"的消息（`human_pair_streak` 的存储）。
-        #: 先只出数据：默认惩罚 0，日志里能看到 `人对人×N`，等真机数据再决定扣多少。
+        #: 只出数据：默认惩罚 0，日志里能看到 `人对人×N`，等真机数据再决定扣多少。
         self._human_pair_streak: dict[str, int] = {}
         # 「这句该不该接」的两个状态机（内存态，重启即失）
         self._speech = GroupSpeechTracker()
         self._backoff = IdleBackoff()
         self._logger = plugin.logger
 
-    def _check_reply_burst(self, group_id: str, now: int) -> bool:
-        """检查最近是否回复过于频繁：60秒内超过3条 → 强制静默。"""
-        timestamps = self._reply_timestamps.get(group_id, [])
-        settings = self.plugin._qq_settings or {}
-        window = max(1, int(settings.get("reply_burst_window_seconds", 60) or 60))
-        max_replies = max(1, int(settings.get("reply_burst_max_replies", 3) or 3))
-        # 清理过期记录
-        timestamps[:] = [t for t in timestamps if now - t < window]
-        return len(timestamps) >= max_replies
-
-    def _record_reply(self, group_id: str, now: int) -> None:
-        """记录一次回复时间戳。"""
-        ts = self._reply_timestamps.setdefault(group_id, [])
-        ts.append(now)
-        # 只保留最近 10 条
-        if len(ts) > 10:
-            ts[:] = ts[-10:]
+    # ── 「回复过于频繁 → 强制静默」这道硬闸**已删除**（2026-09-27 使用者口径）──
+    #
+    # 原实现：`_reply_timestamps` 记她在这个群的回复时刻，窗口内条数到
+    # `reply_burst_max_replies`（真机 3 条 / 60s）就整条静默（`reply_burst_limit`），
+    # 只有 @ 她 / 引用她 / 关键词能绕过。
+    #
+    # 为什么删（使用者原话：「不要这个，有注意力控制频率了」）：
+    #
+    # 1. **它不看上下文**：真机 19:16 那次，她在 985066274 连发 3 条之后，使用者紧接着
+    #    回了一句 —— 被这道闸静默。这与 17:37 那次「破冰完没有后续」是同一类毛病：
+    #    她刚开口、这是第一条回应，却被"你太频繁了"挡住；
+    # 2. **频率本来就有两处在管**：注意力（焦点竞争 + 分数消耗 + 频率增速缩放）决定她
+    #    把时间花在哪个群，`pacing_hint`（软提示）在她说得偏密时提醒她收敛自己 ——
+    #    两者都是"坡"；这道硬闸是断崖，且是唯一一个**不看内容只看计数**的出口；
+    # 3. 真机数据：一天 17 次命中里 16 次在热闹群（那边确实刷），但**剩下那一次正好
+    #    发生在一次一来一往的对话里** —— 代价与收益不成比例。
+    #
+    # 现在频率只剩软的那一半：`attention_service.pacing_hint()`（窗口与参考条数仍用
+    # `reply_burst_*` 两个键，所以那两个键和它们的界面保留，只是不再触发静默）。
+    # 看门狗 `tests/test_qq_no_burst_gate.py` 钉住"这道闸不许回来"。
 
     # ==========================================
     # 消息评估
@@ -631,11 +633,11 @@ class QQAttentionGateService:
             self._backoff.reset(normalized_group_id)
             return GateDecision("reply", reason="reply_to_bot", force_reply=True)
 
-        # 8. 焦点群：回复频率门控：60秒内超过3条回复 → 强制静默
-        now_ts = attention._current_time()
-        if not is_at_bot and self._check_reply_burst(normalized_group_id, now_ts):
-            self.plugin._emit_log("INFO", f"[Gate] 群{normalized_group_id} 回复过于频繁，强制静默")
-            return GateDecision("ignore", reason="reply_burst_limit")
+        # 8. 「回复过于频繁 → 强制静默」这道硬闸**已删除**（2026-09-27 使用者口径：
+        #    「不要这个，有注意力控制频率了」）。原来的位置在这里，判据是"窗口内她已发
+        #    够 N 条"，@ / 引用 / 关键词可绕过 —— 详见本文件 __init__ 末尾的墓碑注释。
+        #    现在频率由两处软机制管：注意力（焦点竞争 + 分数消耗 + 频率增速缩放）
+        #    与 `attention_service.pacing_hint()`（说得偏密时提醒她自己收敛）。
 
         # 8.5 「这句到底该不该接」——只作用于 trusted 群。
         #     normal 群不在这里拦：它们本来就不回复，只按概率转发给主人；
@@ -686,7 +688,7 @@ class QQAttentionGateService:
     # ==========================================
 
     async def on_reply_sent(self, group_id: str) -> None:
-        """回复已发送 → 消耗注意力 + 记录活跃 + 频率计数"""
+        """回复已发送 → 消耗注意力 + 记录活跃（频率交给软提示，见 pacing_hint）"""
         attention = self.plugin.attention_service
         if attention:
             now = attention._current_time()
@@ -694,7 +696,6 @@ class QQAttentionGateService:
         else:
             now = int(__import__("time").time())
         self._mark_active(group_id)
-        self._record_reply(str(group_id or "").strip(), now)
         # 她说话了 → 存进「近期发言窗口」（存在感惩罚的来源），并清掉空闲退避
         self._speech.record_self(group_id, now=float(now))
         self._backoff.reset(group_id)
