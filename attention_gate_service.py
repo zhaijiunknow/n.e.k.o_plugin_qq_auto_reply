@@ -194,6 +194,18 @@ class QQAttentionGateService:
         self._last_proactive_topic_idx = topics.index(topic)
         return topic
 
+    def _icebreaker_hold_seconds(self) -> int:
+        """破冰后按住焦点的秒数（`icebreaker_hold_seconds`，默认 120，0 = 不按）。
+
+        显式取值而不用 `... or 120`：0 是有意义的值（关掉这个行为），
+        被 `or` 吞掉就再也关不掉了。
+        """
+        raw = (self.plugin._qq_settings or {}).get("icebreaker_hold_seconds", 120)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 120
+
     async def _try_icebreaker(self, group_id: str) -> bool:
         """焦点反复切到此群但无人发言 → 用主动话题破冰。"""
         # 有缓冲回复待交付时跳过
@@ -235,12 +247,36 @@ class QQAttentionGateService:
                 self.plugin.runtime_service.record_pipeline_outcome(
                     source="proactive_speech", request=request, outcome=outcome,
                 )
-                # 更新活跃时间并持久化，防止重复触发
+                # 破冰之后必须把焦点**按住**，否则等于白破。
+                #
+                # 真机 bug（2026-09-27 14:28，群 985066274）：14:28:25 破冰发出 →
+                # 14:28:39 有人接了话，她也答了（24 字）→ **14:28:41 焦点就被
+                # 更热闹的 1048307485 抢走**，接着她在那边连做 6 轮，破冰的这个群
+                # 直到 14:29:42 才拿回焦点，接她话的人被 `non_focus` 丢掉。
+                # 原因就是这里只写了 `last_reply_at`：既不锁（`_choose_focus_state`
+                # 的优先级 1 就是锁），也不重置接话反馈周期、不记频率环。
+                #
+                # 破冰的语义是「我主动开口了，等人接」——她需要的是那**几拍**的独占，
+                # 而 @ 的 `attention_lock_seconds`（叫一次就有）与破冰不是同一种来由，
+                # 所以用独立配置 `icebreaker_hold_seconds`（0 = 不按，退回旧行为）。
                 attn = getattr(self.plugin, "attention_service", None)
                 if attn:
-                    state = attn.get_state(group_id)
-                    state.last_reply_at = attn._current_time()
-                    attn._write_state(state)
+                    # 记账包在**独立**的 try 里：破冰消息已经送出去了，后面任何
+                    # 一步出错都不许把这次成功改写成 `False`（那会让上层以为没发、
+                    # 记成失败）。空文本那次事故就是"发出去的东西被报成没发"。
+                    try:
+                        hold = self._icebreaker_hold_seconds()
+                        if hold > 0:
+                            attn.lock_group(group_id, seconds=hold, reason="icebreaker")
+                        attn.note_proactive_speech(group_id)
+                        self._logger.info(
+                            f"[Icebreaker] 群 {group_id} 破冰后按住焦点 {hold}s，等待群里接话"
+                        )
+                    except Exception:
+                        self._logger.warning(
+                            "[Icebreaker] 破冰已送出，但焦点按住/记账失败（本次发言仍然算成功）",
+                            exc_info=True,
+                        )
                 return True
             else:
                 self._logger.info("[Icebreaker] AI 决定不回应破冰话题")

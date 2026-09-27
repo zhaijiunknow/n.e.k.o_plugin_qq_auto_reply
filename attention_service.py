@@ -1137,26 +1137,63 @@ class QQAttentionService:
     # 与「让位」的分工：锁表达「有人点名叫我，我必须回头应对」；分数表达
     # 「没人叫我，我自己按兴趣看哪」。两者是不同信号，不该合成一个数。
 
-    def lock_group(self, group_id: str) -> None:
-        """把注意力锁在某个群一段时间（`@猫娘` / 唤醒词触发）。
+    def lock_group(self, group_id: str, *, seconds: int | None = None, reason: str = "at") -> None:
+        """把注意力锁在某个群一段时间（`@猫娘` / 唤醒词 / **主动破冰**）。
 
         锁内 `get_focus_group()` 直接返回该群，其余群不参与竞争；到期自动解除。
         重复锁会**重置**计时（再叫一次就重新锁满）—— 这与人对重复召唤的直觉一致。
+
+        ``seconds``：不传就用 `attention_lock_seconds`（@ 的既有行为）；
+        主动破冰传 `icebreaker_hold_seconds` —— 它要的是"**我刚开口，别马上把我拽走**"，
+        与"有人点名叫我"是两种来由，所以时长可分开配、原因也写进 `last_focus_reason`
+        以便事后分辨（真机 2026-09-27 14:28 的 bug：破冰后下一拍焦点就被最热闹的群抢走，
+        回她话的人被 `non_focus` 丢掉）。
         """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
             return
+        hold = self._lock_seconds() if seconds is None else max(0, int(seconds))
         now = self._current_time()
         state = self._load_state(normalized_group_id)
-        state.lock_until = now + max(0, self._lock_seconds())
-        state.last_focus_reason = "lock"
+        if hold <= 0:
+            return
+        state.lock_until = now + hold
+        state.last_focus_reason = "lock" if reason == "at" else f"lock:{reason}"
         self._write_state(state)
         self.plugin._emit_log(
             "INFO",
-            f"[Attention] 群{normalized_group_id} 上锁 {self._lock_seconds()}s"
-            f"（@/唤醒词），期内独占焦点",
+            f"[Attention] 群{normalized_group_id} 上锁 {hold}s"
+            f"（{'@/唤醒词' if reason == 'at' else reason}），期内独占焦点",
         )
+        if self.plugin.logger:
+            self.plugin.logger.info(
+                f"[Attention] 群 {normalized_group_id} 上锁 {hold}s（reason={reason}），期内独占焦点"
+            )
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
+
+    def note_proactive_speech(self, group_id: str, *, now: int | None = None) -> None:
+        """她**主动开口**之后的记账（冷场破冰 / 主动话题）。
+
+        与 `update_on_reply` 的差别是刻意的：发言消耗的语义是"我说完了，该让位了"，
+        而主动开口要的恰恰相反（把这个群按住）。但另外两件事必须照做，否则会留下
+        两个静默的窟窿：
+
+        · `msgs_after_reply` 清零 → 接话反馈闭环（"有人接我的破冰吗"）才有起点；
+          不清的话，上一个回复周期的计数会漏进这一轮，反馈永远算在别人头上；
+        · 频率环记一笔 → 主动发言也是她说了话，`[Pacing]` 软提示与硬闸的口径才一致。
+        """
+        key = str(group_id or "").strip()
+        if not key:
+            return
+        ts = int(now if now is not None else self._current_time())
+        state = self._load_state(key)
+        state.last_reply_at = ts
+        state.msgs_after_reply = 0
+        self._write_state(self._normalize_state(state))
+        times = self._reply_times.setdefault(key, [])
+        times.append(ts)
+        window = self._pacing_window_seconds()
+        times[:] = [t for t in times if ts - t < window][-20:]
 
     def release_lock(self, group_id: str) -> None:
         """提前解除锁（如锁群被移除信任）。"""

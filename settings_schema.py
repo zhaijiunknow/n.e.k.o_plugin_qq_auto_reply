@@ -445,6 +445,14 @@ MISC = (
                 floor=0, description="save：连续冷场多少次触发破冰（0=禁用）",
                 ui=UIInput("cfg-icebreaker-threshold", min=0, max=20, step=1,
                            label="ui.attention.icebreaker", hint="ui.attention.icebreaker.hint")),
+    # 破冰后按住焦点的秒数。破冰的语义是「我主动开口了，等人接」——发完就把焦点
+    # 让给最热闹的群，等于白破（真机 2026-09-27 14:28：破冰后 2 秒焦点被抢走，
+    # 接话的人被 non_focus 丢掉）。与 `attention_lock_seconds`（被 @ 的来由）
+    # 分开配，默认 120s：够等一两轮接话，又不至于长期霸占。
+    # 0 = 不按（退回旧行为，便于对照复现）。
+    SettingSpec("icebreaker_hold_seconds", "int", 120, saveable=True,
+                floor=0,
+                description="save：主动破冰后按住焦点的秒数（0=不按，破冰后立刻回到分数仲裁）"),
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。

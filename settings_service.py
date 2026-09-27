@@ -1092,6 +1092,10 @@ class QQSettingsService:
         icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
         if icebreaker_cold_threshold is not None:
             self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))
+        # 破冰后按住焦点的秒数（0=不按）。
+        icebreaker_hold_seconds = kwargs.get("icebreaker_hold_seconds")
+        if icebreaker_hold_seconds is not None:
+            self.plugin._qq_settings["icebreaker_hold_seconds"] = max(0, int(icebreaker_hold_seconds))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))
