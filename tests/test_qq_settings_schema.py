@@ -56,12 +56,13 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "backlog_summary_threshold": 10,
     "backlog_notify_cooldown_seconds": 900,
     "backlog_issue_notify_threshold": 1,
-    "strategy_mode": "neko_dynamic",
+    # 有意删除（不在此快照里）："strategy_mode"（原默认 "neko_dynamic"）。
+    # 模式合并后它只剩单值 = 假旋钮，连配置键一起删了（SESSION-HANDOFF §24）。
     # 有意删除（不在此快照里）："enable_group_attention"（原默认 True）。
-    # 它是个**假旋钮** —— 唯一让它为真的模式（neko_dynamic，出厂默认）下
-    # `_enforce_attention_for_dynamic_mode` 会把它强制设回 True；而 neko_scene 下
-    # 门控根本不跑（message_dispatcher 只在 neko_dynamic 下调 attention_gate_service）。
-    # 现在注意力账本恒开（attention_service._enabled），是否门控由策略模式决定。
+    # 它也是**假旋钮** —— 唯一让它为真的模式（neko_dynamic，出厂默认）下会被强制设回
+    # True；而 neko_scene 下门控根本不跑（message_dispatcher 只在 neko_dynamic 下
+    # 调 attention_gate_service）。现在注意力账本恒开（attention_service._enabled），
+    # 是否门控由调用方按连接模式决定。
     "neko_dynamic_idle_timeout_seconds": 10.0,
     "neko_dynamic_waking_users": [],
     "neko_dynamic_waking_keywords": [],
@@ -339,22 +340,22 @@ def test_every_exempt_key_is_actually_referenced_somewhere():
 
 
 def test_mode_enums_derive_from_the_schema(monkeypatch):
-    """`reply_mode` / `strategy_mode` 的合法取值必须**派生自真源**，不能手工镜像。
+    """`reply_mode` 的合法取值必须**派生自真源**，不能手工镜像。
 
-    `config_store` 里的归一化是「不在集合里就**静默**改成默认值」。这两份集合曾经是
+    `config_store` 里的归一化是「不在集合里就**静默**改成默认值」。这份集合曾经是
     手抄的副本，于是往真源 `enum` 里加一个新取值时：界面能选、能存下来，运行时却被
     无声改回旧默认 —— 能配置但无效，且没有日志。
 
     `qq_connection_mode` 早就是从真源派生的（`CONNECTION_MODES`），所以这不是
     "有意分家"，是漏改。
+
+    `strategy_mode` 那一份随「回复策略」一起删除了（SESSION-HANDOFF §24）：
+    它已经没有第二个取值，归一化本身没有意义。
     """
     from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
 
     assert set(QQAutoReplyConfigStore.VALID_REPLY_MODES) == set(
         settings_schema.BY_KEY["reply_mode"].enum or ()
-    )
-    assert set(QQAutoReplyConfigStore.VALID_STRATEGY_MODES) == set(
-        settings_schema.BY_KEY["strategy_mode"].enum or ()
     )
 
     # 模拟「往真源加了一个新取值」：归一化必须认得它。手工镜像的写法会在这里失败
@@ -366,32 +367,37 @@ def test_mode_enums_derive_from_the_schema(monkeypatch):
         "归一化没有引用 VALID_REPLY_MODES，枚举是硬编码的 —— 新增取值会被静默改回默认"
     )
 
-    monkeypatch.setattr(
-        QQAutoReplyConfigStore, "VALID_STRATEGY_MODES", frozenset({"neko_dynamic", "neko_scene", "brand_new"})
-    )
-    assert QQAutoReplyConfigStore._normalize_strategy_mode("brand_new") == "brand_new", (
-        "归一化没有引用 VALID_STRATEGY_MODES，枚举是硬编码的"
-    )
 
+def test_reply_strategy_setting_is_gone():
+    """「回复策略」删除契约（SESSION-HANDOFF §24）。
 
-def test_only_one_strategy_mode_remains():
-    """模式合并契约：策略模式只剩 neko_dynamic 一个（neko_scene 已并入）。
-
-    用户决定把「猫娘场景」并进「猫娘动态」。这条测试是那次合并的锚：
-    枚举若被人加回第二个值，说明有人把退级策略又复活了（提示词/解析门控/
-    权限门控都是按「只有一个模式」简化的）。
+    它在模式合并后只剩 `neko_dynamic` 一个取值 —— 界面上选不动、代码里恒真，
+    是个假旋钮。整套（配置键 + 归一化 + 归一化助手）都删掉了；谁把它加回来，
+    这条会红。
     """
-    from plugin.plugins.qq_auto_reply import settings_schema
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
 
-    assert settings_schema.BY_KEY["strategy_mode"].enum == ("neko_dynamic",)
-    assert QQAutoReplyConfigStore.VALID_STRATEGY_MODES == frozenset({"neko_dynamic"})
-
-
-@pytest.mark.parametrize("legacy", ["neko_scene", "truth", "", None, "brand_new"])
-def test_legacy_strategy_values_normalize_to_dynamic(legacy):
-    """任何历史/非法值都归一到唯一模式 —— 老配置不需要人工改。"""
-    assert QQAutoReplyConfigStore._normalize_strategy_mode(legacy) == "neko_dynamic"
+    assert "strategy_mode" not in settings_schema.BY_KEY, "策略模式键被加回来了"
+    assert "strategy_mode" not in settings_schema.defaults(), "策略模式又写进默认值了"
+    assert not hasattr(QQAutoReplyConfigStore, "_normalize_strategy_mode"), "归一化助手被加回来了"
+    assert not hasattr(QQAutoReplyConfigStore, "VALID_STRATEGY_MODES"), "枚举集合被加回来了"
 
 
-def test_normalize_strategy_mode_keeps_the_only_valid_value():
-    assert QQAutoReplyConfigStore._normalize_strategy_mode("neko_dynamic") == "neko_dynamic"
+def test_legacy_strategy_key_is_dropped_on_load(tmp_path):
+    """老配置里残留的 `strategy_mode` 必须被当僵尸键清掉，而不是原样传下去。
+
+    与 `enable_group_attention` 那类"留着无害"的残留不同：这里主动删，
+    因为一个只剩单值的旋钮留在配置里，只会让下一个人以为它还能调。
+    """
+    import asyncio
+
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
+
+    store = QQAutoReplyConfigStore(tmp_path)
+    store.path.write_text(
+        '{"strategy_mode": "neko_scene", "reply_mode": "text"}', encoding="utf-8"
+    )
+    loaded = asyncio.run(store.load())
+    assert "strategy_mode" not in loaded
+    saved = asyncio.run(store.save(loaded))
+    assert "strategy_mode" not in saved

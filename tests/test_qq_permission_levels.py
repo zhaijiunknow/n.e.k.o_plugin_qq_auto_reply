@@ -40,7 +40,6 @@ class _Users:
 
 def _node(group_level: str = "normal", user_level: str = "none") -> QQReplyDecisionNode:
     plugin = SimpleNamespace(
-        _strategy_mode="neko_dynamic",
         attention_service=None,
         group_permission_mgr=_Groups(group_level),
         permission_mgr=_Users(user_level),

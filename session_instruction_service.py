@@ -32,11 +32,8 @@ from .prompt_fragment_templates import (
     pick_locale,
 )
 from .scene_prompt_templates import (
-    SCENE_COLLECTIVE_GROUP,
-    SCENE_DIRECTED_GROUP,
     SCENE_KIRA_UNIFIED_GROUP,
     SCENE_PRIVATE_CHAT,
-    SCENE_SHARED_GROUP,
 )
 from .time_context import build_time_context  # noqa: E402  (由 ruff --fix 归位)
 
@@ -413,11 +410,10 @@ class QQSessionInstructionService:
             format_section = self._resolve_static_layer("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM, user_language)
         else:
             format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
-        if True:  # noqa: SIM103 —— 保留原缩进结构，条件已恒真（neko_scene 合并后无「不填占位符」的路径）
-            format_section = format_section.format(
-                emoji_catalog=self._load_emoji_catalog(),
-                sticker_catalog=self._load_sticker_catalog(),
-            )
+        format_section = format_section.format(
+            emoji_catalog=self._load_emoji_catalog(),
+            sticker_catalog=self._load_sticker_catalog(),
+        )
 
         sessions_section = self._build_sessions_section(
             is_group=is_group, group_id=group_id, sender_id=sender_id,
@@ -1163,39 +1159,12 @@ class QQSessionInstructionService:
         admin_line = ""
         if permission_level == "admin":
             admin_line = f"\n## 身份确认（Identity Confirmation）\n当前发言人 {user_title}（QQ: {sender_id}）**就是主人/管理员本人**。请使用对主人的称呼和态度来回应，不要怀疑对方的身份。\n"
-        # 猫娘动态主策略：统一软指令，不加硬 Identity Boundary
-        strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
-        if strategy_mode == "neko_dynamic":
-            return admin_line + self._resolve_static_layer(
-                "prompts.group.kira_unified", SCENE_KIRA_UNIFIED_GROUP,
-                her_name=her_name, master_name=master_title, group_id=group_id or "",
-            )
-        # N.E.K.O 退级策略：四套硬场景模板（原有逻辑）
-        if group_scene_mode == "group_collective" or group_facing:
-            return admin_line + self._resolve_static_layer(
-                "prompts.group.collective", SCENE_COLLECTIVE_GROUP,
-                her_name=her_name, master_name=master_title, group_id=group_id or "",
-            )
-        if group_scene_mode == "shared_context" or shared_group_session:
-            return admin_line + self._resolve_static_layer(
-                "prompts.group.shared_session", SCENE_SHARED_GROUP,
-                her_name=her_name, master_name=master_title, group_id=group_id or "",
-            )
-        naming_instruction = (
-            self._resolve_static_layer("prompts.group.naming_with_title", '- 在回复中自然地称呼对方为"{user_title}"', user_title=user_title)
-            if address_user_by_name else
-            self._resolve_static_layer("prompts.group.naming_without_title", '- 不要直接称呼对方名字、昵称或QQ号，只针对当前话题自然回应')
-        )
-        title_line = self._resolve_static_layer("prompts.group.title_line", '- 当前发言人的称呼是：{user_title}\n', user_title=user_title) if address_user_by_name else ""
+        # 群聊场景段只有这一条路：统一的软指令（「该不该说话」的判定交给注意力门控，
+        # 场景段只描述环境）。原来的「退级策略」四套硬模板随策略模式一起删除，
+        # 见 docs/SESSION-HANDOFF.md §13/§24。
         return admin_line + self._resolve_static_layer(
-            "prompts.group.directed", SCENE_DIRECTED_GROUP,
-            her_name=her_name,
-            master_name=master_title,
-            user_title=user_title,
-            sender_id=sender_id,
-            group_id=group_id or "",
-            title_line=title_line,
-            naming_instruction=naming_instruction,
+            "prompts.group.kira_unified", SCENE_KIRA_UNIFIED_GROUP,
+            her_name=her_name, master_name=master_title, group_id=group_id or "",
         )
 
     def _build_private_scene_section(

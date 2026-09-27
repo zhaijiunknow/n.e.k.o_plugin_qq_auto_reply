@@ -16,17 +16,16 @@ class QQAutoReplyConfigStore:
 
     #: 枚举取值**从 settings_schema 派生**，不再手工镜像。
     #
-    # 这两个集合曾经是手抄的一份副本（`{"text","voice","both"}` /
-    # `{"neko_dynamic","neko_scene"}`），而下面两个归一化是「不在表里就**静默**
-    # 改成默认值」。于是往真源 enum 里加一个新取值时，界面能选、能存，运行时却被
-    # 无声改回旧默认 —— 又一个"能配置但无效"的静默失效，而且这次连日志都没有。
-    # `qq_connection_mode` 早就是从真源派生的（`__init__.CONNECTION_MODES`），
-    # 所以这里不是"有意分家"，是漏改。
+    # 这个集合曾经是手抄的一份副本（`{"text","voice","both"}`），而下面的归一化是
+    # 「不在表里就**静默**改成默认值」。于是往真源 enum 里加一个新取值时，界面能选、
+    # 能存，运行时却被无声改回旧默认 —— 又一个"能配置但无效"的静默失效，而且连日志都没有。
+    # `qq_connection_mode` 早就是从真源派生的（`__init__.CONNECTION_MODES`），所以这里不是
+    # "有意分家"，是漏改。
+    #
+    # `VALID_STRATEGY_MODES` / `_normalize_strategy_mode` 随「回复策略」一起删除了
+    # （2026-09-27）：那个键已经没有第二个取值，归一化也就没有意义。
     VALID_REPLY_MODES = frozenset(
         settings_schema.BY_KEY["reply_mode"].enum or ()
-    )
-    VALID_STRATEGY_MODES = frozenset(
-        settings_schema.BY_KEY["strategy_mode"].enum or ()
     )
 
     #: 上一次 load() 是否真的迁移/清理过键（调用方据此决定要不要落盘）。
@@ -119,11 +118,6 @@ class QQAutoReplyConfigStore:
         mode = str(value or "").strip().lower()
         return mode if mode in cls.VALID_REPLY_MODES else "text"
 
-    @classmethod
-    def _normalize_strategy_mode(cls, value: Any) -> str:
-        mode = str(value or "").strip().lower()
-        return mode if mode in cls.VALID_STRATEGY_MODES else "neko_dynamic"
-
     #: 两代注意力配置命名合并：旧 ``group_attention_*`` → 今天唯一一套
     #: ``attention_*``。只搬运「旧名有值」的语义，搬完一律删旧名，否则
     #: 配置文件里会长期并存两份同义键（这正是下面那批僵尸键的成因）。
@@ -157,6 +151,10 @@ class QQAutoReplyConfigStore:
         # open 级删除后没人再读的概率键（群概率闸与私聊转发概率）。
         "open_reply_probability",
         "truth_reply_probability",
+        # 「回复策略」删除后的遗留键（2026-09-27）。它在模式合并后只剩一个取值，
+        # 也就是个假旋钮：界面选不动、代码里恒真。与 enable_group_attention 一样，
+        # 删掉的是**配置键**而不是某个功能 —— 回复策略就是动态注意力那一条路。
+        "strategy_mode",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现
@@ -233,7 +231,6 @@ class QQAutoReplyConfigStore:
             merged["reply_mode"] = "voice"
         else:
             merged["reply_mode"] = "text"
-        merged["strategy_mode"] = self._normalize_strategy_mode(payload.get("strategy_mode"))
         merged["group_prompts"] = payload.get("group_prompts") if isinstance(payload.get("group_prompts"), dict) else {}
         merged.pop("audio_reply_enabled", None)
         return merged
@@ -258,7 +255,6 @@ class QQAutoReplyConfigStore:
                 normalized.get("attention_emotion_multipliers")
             )
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
-            normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))
             normalized["group_prompts"] = {
                 str(k): str(v) for k, v in (normalized.get("group_prompts") or {}).items()
                 if str(k).strip() and str(v).strip()

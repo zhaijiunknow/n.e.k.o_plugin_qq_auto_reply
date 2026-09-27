@@ -60,24 +60,21 @@ class QQReplyDecisionNode:
         group_id = str(request.group_id or "").strip()
         attention = self._attention_state(group_id)
 
-        # 猫娘动态主策略：注意力门控已在 dispatcher 层处理，此处补充群权限门控
-        strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
-        if strategy_mode == "neko_dynamic":
-            # 即使注意力门控已放行，仍需校验群是否在权限列表中（阻止未配置/已移除的群绕过）
-            group_level = self.plugin.group_permission_mgr.get_group_level(group_id) if self.plugin.group_permission_mgr else "none"
-            if group_level == "none":
-                return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="permission_none")
-            if group_level == "normal":
-                # normal 群：**只在被 @ 或引用她时回**；其余消息按概率转发给主人。
-                if not (request.is_at_bot or request.is_reply_to_bot):
-                    relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
-                    return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
-                kwargs = self._decision_kwargs(request, group_level, attention)
-                kwargs["attention_gate_reason"] = "normal_at_bot"
-                return QQReplyDecision(action="reply", **kwargs)
+        # 群聊判定只有这一条路（策略模式已合并并删除，见 SESSION-HANDOFF §13/§24）：
+        # 注意力门控已在 dispatcher 层处理，此处补充群权限门控。
+        #
+        # 即使注意力门控已放行，仍需校验群是否在权限列表中（阻止未配置/已移除的群绕过）
+        group_level = self.plugin.group_permission_mgr.get_group_level(group_id) if self.plugin.group_permission_mgr else "none"
+        if group_level == "none":
+            return QQReplyDecision(action="ignore", **self._decision_kwargs(request, group_level, attention), attention_gate_reason="permission_none")
+        if group_level == "normal":
+            # normal 群：**只在被 @ 或引用她时回**；其余消息按概率转发给主人。
+            if not (request.is_at_bot or request.is_reply_to_bot):
+                relay_probability = self.plugin.group_permission_mgr.get_normal_relay_probability(group_id) if self.plugin.group_permission_mgr else None
+                return QQReplyDecision(action="relay", relay_probability=relay_probability, **self._decision_kwargs(request, group_level, attention), attention_gate_reason="relay")
             kwargs = self._decision_kwargs(request, group_level, attention)
-            kwargs["attention_gate_reason"] = "attention_gate"
+            kwargs["attention_gate_reason"] = "normal_at_bot"
             return QQReplyDecision(action="reply", **kwargs)
-
-        # neko_scene（「退级策略」）已删除：现在只有动态注意力策略这一条路，
-        # 它的判定在 _decide_group 的 neko_dynamic 分支里（上方）。
+        kwargs = self._decision_kwargs(request, group_level, attention)
+        kwargs["attention_gate_reason"] = "attention_gate"
+        return QQReplyDecision(action="reply", **kwargs)

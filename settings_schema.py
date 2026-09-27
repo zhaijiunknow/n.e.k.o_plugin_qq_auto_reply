@@ -384,11 +384,11 @@ MISC = (
     SettingSpec("backlog_labels", "list", DEFAULT_BACKLOG_LABELS, saveable=True,
                 description="save：关键词/优先级标签表", handler="backlog_labels"),
     # ── 策略 ──
-    # 只剩一个策略模式（用户决定把 neko_scene「退级策略」并入 neko_dynamic）。
-    # 配置里残留的旧值 "neko_scene" 由 config_store._normalize_strategy_mode 归一过来。
-    SettingSpec("strategy_mode", "str", "neko_dynamic", saveable=True,
-                enum=("neko_dynamic",), description="save：策略模式（仅动态注意力策略）",
-                handler="strategy_mode"),
+    # 「回复策略」（strategy_mode）**已整个删除**（2026-09-27 使用者要求）。
+    # 它在模式合并后只剩 "neko_dynamic" 一个取值，也就是一个界面上永远选不动、
+    # 代码里永远恒真的下拉框 —— 与当初删掉的 `enable_group_attention` 同一类假旋钮。
+    # 老配置里残留的 `strategy_mode` 键无害：不再被读出，也不会被写回，
+    # 下次保存配置时自然消失。见 docs/SESSION-HANDOFF.md §24。
     SettingSpec("neko_dynamic_idle_timeout_seconds", "float", 10.0, floor=0.0,
                 description="已废弃（注意力系统下不再使用）"),
     SettingSpec("neko_dynamic_waking_users", "list", [],

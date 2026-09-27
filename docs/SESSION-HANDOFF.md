@@ -3536,11 +3536,12 @@ Event loop is closed` 不是成因 —— 那条路径 `_ws` 非空，而崩溃�
 
 ### 15.6 队列剩余（未动）
 
-- `napcat.html` 残留的 scene-prob-card（`display:none`）+ `ui.shared.card.scene_prob`
-  的 i18n 键 + 约 10 处 `neko_scene` 注释/JS。
+- ~~`napcat.html` 残留的 scene-prob-card（`display:none`）+ `ui.shared.card.scene_prob`
+  的 i18n 键 + 约 10 处 `neko_scene` 注释/JS。~~ → **已完成**（§24「回复策略」整个删除，
+  连带这三处；剩下的 `neko_scene` 字样只在叙述历史的注释与文档里）。
 - 给 `reply_necessity_threshold` 补面板控件（需要把「不可保存」的键接到 dashboard
   快照 + `save_settings` 参数上）。
-- C 档（门控出口合并 + 顺序看门狗）、接话反馈闭环。
+- C 档（门控出口合并 + 顺序看门狗）。~~接话反馈闭环~~ → **已完成**（§23）。
 
 ---
 
@@ -4111,3 +4112,67 @@ necessity 那段的注释担心的正是这件事（「若在这里返回 ignore
   不必改代码。
 - ⚠️ **真机未验证**：应用现在是停着的（48911/48916/6199 全部拒连），
   下次启动才加载这份代码；`attention_feedback_*` 五个键也会在那时出现在配置里。
+
+---
+
+## 24. 删除「回复策略」（strategy_mode）+ 顺带修好三处不可达界面
+
+使用者要求：「回复策略 可以直接移除了」。
+
+### 24.1 为什么它是个假旋钮
+
+§13 把 `neko_scene`（退级策略）并进 `neko_dynamic` 之后，`strategy_mode` 的枚举只剩
+`("neko_dynamic",)` 一个值：**界面上永远选不动、代码里恒真**。它跟当初删掉的
+`enable_group_attention` 是同一类东西 —— 留着只会让下一个人以为还能调。
+所以这次连**配置键**一起删，而不只是把下拉框藏起来。
+
+### 24.2 删了什么（一处不漏）
+
+| 层 | 删掉的东西 |
+|---|---|
+| `settings_schema` | `strategy_mode` 的 `SettingSpec`（含 enum 与 handler） |
+| `config_store` | `VALID_STRATEGY_MODES`、`_normalize_strategy_mode`、两处归一化调用；键进 `_LEGACY_ZOMBIE_KEYS`（**老配置里的残留值下次 load/save 就被清掉**，不是原样传递） |
+| `settings_service` | 载入时的 `_strategy_mode` 赋值与日志里的「策略:」；`save_settings` 的策略处理块 |
+| `dashboard_service` | 签名里的 `strategy_mode`、转发、快照里的归一化派生字段 |
+| `__init__` | `_strategy_mode` 属性；`prompt_editor` 的 `strategy_mode` 返回字段与日志 |
+| `reply_decision_node` | `if strategy_mode == "neko_dynamic":` 整层缩进（恒真分支去掉，判定只剩一条路） |
+| `session_instruction_service` | `_build_group_scene_section` 的「退级策略」四套硬模板兜底（不可达）；顺带清掉 `if True:` 的缩进残留与三个不再使用的 `SCENE_*` 导入 |
+| 前端 `napcat.html` | 「回复策略」页与卡片、topbar「策略」标签、状态页快捷入口、向导里的「策略模式」条目与跳转；`state.strategy`、`cfg-strategy-mode`、`scene-prob-card` 三处 JS |
+| 前端 `open_platform.html` | 整个隐藏的「回复策略」页 |
+| i18n 两个包 | `card.strategy` / `card.strategy_mode` / `card.strategy_neko_dynamic` / `card.scene_prob` / `topbar.tab_strategy` / `prompts.overview_strategy` |
+
+### 24.3 删的过程中撞出的三处「界面不可达」（一并修了，这是本次真正的收获）
+
+1. **全局「普通转发概率」被藏在恒隐卡片里**。`cfg-normal-prob` 原来住在
+   `scene-prob-card`，而那张卡片的 `display:none` 是**硬编码**的（原设计靠策略下拉切换，
+   而策略永远只有单值）⇒ 这个**活旋钮**在界面上根本点不到。现在搬进
+   「普通群转发」卡片（`normal-relay-card`，带提示），正常显示。
+2. **按群覆盖概率被恒假条件挡住**。群聊弹窗里的「普通转发概率」输入框只在
+   `if(isScene)` 分支里渲染，而 `isScene = state.strategy === 'neko_scene'` 恒假
+   ⇒ **单群覆盖概率永远填不了**。现在无条件渲染。
+3. **开放平台「机器人账本」住在隐藏页里**。`#bind-bots` 与回复策略挤在同一个
+   `page-config-strategy` div 里，而那个页面既不在 topbar 标签、又是 `display:none`
+   ⇒ `loadBots()` 在页面加载时**确实被调用**，用户却永远看不到账本（而且一旦那个
+   容器被删掉，`loadBots` 会在 `box` 为 null 时抛错）。现在搬进可见的「连接」页。
+
+> 共同点：三处都是「代码写好了、界面到不了」。这类问题的隐蔽性在于**没有任何报错** ——
+> 与 `attention_gate_service` 那个「写好了但走不到」是同一类，值得当成一条通用检查：
+> **删掉一个恒真/恒假的开关时，要顺着它把所有被它挡住的 UI 重新过一遍。**
+
+### 24.4 验证
+
+- 新看门狗 `tests/test_qq_no_reply_strategy.py`（**11 条**）：两个页面不许再有策略痕迹
+  （下拉/卡片/`state.strategy`/页面 id）、topbar 与快捷入口不许再指向它、两个 bundle 不许
+  再有那 6 个文案键且中英键集合一致，外加**三处可达性的正向断言**（卡片没被藏、
+  doSave 里真的提交全局概率、弹窗无条件渲染、账本在可见页且 `loadBots()` 仍在加载时调用）。
+- `tests/test_qq_settings_schema.py`：`test_only_one_strategy_mode_remains` 等 8 条旧断言
+  换成 **`test_reply_strategy_setting_is_gone`**（键/归一化/枚举都不许回来）+
+  **`test_legacy_strategy_key_is_dropped_on_load`**（老配置里的残留必须被清掉）。
+- 变异取证 `tests/verify_no_reply_strategy_fail_to_pass.py` → **9/9**
+  （8 处变异：键加回 schema／下拉加回页面／卡片重新藏起来／渲染重新挂回恒假条件／
+  全局概率从 payload 摘掉／连接页藏起来／账本不再渲染／文案键加回中文包；
+  每项目标红 + 控制组绿 + 逐字节还原）。
+- 全量 **1246 passed**，ruff 全绿。
+- **未做浏览器验证**：应用是停着的。静态页从磁盘直读（不需要 reload），
+  但后端改动要等下次启动；启动后建议第一眼确认「参数」页有「普通群转发」卡片、
+  配置标签里没有「策略」、开放平台连接页能看到机器人账本。

@@ -58,7 +58,6 @@ class QQDashboardService:
                 },
                 # 派生值 / 只读值：不是配置键，或需要归一，因此覆盖在上面。
                 "reply_mode": self.plugin.config_store.normalize_reply_mode(settings.get("reply_mode")),
-                "strategy_mode": self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode")),
                 "backlog_labels": list(settings.get("backlog_labels") or []),
                 "normal_relay_probability": float(self.plugin._normal_relay_probability),
                     "token_configured": bool(settings.get("token")),
@@ -183,7 +182,6 @@ class QQDashboardService:
         group_member_memory_enabled: Optional[bool] = None,
         private_participant_memory_enabled: Optional[bool] = None,
         allow_cross_group_context: Optional[bool] = None,
-        strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
@@ -251,7 +249,6 @@ class QQDashboardService:
                 group_member_memory_enabled=group_member_memory_enabled,
                 private_participant_memory_enabled=private_participant_memory_enabled,
                 allow_cross_group_context=allow_cross_group_context,
-                strategy_mode=strategy_mode,
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,

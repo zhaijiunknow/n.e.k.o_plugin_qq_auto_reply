@@ -700,13 +700,11 @@ class QQSettingsService:
         self.plugin._backlog_summary_threshold = max(1, int(settings.get("backlog_summary_threshold", 10) or 10))
         self.plugin._backlog_notify_cooldown_seconds = max(60, int(settings.get("backlog_notify_cooldown_seconds", 900) or 900))
         self.plugin._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
-        # 猫娘动态注意力策略配置
-        self.plugin._strategy_mode = self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode"))
         # 前端日志：显示当前连接配置（token 脱敏），方便用户排查浏览器自动回填等问题
         url = str(settings.get("onebot_url") or "").strip()
         masked = self.plugin._mask_token(str(settings.get("token") or ""))
         mode = str(settings.get("qq_connection_mode") or "napcat").strip()
-        self.plugin._emit_log("INFO", f"连接模式: {mode} | 监听地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''} | 策略: {self.plugin._strategy_mode}")
+        self.plugin._emit_log("INFO", f"连接模式: {mode} | 监听地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''}")
 
     @staticmethod
     def _default_onebot_url(mode: str) -> str:
@@ -1234,11 +1232,8 @@ class QQSettingsService:
                 )
             )
         # 猫娘动态策略配置
-        strategy_mode = kwargs.get("strategy_mode")
-        if strategy_mode is not None:
-            self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)
-            self.plugin._strategy_mode = self.plugin._qq_settings["strategy_mode"]
-            self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._strategy_mode}")
+        # （`strategy_mode` 的处理块已随「回复策略」一起删除：它只有一个取值，
+        #  不再是一个可切换的东西。见 docs/SESSION-HANDOFF.md §24。）
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
         # 通用路径：表里**没有** handler 的键按 kind 归一（含钳制）写回。

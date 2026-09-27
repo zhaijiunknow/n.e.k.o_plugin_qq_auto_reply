@@ -78,12 +78,10 @@ def _save_locked(**kwargs) -> dict:
         qq_client=None,
         _running=False,
         _startup_error=None,
-        _strategy_mode="",
         _ensure_qq_client_initialized=lambda: None,
     )
     service = QQSettingsService.__new__(QQSettingsService)
     service.plugin = plugin
-    service._enforce_attention_for_dynamic_mode = lambda: None
     service._stamp_group_memory_transition = lambda *, enabled_after: None
     service._spawn_group_memory_sync_task = lambda coro: coro.close()
 

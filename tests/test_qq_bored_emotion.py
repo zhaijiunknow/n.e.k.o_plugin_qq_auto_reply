@@ -261,7 +261,6 @@ def _postprocess_node():
     from plugin.plugins.qq_auto_reply.reply_postprocess_node import QQReplyPostprocessNode
 
     plugin = SimpleNamespace(
-        _strategy_mode="neko_dynamic",
         _emit_log=lambda *a, **k: None,
         _sanitize_generated_reply=lambda text: text,
         i18n=SimpleNamespace(t=lambda key, default=None: default or key),

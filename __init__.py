@@ -229,7 +229,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._handler_shutdown_timeout_seconds = 10.0
         self._normal_relay_probability = 0.1
         self._admin_qq: Optional[str] = None
-        self._strategy_mode: str = "neko_dynamic"
+        # `_strategy_mode` 已随「回复策略」删除（2026-09-27）：它只有一个取值，
+        # 留着只会让每个读取点都写一句恒真的分支。见 docs/SESSION-HANDOFF.md §24。
         # NapCat 进程/启动错误状态由连接层 napcat_service 自持，插件不再持有。
         self._proactive_task: Optional[asyncio.Task] = None
         self._last_proactive_enabled = False
@@ -1502,7 +1503,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # ⚠️ 必须和 session_instruction_service._resolve_static_layer 的兜底同时
         # 翻：写侧用 'zh-TW' 存、读侧还按 'zh' 的候选链找，覆盖会静默失效。
         locale = frontend_locale if frontend_locale else get_global_language_full()
-        strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
         is_napcat = mode in ("napcat", "napcat_forward")
         overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
         if not isinstance(overrides, dict):
@@ -1564,15 +1564,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "default_text": default_text,
                 "effective_text": effective_text,
             })
-        self._emit_log("INFO", f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
-        self.logger.info(f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
+        self._emit_log("INFO", f"[PromptEditor] mode={mode} is_napcat={is_napcat} locale={locale} layers={len(layers)}")
+        self.logger.info(f"[PromptEditor] mode={mode} is_napcat={is_napcat} locale={locale} layers={len(layers)}")
         proactive_topics = list((self._qq_settings or {}).get("proactive_topics") or [])
         if not proactive_topics and self.attention_gate_service:
             proactive_topics = list(getattr(self.attention_gate_service, "_DEFAULT_PROACTIVE_TOPICS", []))
         return Ok({
             "mode": mode,
             "locale": locale,
-            "strategy_mode": strategy_mode,
             "layers": layers,
             "proactive_topics": proactive_topics,
         })

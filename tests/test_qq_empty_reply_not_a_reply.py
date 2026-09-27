@@ -36,7 +36,6 @@ DEFAULT_REPLY = "嗯嗯~"
 
 def _node():
     plugin = SimpleNamespace(
-        _strategy_mode="neko_dynamic",
         _emit_log=lambda *a, **k: None,
         _sanitize_generated_reply=lambda text: text,
         i18n=SimpleNamespace(t=lambda key, default=None: default or DEFAULT_REPLY),

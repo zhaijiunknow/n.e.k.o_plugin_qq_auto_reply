@@ -126,9 +126,8 @@ def test_other_template_tags_are_still_stripped():
 
 # ── 2. 解析门控必须与"提示词有没有教标签"一致 ────────────────────────
 
-def _postprocess_node(*, strategy: str, needs_attention: bool):
+def _postprocess_node(*, needs_attention: bool):
     plugin = SimpleNamespace(
-        _strategy_mode=strategy,
         _emit_log=lambda *a, **k: None,
         _sanitize_generated_reply=lambda text: text,
         qq_client=SimpleNamespace(needs_attention=needs_attention),
@@ -137,8 +136,8 @@ def _postprocess_node(*, strategy: str, needs_attention: bool):
     return QQReplyPostprocessNode(plugin)
 
 
-def _finalize(*, strategy: str, needs_attention: bool, raw: str):
-    node = _postprocess_node(strategy=strategy, needs_attention=needs_attention)
+def _finalize(*, needs_attention: bool, raw: str):
+    node = _postprocess_node(needs_attention=needs_attention)
     context = SimpleNamespace(
         ephemeral_session=False, force_reply=False, permission_level="trusted",
     )
@@ -150,7 +149,7 @@ OPEN_PLAT_STYLE_OUTPUT = "<at>820040531</at> 收到~ <reply>114514</reply>"
 
 def test_open_platform_parses_tags():
     """开放平台：标签必须被解析（提示词教了它们）。"""
-    outcome = _finalize(strategy="neko_dynamic", needs_attention=False, raw=OPEN_PLAT_STYLE_OUTPUT)
+    outcome = _finalize(needs_attention=False, raw=OPEN_PLAT_STYLE_OUTPUT)
     assert outcome.blocks, "没有解析出任何块 —— 标签会退化成裸文本"
     block = outcome.blocks[0]
     assert block.at_user == "820040531", "@ 没解析出来，用户会看到裸 QQ 号"
@@ -163,7 +162,7 @@ def test_napcat_also_parses_tags():
     历史上这里有一条「NapCat + neko_scene 不解析」的防回归断言 —— 那个组合已经
     不存在（neko_scene 被合并掉），所以断言反过来：现在必须解析。
     """
-    outcome = _finalize(strategy="neko_dynamic", needs_attention=True, raw=OPEN_PLAT_STYLE_OUTPUT)
+    outcome = _finalize(needs_attention=True, raw=OPEN_PLAT_STYLE_OUTPUT)
     assert outcome.blocks, "NapCat 下标签必须被解析（提示词教了它们）"
     assert outcome.blocks[0].at_user == "820040531"
 
@@ -307,7 +306,7 @@ def test_unconfirmed_reaction_is_not_reported_as_success():
 def test_reaction_only_output_is_not_treated_as_silence():
     """只贴一个表情、不发文字，是合法回复 —— 不能判成 `llm_skip`。"""
     outcome = _finalize(
-        strategy="neko_dynamic", needs_attention=True, raw="<emoji>277</emoji>"
+        needs_attention=True, raw="<emoji>277</emoji>"
     )
     assert outcome.emoji_reaction_id == "277", "反应 id 没解析出来"
     assert outcome.postprocess_reason != "llm_skip", (
