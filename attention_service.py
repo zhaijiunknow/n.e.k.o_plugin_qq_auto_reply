@@ -935,6 +935,13 @@ class QQAttentionService:
         if count < threshold or count >= limit:
             return ""
         window = self._pacing_window_seconds()
+        # 落一条文件日志：真机验收时"提示到底有没有注入"只能靠它（提示词正文不进日志）。
+        try:
+            self.plugin.logger.info(
+                f"[Pacing] 群 {group_id} 频率软提示已注入（{count}/{limit} 条 · {window}s 窗口）"
+            )
+        except Exception:  # noqa: BLE001 —— 日志失败不该影响提示词
+            pass
         return (
             f"注意节奏：你最近 {window} 秒内已经说了 {count} 条（上限 {limit} 条），"
             "这一轮能不说就不说；要说就只说一句短的。"

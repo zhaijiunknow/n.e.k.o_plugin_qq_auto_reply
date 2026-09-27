@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService
@@ -49,7 +50,7 @@ def _service(**overrides):
         backlog_store=None,
         permission_mgr=None,
         _emit_log=lambda *a, **k: None,
-        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        logger=logging.getLogger("qq.attention"),
     )
     svc = QQAttentionService(plugin)
     clock = _Clock()
@@ -131,6 +132,19 @@ def test_window_and_limit_come_from_the_burst_keys():
         _reply(svc)
     # 3 >= round(5*0.6)=3 → 提醒，且文案里的窗口是 600 秒
     assert "600 秒" in svc.pacing_hint(GROUP)
+
+
+def test_hint_logs_when_injected(caplog):
+    """注入时必须落一条**文件日志**（真机验收靠它确认提示有没有生效）。"""
+    import logging as _logging
+
+    svc, clock = _service()
+    for _ in range(2):
+        clock.now += 3
+        _reply(svc)
+    with caplog.at_level(_logging.INFO):
+        svc.pacing_hint(GROUP)
+    assert any("[Pacing]" in r.message for r in caplog.records), "软提示注入没有留日志"
 
 
 # ── 注入路径 ────────────────────────────────────────────────────────

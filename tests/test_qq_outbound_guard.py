@@ -65,6 +65,35 @@ def _guard(**settings) -> QQOutboundGuardService:
 
 # ── ① 内容安全 ──────────────────────────────────────────────────────
 
+def test_empty_blacklist_warns_once(caplog):
+    """词表为空时提醒一次 —— 真机实测线上正是这种"闸在位、词表空"的状态。"""
+    plugin = SimpleNamespace(
+        _qq_settings={"backlog_labels": [{"id": "mention", "keywords": ["@全体成员"], "priority": 60}]},
+        logger=logging.getLogger("qq.guard.empty"),
+        _emit_log=lambda *a, **k: None,
+    )
+    guard = QQOutboundGuardService(plugin)
+
+    with caplog.at_level(logging.INFO):
+        guard.check(group_id=GROUP, text="第一句内容")
+        guard.check(group_id=GROUP, text="第二句内容")
+
+    warnings = [r for r in caplog.records if "没有任何黑名单词" in r.message]
+    assert len(warnings) == 1, f"应恰好提醒一次，实际 {len(warnings)} 次"
+
+
+def test_no_warning_when_blacklist_has_words(caplog):
+    guard = _guard()
+    with caplog.at_level(logging.INFO):
+        guard.check(group_id=GROUP, text="普通一句话")
+    assert not [r for r in caplog.records if "没有任何黑名单词" in r.message]
+
+
+def test_blacklist_words_reads_negative_priority_labels():
+    assert QQOutboundGuardService.blacklist_words(BLACKLIST_LABELS) == ["傻逼", "滚"]
+    assert QQOutboundGuardService.blacklist_words(None) == []
+
+
 def test_blacklisted_text_is_blocked():
     verdict = _guard().check(group_id=GROUP, text="你这个傻逼")
     assert verdict.blocked and verdict.reason == "blacklist"
@@ -205,6 +234,50 @@ class _EchoAttention:
 
     def get_focus_group(self):
         return GROUP
+
+
+def _bridge_service(guard):
+    """桥接直发（别的插件让猫娘说一句）用的最小 plugin 桩。"""
+    from plugin.plugins.qq_auto_reply.runtime_ops_service import QQProactiveMessageService
+
+    client = _FakeQQClient()
+    plugin = SimpleNamespace(
+        qq_client=client,
+        outbound_guard_service=guard,
+        logger=logging.getLogger("qq.bridge"),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={},
+        _admin_qq="820040531",
+        _ensure_qq_client_connected=lambda: None,
+        _validate_group_id=lambda gid: str(gid),
+        _validate_outbound_message=lambda text: str(text).strip(),
+    )
+    return QQProactiveMessageService(plugin), client
+
+
+def test_bridge_blocks_and_logs_to_file(caplog):
+    """桥接直发被拦时**必须写文件日志**。
+
+    真机验收时正是靠这条发现"拦了但日志里查不到" —— `_emit_log` 只进内存环形缓冲
+    （UI 面板），不进日志文件；只有 `logger.warning` 才落盘。
+    """
+    guard = _guard()
+    service, client = _bridge_service(guard)
+
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(service.send_group_message(group_id=GROUP, message="滚", verbatim=True))
+
+    assert result.is_err(), "被拦时必须报失败（调用方要知道没发出去）"
+    assert client.sent == [], "被拦的文本不许发出去"
+    assert any("[Outbound]" in r.message for r in caplog.records), "拦截没有写文件日志"
+
+
+def test_bridge_clean_message_passes():
+    guard = _guard()
+    service, client = _bridge_service(guard)
+    result = asyncio.run(service.send_group_message(group_id=GROUP, message="正常一句话", verbatim=True))
+    assert result.is_ok()
+    assert client.sent == [(GROUP, "正常一句话")]
 
 
 def _echo_service(guard):

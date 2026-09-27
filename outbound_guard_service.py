@@ -60,6 +60,10 @@ class QQOutboundGuardService:
         self._recent: dict[str, list[tuple[str, float]]] = {}
         #: 累计拦截计数（给日志/排查用，不做行为开关）。
         self.blocked_count = {"blacklist": 0, "duplicate": 0}
+        #: 「词表是空的」只提醒一次。
+        #: 真机验收发现：闸在位、词表空 → 它永远拦不住任何东西，而使用者会以为
+        #: 安全网开着（线上就是这种状态：`backlog_labels` 里一条 priority<0 都没有）。
+        self._warned_empty_blacklist = False
 
     # ── 配置 ────────────────────────────────────────────────────
 
@@ -109,6 +113,7 @@ class QQOutboundGuardService:
 
         if self._blacklist_enabled():
             labels = list((getattr(self.plugin, "_qq_settings", None) or {}).get("backlog_labels") or [])
+            self._warn_if_blacklist_empty(labels)
             try:
                 hit = QQFeedbackClassifier.is_blacklisted(content, labels)
             except Exception:  # noqa: BLE001 —— 词表坏掉不能把发送卡死
@@ -159,10 +164,9 @@ class QQOutboundGuardService:
     # ── 辅助 ────────────────────────────────────────────────────
 
     @staticmethod
-    def _matched_word(text: str, labels: list[dict[str, Any]]) -> str:
-        """尽力回一个命中的词，仅供日志（命中判定以 classifier 为准）。"""
-        lowered = str(text or "").lower()
-        best = ""
+    def blacklist_words(labels: list[dict[str, Any]] | None) -> list[str]:
+        """词表里所有黑名单词（`priority < 0` 的标签的 keywords）。"""
+        words: list[str] = []
         for label in labels or []:
             if not isinstance(label, dict):
                 continue
@@ -172,8 +176,34 @@ class QQOutboundGuardService:
                 blacklist = False
             if not blacklist:
                 continue
-            for word in label.get("keywords") or []:
-                needle = str(word or "").strip().lower()
-                if needle and needle in lowered and len(needle) > len(best):
-                    best = needle
+            words.extend(str(w).strip() for w in (label.get("keywords") or []) if str(w).strip())
+        return words
+
+    def _warn_if_blacklist_empty(self, labels: list[dict[str, Any]]) -> None:
+        """词表为空时提醒一次 —— 否则"闸在位"会被误读成"安全网开着"。
+
+        真机实测（2026-09-27）：线上 `backlog_labels` 只有一条 `mention`（priority=60），
+        一条黑名单都没有，于是这个功能在真实群里**永远不会命中**。
+        """
+        if self._warned_empty_blacklist or self.blacklist_words(labels):
+            return
+        self._warned_empty_blacklist = True
+        try:
+            self.plugin.logger.info(
+                "[Outbound] 出站内容安全已启用，但关键词表里**没有任何黑名单词**"
+                "（priority<0 的标签）—— 现在它不会拦下任何东西；"
+                "需要拦的词请加到「关键词标签」页并把优先级填成负数。"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _matched_word(text: str, labels: list[dict[str, Any]]) -> str:
+        """尽力回一个命中的词，仅供日志（命中判定以 classifier 为准）。"""
+        lowered = str(text or "").lower()
+        best = ""
+        for word in QQOutboundGuardService.blacklist_words(labels):
+            needle = word.lower()
+            if needle in lowered and len(needle) > len(best):
+                best = needle
         return best

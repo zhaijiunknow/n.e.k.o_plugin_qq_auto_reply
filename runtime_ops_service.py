@@ -357,6 +357,12 @@ class QQProactiveMessageService:
                         group_id=normalized_group_id, text=prompt_message, kind="bridge",
                     )
                     if verdict.blocked:
+                        # `_emit_log` 只进内存环形缓冲（UI 面板），**不进日志文件** ——
+                        # 真机验收时就是靠这个才发现"拦了但日志里查不到"。两个都写。
+                        self.plugin.logger.warning(
+                            f"[Outbound] 桥接直发被拦截（{verdict.reason}: {verdict.detail}）: "
+                            f"{prompt_message[:40]!r}"
+                        )
                         self.plugin._emit_log(
                             "WARN",
                             f"[Proactive·原文] 出站拦截（{verdict.reason}: {verdict.detail}）",
