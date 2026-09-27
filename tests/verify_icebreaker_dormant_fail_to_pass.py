@@ -1,4 +1,4 @@
-"""fail-to-pass 证据：破冰休眠的八处接线都是必要条件。
+"""fail-to-pass 证据：破冰休眠的十处接线都是必要条件。
 
 被验证的东西（使用者 2026-09-27：「破冰一次还是没有人接话 → 拖入休眠，用其他群竞态；
 休眠的群可以用 @ 唤醒」+「**没 @ 一直休**」）：
@@ -8,7 +8,7 @@
 - **全员休眠不许变成全体静音**（退回最高分群，而不是返回空焦点）；
 - 休眠**要放掉破冰那把锁**（锁优先于休眠过滤，不放锁等于白让）；
 - **@ 要能唤醒**（清休眠 + 照常上锁）；
-- 总开关 **关掉就真的不睡**；
+- 总开关 **关掉就真的不睡**，而且**当场让所有休眠群回来**（判定 + 清标记两条都要）。
 - 默认口径 **「没 @ 一直休」**不许被写成"到点自己醒"。
 
 铁律同 verify_outbound_guard_fail_to_pass.py：目标用例先绿、锚点唯一、恢复放 finally
@@ -56,7 +56,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "休眠群不退出竞争（其他群拿不到竞态机会）",
-        "        awake = [state for state in states if not self._state_is_dormant(state, now)]\n"
+        "        awake = [state for state in states if not self._is_asleep(state, now)]\n"
         "        if awake:\n"
         "            states = awake",
         "        awake = [state for state in states if True]\n"
@@ -66,10 +66,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "全员休眠时返回空焦点（变成集体静音）",
-        "        awake = [state for state in states if not self._state_is_dormant(state, now)]\n"
+        "        awake = [state for state in states if not self._is_asleep(state, now)]\n"
         "        if awake:\n"
         "            states = awake",
-        "        awake = [state for state in states if not self._state_is_dormant(state, now)]\n"
+        "        awake = [state for state in states if not self._is_asleep(state, now)]\n"
         "        if awake or True:\n"
         "            states = awake",
     ),
@@ -99,6 +99,22 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "总开关失效（关也关不掉）",
         "        if not self._dormant_enabled() or self._state_is_dormant(state, now):",
         "        if self._state_is_dormant(state, now):",
+    ),
+    (
+        "attention_service.py",
+        "关掉开关不立刻放行（标记还在，用户看不到变化）",
+        "        if not self._dormant_enabled():\n            return False\n        return self._state_is_dormant(state, now)",
+        "        return self._state_is_dormant(state, now)",
+    ),
+    (
+        "attention_service.py",
+        "关掉开关时标记清不掉（关了再开又立刻睡下）",
+        "            if (int(state.dormant_until or 0) or bool(state.dormant_forever)) and not self._dormant_enabled():\n"
+        "                state.dormant_until = 0\n"
+        "                state.dormant_forever = False",
+        "            if False:\n"
+        "                state.dormant_until = 0\n"
+        "                state.dormant_forever = False",
     ),
     (
         "attention_service.py",
@@ -178,7 +194,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 破冰休眠的八处接线都是必要条件")
+    print(f"[PASS] {len(results)}/{len(results)} —— 破冰休眠的十处接线都是必要条件")
     return 0
 
 

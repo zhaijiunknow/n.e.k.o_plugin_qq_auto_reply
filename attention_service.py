@@ -445,15 +445,30 @@ class QQAttentionService:
         return max(0, int(self._setting("icebreaker_dormant_seconds", 0)))
 
     def is_dormant(self, group_id: str, *, now: int | None = None) -> bool:
-        """这个群现在是否处于休眠（不参与焦点竞争）。"""
+        """这个群现在是否处于休眠（不参与焦点竞争）。
+
+        走 `_is_asleep`（含总开关）：开关关掉时对外也必须报"没睡"，
+        否则这个查询与 `_choose_focus_state` 的实际行为会各说各话。
+        """
         st = self._load_state(str(group_id or "").strip())
-        return self._state_is_dormant(st, int(now if now is not None else self._current_time()))
+        return self._is_asleep(st, int(now if now is not None else self._current_time()))
 
     @staticmethod
     def _state_is_dormant(state: QQGroupAttentionState, now: int) -> bool:
         if bool(getattr(state, "dormant_forever", False)):
             return True
         return int(state.dormant_until or 0) > int(now or 0)
+
+    def _is_asleep(self, state: QQGroupAttentionState, now: int) -> bool:
+        """焦点竞争里真正生效的判定：**总开关关掉时谁都不算睡**。
+
+        为什么要在这里再问一次开关：关掉开关的直觉是"让它们都回来"，而休眠标记是
+        已经写在状态里的（还落过盘）。只在"新入睡"那一侧问开关的话，用户关掉之后
+        会发现没有任何变化 —— 一个关不掉的开关比没有开关更糟。
+        """
+        if not self._dormant_enabled():
+            return False
+        return self._state_is_dormant(state, now)
 
     def _apply_dormancy(self, state: QQGroupAttentionState, now: int, *, reason: str) -> bool:
         """把"该睡了"写进 state（**不写盘、不打日志** —— 两条调用路径共用一份判据）。
@@ -796,7 +811,7 @@ class QQAttentionService:
         #
         # 全都在睡时保持原样（不筛）：否则焦点变成 None，所有群的消息都会被判
         # non_focus —— 那就不是"让位给别的群"，而是"她彻底不说话了"。
-        awake = [state for state in states if not self._state_is_dormant(state, now)]
+        awake = [state for state in states if not self._is_asleep(state, now)]
         if awake:
             states = awake
         # ── 优先级 2：分数仲裁（无锁时的连续归属）──────────────────────
@@ -1607,6 +1622,15 @@ class QQAttentionService:
             # emotion_display 到期 → 重置为 calm
             if now > state.emotion_display_until and state.emotion_display != "calm":
                 state.emotion_display = "calm"
+            # 总开关被关掉 → 把休眠标记**清干净**（不只是"判定上不生效"）。
+            # 不清的话，用户把开关关掉又打开，那些旧标记会立刻让群重新睡下 ——
+            # 看上去就像"开关没记住我刚才关过"。
+            if (int(state.dormant_until or 0) or bool(state.dormant_forever)) and not self._dormant_enabled():
+                state.dormant_until = 0
+                state.dormant_forever = False
+                self.plugin._emit_log(
+                    "INFO", f"[Attention] 群{group_id} 休眠已解除（破冰休眠总开关关闭）",
+                )
             state = self._apply_decay(state, now)
             self._decay_emotion(state, now)
             # 接话反馈：**由时间触发**的结算点（没有新消息的群也要能结算出「没人接」）。

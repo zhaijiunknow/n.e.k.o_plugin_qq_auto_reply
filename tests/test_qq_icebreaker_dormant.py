@@ -362,6 +362,40 @@ def test_all_groups_dormant_is_not_a_global_mute():
     assert _focus_of(svc, clock) == BUSY, "全都在睡时必须仍有一个焦点（最高分）"
 
 
+def test_disabling_the_switch_wakes_everyone_immediately():
+    """**关掉开关 = 让它们都回来**：休眠标记是落过盘的，判定必须当场让路。
+
+    只在"新入睡"那一侧问开关的话，用户关掉之后没有任何变化 ——
+    一个关不掉的开关比没有开关更糟。
+    """
+    svc, clock = _service()
+    _seed(svc, CALM, 9.0, focus=True)
+    _seed(svc, BUSY, 1.0)
+    _break_ice_and_wait(svc, clock)
+    assert _focus_of(svc, clock) == BUSY
+
+    svc.plugin._qq_settings["icebreaker_dormant_enabled"] = False
+    assert svc.is_dormant(CALM) is False, "关掉开关后它还在睡"
+    clock.now += 1800
+    assert _focus_of(svc, clock) == CALM, "关掉开关后休眠群仍被排除在竞争之外"
+
+
+def test_disabling_the_switch_also_clears_the_flag_on_the_next_tick():
+    """标记也要清干净：否则关掉再打开，旧标记会让群立刻重新睡下。"""
+    svc, clock = _service()
+    _seed(svc, CALM, 6.0)
+    _break_ice_and_wait(svc, clock)
+    assert svc._load_state(CALM).dormant_forever is True
+
+    svc.plugin._qq_settings["icebreaker_dormant_enabled"] = False
+    _tick(svc)
+    st = svc._load_state(CALM)
+    assert st.dormant_forever is False and int(st.dormant_until) == 0
+
+    svc.plugin._qq_settings["icebreaker_dormant_enabled"] = True
+    assert svc.is_dormant(CALM) is False, "重新打开开关后旧标记又生效了"
+
+
 def test_enter_dormancy_is_idempotent_and_reports_first_time_only():
     svc, _ = _service()
     assert svc.enter_dormancy(CALM, reason="no_reply") is True
