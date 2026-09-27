@@ -129,3 +129,38 @@ def test_private_send_is_logged_too(caplog):
     assert client.sent == [("820040531", "在的")]
     hits = [r.message for r in caplog.records if "[Send]" in r.message]
     assert hits and "private" in hits[0], hits
+
+
+def test_a_voice_reply_is_not_logged_as_zero_characters(caplog):
+    """**没有正文的投递不许写成「0 字」** —— 真机 15:00:54 就是这么误导读日志的人的。
+
+    `[Send] group … 已发送（0 字, blocks=1）` 看上去像"发了一条空消息"，而实际是
+    语音（`reply_mode=both`）或表情/poke。日志要按块里**真正有什么**说。
+    """
+    node, _client = _node()
+    plan = QQDeliveryPlan(
+        target_type="group", target_id=GROUP,
+        blocks=[QQMessageBlock(record="file:///tmp/x.amr")],
+    )
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(node.deliver(plan))
+
+    assert result is not None and result.delivered is True
+    hits = [r.message for r in caplog.records if "[Send]" in r.message]
+    assert hits and "语音" in hits[0], hits
+    assert "0 字" not in hits[0], f"语音被写成 0 字：{hits[0]}"
+
+
+def test_a_sticker_only_send_is_described_as_a_sticker():
+    """摘要按块里**真正有什么**写（fake 客户端没有 sticker/poke 能力，这里直接测摘要）。"""
+    node, _client = _node()
+    describe = node._describe_blocks
+
+    assert describe([QQMessageBlock(sticker="1")]) == "表情"
+    assert describe([QQMessageBlock(poke="820040531")]) == "戳一戳"
+    assert describe([QQMessageBlock(emoji="14")]) == "表情回应"
+    assert describe([QQMessageBlock(record="a.amr")]) == "语音"
+    assert describe([QQMessageBlock(poke="820040531"), QQMessageBlock(text="在的")]) == "2 字/戳一戳", (
+        "首块是装饰、正文在后面时必须报出正文字数（旧写法只看首块 → 0 字）"
+    )
+    assert describe([QQMessageBlock()]) == "无内容"

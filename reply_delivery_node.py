@@ -156,7 +156,7 @@ class QQReplyDeliveryNode:
             try:
                 self.plugin.logger.info(
                     f"[Send] {plan.target_type} {plan.target_id} 已发送"
-                    f"（{len(first_text)} 字, blocks={len(blocks)}）"
+                    f"（{self._describe_blocks(blocks)}, blocks={len(blocks)}）"
                 )
             except Exception:  # noqa: BLE001 —— 日志失败不该影响投递结论
                 pass
@@ -304,6 +304,34 @@ class QQReplyDeliveryNode:
         # 两个平台的文本发送现在都有回执：开放平台失败吞异常返回 None，
         # NapCat 走 echo 往返（超时返回 None）。显式 None = 未确认送达。
         return result is not None
+
+    @staticmethod
+    def _describe_blocks(blocks: list[QQMessageBlock]) -> str:
+        """把"这条到底发了什么"写成日志里的一小段（`3 字` / `语音` / `表情/戳一戳`）。
+
+        为什么不用 `len(first_text)`：真机 15:00:54 出现过
+        `[Send] group 1048307485 已发送（0 字, blocks=1）` —— 读日志的人会以为她发了
+        **一条空消息**，而实际是语音（`reply_mode=both` 时会走 record 块）或表情/poke
+        这类**没有正文**的投递。以「首块正文字数」当摘要，遇到"首块是装饰、正文在后面"
+        或"压根没有正文"都会误报成 0 字。这里按块里**真正有什么**逐类列出来。
+        """
+        text_chars = sum(len(str(getattr(b, "text", "") or "").strip()) for b in blocks)
+        kinds: list[str] = []
+        if text_chars:
+            kinds.append(f"{text_chars} 字")
+        if any(getattr(b, "record", None) for b in blocks):
+            kinds.append("语音")
+        if any(getattr(b, "sticker", None) for b in blocks):
+            kinds.append("表情")
+        if any(getattr(b, "poke", None) for b in blocks):
+            kinds.append("戳一戳")
+        if any(getattr(b, "emoji", None) for b in blocks):
+            kinds.append("表情回应")
+        if any(getattr(b, "ark", None) for b in blocks):
+            kinds.append("卡片")
+        if any(getattr(b, "keyboard", None) for b in blocks):
+            kinds.append("按钮")
+        return "/".join(kinds) or "无内容"
 
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         """表情包投递。**两条通道走法不同，不能合并**：
