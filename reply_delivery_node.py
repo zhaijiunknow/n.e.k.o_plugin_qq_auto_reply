@@ -160,6 +160,26 @@ class QQReplyDeliveryNode:
                 )
             except Exception:  # noqa: BLE001 —— 日志失败不该影响投递结论
                 pass
+        else:
+            # **未投递那一半**（与上面那条对称，2026-09-27 补）。
+            #
+            # 缺口实证：14:41:48 群 1048307485 生成了一条 24 字回复，日志里
+            # **一条投递痕迹都没有** —— 没有 `已发送`（对，它确实没发出去），
+            # 也没有任何"为什么没发"的记录。`delivered = content_sent if
+            # content_attempted else decoration_sent` 为 False 时此前是完全静默的：
+            # 用户看到的是"她生成了却不说话"，而日志里查不到原因。
+            # 这一行把三个分量都写出来，下次直接能判是哪一类：
+            #   有正文块=False        → 计划里根本没有正文（纯装饰/被过滤光）
+            #   正文确认=False        → 真发了但平台没确认（NapCat 超时/开放平台吞异常）
+            #   装饰=False            → poke/表情包没发出去（冷却期等）
+            try:
+                self.plugin.logger.warning(
+                    f"[Send] {plan.target_type} {plan.target_id} **未投递**"
+                    f"（blocks={len(blocks)}, 有正文块={content_attempted}, "
+                    f"正文确认={content_sent}, 装饰={decoration_sent}）"
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return QQDeliveryResult(
             delivered=delivered,
             target_type=plan.target_type,

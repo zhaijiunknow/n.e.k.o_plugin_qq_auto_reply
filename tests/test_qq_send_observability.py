@@ -85,7 +85,38 @@ def test_failed_send_does_not_log_success(caplog):
         result = asyncio.run(node.deliver(_plan("你好呀")))
 
     assert result is not None and result.delivered is False
-    assert not [r for r in caplog.records if "[Send]" in r.message], "发送失败却记了已发送"
+    assert not [r for r in caplog.records if "已发送" in r.message], "发送失败却记了已发送"
+
+
+def test_failed_send_says_why_it_was_not_delivered(caplog):
+    """**未投递也要留一行**（2026-09-27 真机缺口：生成了 24 字却查不到为什么没发）。
+
+    只写"发了"的那一半，等于下次出问题还是只能猜。三个分量都要落进日志。
+    """
+    node, _client = _node(fail=True)
+    with caplog.at_level(logging.INFO):
+        asyncio.run(node.deliver(_plan("你好呀")))
+
+    hits = [r.message for r in caplog.records if "未投递" in r.message]
+    assert len(hits) == 1, f"未投递应恰好留一行日志，实际 {hits}"
+    assert GROUP in hits[0] and "blocks=1" in hits[0], hits[0]
+    assert "有正文块=True" in hits[0] and "正文确认=False" in hits[0], hits[0]
+
+
+def test_plan_without_any_content_is_reported_as_not_delivered(caplog):
+    """计划里根本没有正文（纯装饰/被过滤光）时必须留痕，不能静默 return。"""
+    node, client = _node()
+    plan = QQDeliveryPlan(
+        target_type="group", target_id=GROUP,
+        blocks=[QQMessageBlock(reply_to="12345")],   # 只有引用、没有正文
+    )
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(node.deliver(plan))
+
+    assert result is not None and result.delivered is False
+    assert client.sent == [], "只有引用没有正文的块不该发出去"
+    hits = [r.message for r in caplog.records if "未投递" in r.message]
+    assert hits and "有正文块=False" in hits[0], hits
 
 
 def test_private_send_is_logged_too(caplog):
