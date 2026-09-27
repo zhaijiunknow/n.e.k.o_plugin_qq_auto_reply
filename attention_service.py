@@ -92,6 +92,14 @@ class QQGroupAttentionState:
     emotion_updated_at: int = 0
     emotion_display: str = "calm"     # 前端展示用标签，衰减比 logic emotion 慢
     emotion_display_until: int = 0
+    # ── 接话反馈（她说完之后群里有没有人接）──
+    # 一个「回复周期」= 她发言 → 群里其他人的回应 → 到点结算一次。
+    # 结算状态用 ``feedback_settled_at`` 与 ``last_reply_at`` 的**时间先后**表示，
+    # 不另存 pending 布尔量：重启后从存档就能自洽地判断这一轮到底结算过没有。
+    msgs_after_reply: int = 0         # 她上次发言之后别人的消息条数（live，给提示词看）
+    feedback_settled_at: int = 0      # 上次结算时刻
+    feedback_tier: str = ""           # 上次结算结论："" | silent | quiet | warm
+    feedback_msgs: int = 0            # 上次结算时计入的条数
 
     def dimension_dict(self) -> dict[str, float]:
         """展示用：标量 + 相位 + 情绪是否活跃。"""
@@ -124,6 +132,10 @@ class QQGroupAttentionState:
             "emotion_updated_at": int(self.emotion_updated_at),
             "emotion_display": str(self.emotion_display or "calm"),
             "emotion_display_until": int(self.emotion_display_until),
+            "msgs_after_reply": int(self.msgs_after_reply),
+            "feedback_settled_at": int(self.feedback_settled_at),
+            "feedback_tier": str(self.feedback_tier or ""),
+            "feedback_msgs": int(self.feedback_msgs),
         }
 
     @classmethod
@@ -150,6 +162,11 @@ class QQGroupAttentionState:
             emotion_updated_at=int(data.get("emotion_updated_at") or 0),
             emotion_display=str(data.get("emotion_display") or "calm"),
             emotion_display_until=int(data.get("emotion_display_until") or 0),
+            # 旧存档没有这几个键 → 0/""：等价于「她还没发过言，没有可结算的反馈」。
+            msgs_after_reply=int(data.get("msgs_after_reply") or 0),
+            feedback_settled_at=int(data.get("feedback_settled_at") or 0),
+            feedback_tier=str(data.get("feedback_tier") or ""),
+            feedback_msgs=int(data.get("feedback_msgs") or 0),
         )
         # 旧维度模型迁移：旧 attention_score 是四维加权分，与周期模型标量语义不同——
         # 直接按新模型从当前值开始重新积累，相位默认 rise。
@@ -351,6 +368,33 @@ class QQAttentionService:
     def _decay_interval(self) -> float:
         """注意力衰减循环的 tick 间隔（秒）。"""
         return max(0.1, float(self._setting("attention_decay_interval_seconds", 5.0)))
+
+    # ── 接话反馈（B5 闭环）的四个量 ──
+
+    def _feedback_enabled(self) -> bool:
+        """接话反馈开关。关掉后既不结算也不注入提示词（完全回到旧行为）。"""
+        return bool(self._setting("attention_feedback_enabled", True))
+
+    def _feedback_window_seconds(self) -> float:
+        """她发言后等多久才敢下「有没有人接」的结论（秒）。
+
+        为什么必须有这个窗口：她刚说完的那一瞬间「0 条回应」只说明大家还没打完字。
+        默认 90 秒 ≈ 两三个人的打字与反应时间；比 ``attention_fall_seconds``（30s）长，
+        所以一个没人接的群会**先**按正常节奏回落，再由反馈补一脚。
+        """
+        return max(0.0, float(self._setting("attention_feedback_window_seconds", 90.0)))
+
+    def _feedback_silent_penalty(self) -> float:
+        """没人接话时扣掉的注意力（回落加速）。"""
+        return max(0.0, float(self._setting("attention_feedback_silent_penalty", 0.4)))
+
+    def _feedback_warm_bonus(self) -> float:
+        """群友接起来时加上的注意力。"""
+        return max(0.0, float(self._setting("attention_feedback_warm_bonus", 0.4)))
+
+    def _feedback_warm_count(self) -> int:
+        """她发言后多少条回应算「聊起来了」。"""
+        return max(1, int(self._setting("attention_feedback_warm_count", 3)))
 
     def _frequency_target_gap(self) -> float:
         """发言频率的目标间隔（秒）：恰好这个节奏时增速为基准 1.0×。"""
@@ -691,6 +735,12 @@ class QQAttentionService:
         state.attention_score = min(self._max_attention(), state.attention_score + boost)
         state.last_boost_at = now
 
+        # 接话反馈：别人说的每一条都算「她上次发言之后的回应」。
+        # 顺手做一次**惰性结算** —— 结算本身由时间触发（见 _settle_feedback），
+        # 放在这里只是让「刚好有消息在窗口之后到达」的群不必等下一个 decay tick。
+        state.msgs_after_reply = max(0, int(state.msgs_after_reply or 0)) + 1
+        self._settle_feedback(state, now)
+
         self._write_state(self._normalize_state(state))
         await self._persist()
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力变更 → SSE 通知前端
@@ -743,6 +793,9 @@ class QQAttentionService:
         cost = max(0.0, self._max_attention() * self._consume_ratio())
         state.attention_score = max(0.0, state.attention_score - cost)
         state.last_focus_reason = "reply_consume"
+        # 新的回复周期从这里开始：把「她上次发言之后的回应数」清零，
+        # 于是上一次周期的计数（已结算或已作废）不会漏进这一轮。
+        state.msgs_after_reply = 0
         self._write_state(self._normalize_state(state))
         await self._persist()
         return self.get_snapshot()
@@ -754,6 +807,78 @@ class QQAttentionService:
             now = self._current_time()
         self._advance_phase(state, now)
         return self._normalize_state(state)
+
+    # ── 接话反馈结算（幂等，一轮一次）──
+
+    def _settle_feedback(self, state: QQGroupAttentionState, now: int) -> str:
+        """结算「她上一次发言之后群里有没有人接」，返回本次结论（"" = 这轮无需/不能结算）。
+
+        三条判定：
+
+        - ``silent``：窗口内 **0 条**回应 → 扣 ``attention_feedback_silent_penalty``
+          （她插了话没人理，这个群/这个话题不值得继续占注意力）；
+        - ``quiet``：1~2 条 → 不动分数（有人在应，但还看不出热度）；
+        - ``warm``：≥ ``attention_feedback_warm_count`` 条 → 加 ``attention_feedback_warm_bonus``
+          （话题在群里是活的，值得多待）。
+
+        **幂等性由时间戳保证**：``feedback_settled_at >= last_reply_at`` 就说明这一轮
+        已经结算过；她在 ``update_on_reply`` 里刷新 ``last_reply_at``，于是下一轮重新开始。
+        这个判断同时让重复调用（decay 循环 + 消息路径各来一次）不会重复加减分。
+
+        结算**由时间触发而不是由消息触发**：一个彻底没人说话的群永远不会有新消息，
+        若只挂在消息路径上，「没人接」这种最需要被发现的场景反而永远结算不了。
+        """
+        if not self._feedback_enabled():
+            return ""
+        last_reply_at = int(state.last_reply_at or 0)
+        if last_reply_at <= 0:
+            return ""
+        if int(state.feedback_settled_at or 0) >= last_reply_at:
+            return ""
+        if now - last_reply_at < self._feedback_window_seconds():
+            return ""
+        count = max(0, int(state.msgs_after_reply or 0))
+        warm_count = self._feedback_warm_count()
+        if count >= warm_count:
+            tier, delta = "warm", self._feedback_warm_bonus()
+        elif count >= 1:
+            tier, delta = "quiet", 0.0
+        else:
+            tier, delta = "silent", -self._feedback_silent_penalty()
+        if delta:
+            state.attention_score = max(
+                0.0, min(self._max_attention(), float(state.attention_score) + delta)
+            )
+        state.feedback_settled_at = now
+        state.feedback_tier = tier
+        state.feedback_msgs = count
+        if delta:
+            state.last_focus_reason = f"feedback:{tier}"
+        return tier
+
+    def feedback_line(self, group_id: str, *, now: int | None = None) -> str:
+        """给提示词用的一句「你上次发言之后群里什么反应」。
+
+        这一句是反馈闭环的**可见那一半**：分数调整只改变她往哪个群看，而这句话让她
+        知道「刚才那句有没有被接住」。取自 Heartflow 的两句注入
+        （「上次回复后群里进行了热烈讨论」/「上次回复后无人接话」），并按我们的
+        三档（warm / quiet / silent）细了一档。
+        """
+        if not self._feedback_enabled():
+            return ""
+        state = self._load_state(str(group_id or "").strip())
+        last_reply_at = int(state.last_reply_at or 0)
+        if last_reply_at <= 0:
+            return ""
+        ts = int(now if now is not None else self._current_time())
+        count = max(0, int(state.msgs_after_reply or 0))
+        if count >= self._feedback_warm_count():
+            return f"你上次发言之后，群里接着聊了 {count} 条 —— 这个话题在群里是活的。"
+        if count >= 1:
+            return f"你上次发言之后，群里有人接着说了 {count} 条。"
+        if ts - last_reply_at < self._feedback_window_seconds():
+            return "你刚才发过言，群里还没有人回应（也可能只是还没打完字）。"
+        return "你上次发言之后，群里一直没人接话 —— 这个话题大概没被接住。"
 
     # ── 排序 ──
 
@@ -836,6 +961,10 @@ class QQAttentionService:
         emo = (this_state or {}).get("emotion", "calm") if this_state else "calm"
         if emo and emo != "calm":
             parts.append(f"当前情绪: {emo}")
+
+        feedback = self.feedback_line(group_id)
+        if feedback:
+            parts.append(feedback)
 
         return "\n".join(parts)
 
@@ -1167,6 +1296,8 @@ class QQAttentionService:
                 state.emotion_display = "calm"
             state = self._apply_decay(state, now)
             self._decay_emotion(state, now)
+            # 接话反馈：**由时间触发**的结算点（没有新消息的群也要能结算出「没人接」）。
+            self._settle_feedback(state, now)
             self._write_state(state)
         # 检查焦点是否变化，自动设置 focus_acquired_at（蜜月计时起点）
         new_focus_id = self._get_top_group_id()

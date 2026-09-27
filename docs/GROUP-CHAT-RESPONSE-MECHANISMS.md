@@ -431,6 +431,12 @@ B4. **节流与自愈（照抄 §5.6 的常数，替代固定突发闸）**：
    - **升级式封禁（可选，来自 `koishi-plugin-group-control`）**：超限先只 **warn** 一次，再超则 `blockDur = base × expBase^(blockCount−1)`（默认 300s、指数 2、窗口 3600s 内累计），并设 **`blocked-silent` 状态**——静默不提示，靠 `blockNotifyCooldown`（60s）节流提示本身，避免限流提示自己刷屏。
    - **焦点自愈**：连续 5 次「无需发言」主动释放焦点并禁止回抢（MaiBot `FOCUS_NO_ACTION_EXIT_THRESHOLD`），取代固定 90s 锁。
 B5. **把「接话反馈」写回评分**：`msgs_after_bot_reply == 0` → 注意力回落加速（她插了话没人理）；`>=3` → 提升该群焦点分（话题在我们这边）。对应 Heartflow 的两句注入（`（上次回复后群里进行了热烈讨论）` / `（上次回复后无人接话）`）与 MaiBot 的 retro review。
+    > ✅ **已落地（2026-09-27）**：见 `docs/SESSION-HANDOFF.md` §23。实际做法比这里写的多了两条约束 ——
+    > ① **结算由时间触发**（`decay_all` 每 tick），因为彻底没人说话的群永远不会有新消息，
+    > 结算只挂在消息路径上会漏掉最该被发现的场景；② **幂等靠时间戳**
+    > （`feedback_settled_at >= last_reply_at`），decay 循环与消息路径各调一次不会重复加减分。
+    > 三档数值：`0 → silent(-0.4)` / `1~2 → quiet(0)` / `≥3 → warm(+0.4)`，窗口 90 秒，
+    > 五个键都在 `settings_schema`（不进面板）。
 B6. **给模型一条「等一下」的出路**：引入 `wait(seconds)` / `no_action` 式节奏动作（MaiBot Timing Gate），`wait` 语义取「**等待期间不因新消息提前恢复**」，并设 `max_consecutive_wait_count = 3` 上限。我们现在只有「回 / 不回」二值。
 
 ### 阶段 C（通道升级后才有意义）

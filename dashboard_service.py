@@ -212,6 +212,11 @@ class QQDashboardService:
         attention_frequency_target_gap: Optional[float] = None,
         attention_frequency_min_multiplier: Optional[float] = None,
         attention_frequency_max_multiplier: Optional[float] = None,
+        attention_feedback_enabled: Optional[bool] = None,
+        attention_feedback_window_seconds: Optional[float] = None,
+        attention_feedback_silent_penalty: Optional[float] = None,
+        attention_feedback_warm_bonus: Optional[float] = None,
+        attention_feedback_warm_count: Optional[int] = None,
         locale: Optional[str] = None,
     ):
         try:
@@ -275,6 +280,11 @@ class QQDashboardService:
                 attention_frequency_target_gap=attention_frequency_target_gap,
                 attention_frequency_min_multiplier=attention_frequency_min_multiplier,
                 attention_frequency_max_multiplier=attention_frequency_max_multiplier,
+                attention_feedback_enabled=attention_feedback_enabled,
+                attention_feedback_window_seconds=attention_feedback_window_seconds,
+                attention_feedback_silent_penalty=attention_feedback_silent_penalty,
+                attention_feedback_warm_bonus=attention_feedback_warm_bonus,
+                attention_feedback_warm_count=attention_feedback_warm_count,
                 locale=locale,
             )
         except ValueError as exc:

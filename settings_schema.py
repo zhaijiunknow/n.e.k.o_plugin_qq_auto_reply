@@ -202,6 +202,26 @@ ATTENTION_NEW = (
                 ui=UIInput("cfg-att-emotion-multipliers", kind="textarea",
                            label="ui.attention.emotion_multipliers",
                            hint="ui.attention.emotion_multipliers.hint")),
+    # ── 接话反馈闭环（ROUND1 方案 B5）──
+    # 「她说完之后群里有没有人接」是**唯一**能把她的发言与群的反应连起来的信号：
+    # 没人接 → 这个群/这个话题不值得继续占注意力；接起来了 → 值得多待一会儿。
+    # 前置参考：Heartflow 会把这两句注入提示词（「上次回复后群里进行了热烈讨论」/
+    # 「上次回复后无人接话」），MaiBot 的 retro review 是同一类做法的工具化版本。
+    #
+    # 为什么不进面板：D 档已经定了「面板只留 7 个用户能自己推理的行为旋钮」
+    # （tests/test_qq_attention_panel_surface.py 钉住）。这五个是**内部量级**，
+    # 按老规矩留在 schema 与配置文件里。
+    SettingSpec("attention_feedback_enabled", "bool", True, saveable=True,
+                description="save：接话反馈开关（她上次回复后群里有没有人接 → 影响注意力）"),
+    SettingSpec("attention_feedback_window_seconds", "float", 90.0, saveable=True,
+                floor=0.0,
+                description="save：她发言后等多少秒才下结论（太短会把「还没打完字」误判成没人接）"),
+    SettingSpec("attention_feedback_silent_penalty", "float", 0.4, saveable=True,
+                floor=0.0, description="save：没人接话时扣多少注意力（回落加速）"),
+    SettingSpec("attention_feedback_warm_bonus", "float", 0.4, saveable=True,
+                floor=0.0, description="save：群友接起来时加多少注意力"),
+    SettingSpec("attention_feedback_warm_count", "int", 3, saveable=True,
+                floor=1, description="save：她发言后几条回应算「聊起来了」"),
 )
 
 #: 回复节奏与频率闸。缓冲只暴露标量 —— "按条数分桶"的那张等待表保持硬编码。
