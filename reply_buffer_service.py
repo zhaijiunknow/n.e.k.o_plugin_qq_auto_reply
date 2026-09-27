@@ -265,6 +265,41 @@ class QQReplyBufferService:
         self.plugin = plugin
         self._pending: dict[str, PendingReply] = {}  # session_key → PendingReply
 
+    def _log(self, level: str, message: str) -> None:
+        """缓冲区的决策**同时进文件日志**（原来 14 处 `_emit_log` 只进内存环形缓冲）。
+
+        由来（使用者 2026-09-27：「为什么破冰完没有后续的回复，看」）：
+        真机 17:37:53 生成了一条 24 字回复，之后日志里**什么都没有** ——
+        没有 `[Send]`、没有 `未投递`、也没有任何"丢掉/合并/作废"的记录；
+        全天 151 轮生成里 **104 轮没有对应的发送**（其中一部分是设计上的
+        合并，但至少这一次不是：那条消息之后 23 分钟没有新消息）。
+        而缓冲区的全部 14 处日志走的都是 `_emit_log`（UI 面板的内存环形缓冲，
+        重启即失、只有 15 行），文件里一个字都查不到 —— 诊断只能停在
+        "生成之后消失了"。这条通道必须打通：**"她明明生成了却没说话"这类
+        问题，全部要经过缓冲区**。
+
+        仍然照旧发一份 `_emit_log`（面板里那条时间线不能少），
+        只是**多加**一路文件日志。任何一路失败都不影响另一路。
+        """
+        text = message if message.startswith("[") else f"[Buffer] {message}"
+        logger = getattr(self.plugin, "logger", None)
+        if logger is not None:
+            try:
+                writer = {
+                    "DEBUG": getattr(logger, "debug", None),
+                    "INFO": getattr(logger, "info", None),
+                    "WARN": getattr(logger, "warning", None),
+                    "ERROR": getattr(logger, "error", None),
+                }.get(level) or getattr(logger, "info", None)
+                if callable(writer):
+                    writer(text)
+            except Exception:      # noqa: BLE001 —— 日志失败不该影响投递
+                pass
+        try:
+            self.plugin._emit_log(level, message)
+        except Exception:          # noqa: BLE001
+            pass
+
     # ── 开关 ──
 
     #: 两个独立开关的配置键。群聊与私聊**分开**控制，因为缓冲动机不同：
@@ -430,7 +465,7 @@ class QQReplyBufferService:
             existing.task = asyncio.create_task(
                 self._deliver_after_wait(session_key, existing, existing.generation)
             )
-            self.plugin._emit_log("DEBUG", f"[Buffer] 预缓冲追加（共{n}条），等待 {extra:.1f}s，跳过 LLM 生成")
+            self._log("DEBUG", f"[Buffer] 预缓冲追加（共{n}条），等待 {extra:.1f}s，跳过 LLM 生成（{session_key}）")
             return True
 
         # 无缓冲 → 创建新缓冲，等 pipeline 完成后 schedule_reply 会填充回复
@@ -533,7 +568,7 @@ class QQReplyBufferService:
             else:
                 extra = 0.0
             existing.wait_until = time.time() + extra
-            self.plugin._emit_log("DEBUG", f"缓冲追加（共{n}条），等待 {extra:.1f}s")
+            self._log("INFO", f"[Buffer] 追加回复（共{n}条，等待 {extra:.1f}s，{session_key}）")
 
             # 中段条数 → 走 pipeline 发简短确认（门槛随上限推导，见 _ack_floor）
             if (
@@ -768,9 +803,16 @@ class QQReplyBufferService:
         """等待暂停后，汇总缓冲消息让 LLM 生成最终回复并发送。"""
         now = time.time()
         delay = max(0.0, pending.wait_until - now)
+        self._log(
+            "INFO",
+            f"[Buffer] 排定投递（{session_key}，等待 {delay:.1f}s，"
+            f"message_count={pending.message_count}，草稿 {len(pending.buffered_texts)} 条）",
+        )
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
+            # 静默丢弃点之一 —— 必须留痕，否则"生成了一条却没发出去"查不到原因
+            self._log("WARN", f"[Buffer] 等待被取消（新消息到达/任务被撤），本条不投递（{session_key}）")
             return  # 新消息打断了等待
 
         if (
@@ -779,14 +821,22 @@ class QQReplyBufferService:
         ):
             # 两道都要：换了 pending 对象（缓冲已作废）与同对象换了代际
             # （新消息就地重建了任务）是两回事，后者对象身份分辨不出。
+            # ⚠️ 这里是**最隐蔽的丢弃点**（原来是静默 return）：本轮草稿既不投递、
+            # 也无人再管，而 `schedule_reply` 早已向上报告过 delivered=True。
+            gone = self._pending.get(session_key) is not pending
+            self._log(
+                "WARN",
+                f"[Buffer] 归属检查未通过，本条不投递（{'缓冲已作废' if gone else '已换新代际'}，"
+                f"{session_key}，等待 {pending.wait_until - time.time():.1f}s）",
+            )
             return
 
         if self._consent_revoked_since(pending):
             # 等待期间授权被撤销：这条草稿是在旧授权下生成的（prompt 里
             # 可能带 scoped/跨群内容），不得再送出。草稿保持未投递、屏障
             # 解除、不记 mention。
-            self.plugin._emit_log(
-                "WARN", "[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复",
+            self._log(
+                "WARN", f"[Buffer] 记忆授权已撤销，丢弃缓冲中的旧回复（{session_key}）",
             )
             if self._detach_pending(session_key, pending, generation):
                 self._settle_provisional(
@@ -831,12 +881,22 @@ class QQReplyBufferService:
             except Exception as e:
                 # NapCat 传输失败以异常上浮：与"未确认"同等对待——不跑
                 # 清理会让 provisional 屏障永久卡死后续 digest。
-                self.plugin._emit_log("WARN", f"[Buffer] 单条投递失败: {e}")
+                # ⚠️ 这里原来**只进内存**：真机上一旦投递抛异常，文件日志里
+                # 就是"生成了、然后什么都没有"，与"被静默丢弃"完全分辨不出。
+                self._log(
+                    "WARN",
+                    f"[Buffer] 单条投递失败（{session_key}，{type(e).__name__}: {str(e)[:150]}）",
+                )
                 delivery = None
             if delivery is None or not getattr(delivery, "delivered", False):
                 # 发送未确认（开放平台失败返回 None 不抛异常）：草稿仍属
                 # 未投递——排除记录保留、mention 不记，没送出去的回复不得
                 # 进 scoped 提取。命运已定（不重试），解除游标屏障。
+                self._log(
+                    "WARN",
+                    f"[Buffer] 投递未确认，草稿保持未投递（{session_key}，"
+                    f"delivery={'None' if delivery is None else 'delivered=False'}）",
+                )
                 if self._detach_pending(session_key, pending, generation):
                     # 屏障与 pending 同进退：替补代际还在缓冲时草稿命运未
                     # 定，解除屏障会让游标越过一条随后可能被投递的行。
@@ -856,6 +916,7 @@ class QQReplyBufferService:
             # 混进替补的总结素材里，比起把新消息整条丢掉不回，这是更轻的
             # 代价——正常无替补路径不受影响。
             self._detach_pending(session_key, pending, generation)
+            self._log("INFO", f"[Buffer] 单条投递完成（{session_key}）")
             # 单条草稿真的送出去了：只撤本次 pending 的未投递记录——此前
             # 合并场景留下的旧记录必须留存。
             async def _settle_delivered() -> None:
@@ -930,7 +991,7 @@ class QQReplyBufferService:
                 )
             return
 
-        self.plugin._emit_log("INFO", f"缓冲{pending.message_count}条消息，走 pipeline 生成总结...")
+        self._log("INFO", f"[Buffer] 缓冲 {pending.message_count} 条消息，走 pipeline 生成总结（{session_key}）")
         try:
             from .pipeline_models import QQReplyRequest
             # buffered_texts[0] 是 bot 自己的草稿回复（schedule_reply 覆盖），
