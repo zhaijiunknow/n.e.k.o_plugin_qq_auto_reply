@@ -26,10 +26,16 @@ PAGES = ("static/napcat.html", "static/open_platform.html")
 NAV_HELPER = "static/nav.js"
 
 #: 会互相跳转的页面 → 它**必须**带 data-nav 指向的目标（含回程）。
+#:
+#: ⚠️ 本分支（`promo-no-napcat-ui`，宣传录制专用）刻意去掉了两处入口：
+#: `index.html` 不再链 `napcat.html` 与 `status.html`（后者那张卡就叫「一键部署」），
+#: `open_platform.html` 不再链 `napcat.html`（顶部「切换到 NapCat」）。期望表跟着改，
+#: 但**机制照旧**：剩下的每条跳转仍必须挂 data-nav、所在页仍必须加载 nav.js。
+#: main 上的这张表是完整四页，同步 main 时按 docs/PROMO-NO-NAPCAT.md 处理。
 EXPECTED_NAV: dict[str, tuple[str, ...]] = {
-    "static/index.html": ("status.html", "napcat.html", "open_platform.html", "old.html"),
+    "static/index.html": ("open_platform.html", "old.html"),
     "static/napcat.html": ("index.html", "open_platform.html"),
-    "static/open_platform.html": ("index.html", "napcat.html"),
+    "static/open_platform.html": ("index.html",),
     "static/status.html": ("index.html",),
 }
 
