@@ -1,0 +1,100 @@
+# -*- coding: utf-8 -*-
+"""发送成功必须留一行文件日志（真机验收发现的观测缺口）。
+
+由来：2026-09-27 真机盘点"哪些机制在用"时发现 —— `reply_delivery_node` **只在失败/
+跳过时写日志**，成功时只进 `_emit_log` 的内存环形缓冲（UI 面板）。于是日志文件里
+"她今天到底发出去几条"**查不到**，只能靠"生成了几轮/回溯回了几条"间接推断：
+
+    16 轮生成、[RetroReview] 4 条已发送 —— 正常路径那 12 轮到底发了没有？无从判断。
+
+补一行 `[Send]` 之后，"发了什么、发到哪里、多少字"就能直接数出来。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from types import SimpleNamespace
+
+from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryPlan, QQMessageBlock
+from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
+
+GROUP = "1048307485"
+
+
+class _Client:
+    needs_attention = True
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def send_group_message(self, group_id, text, **kw):
+        self.sent.append((str(group_id), str(text)))
+        return {"status": "ok"}
+
+    async def send_message(self, target_id, text, **kw):
+        self.sent.append((str(target_id), str(text)))
+        return {"status": "ok"}
+
+
+def _node(*, fail: bool = False):
+    client = _Client()
+
+    async def _send(group_id, text, **kw):
+        if fail:
+            return None            # 未确认送达（与真实客户端的 None 语义一致）
+        client.sent.append((str(group_id), str(text)))
+        return {"status": "ok"}
+
+    client.send_group_message = _send  # type: ignore[assignment]
+    plugin = SimpleNamespace(
+        qq_client=client,
+        logger=logging.getLogger("qq.delivery.send"),
+        _emit_log=lambda *a, **k: None,
+        _get_reply_mode=lambda: "text",
+        _qq_settings={},
+        voice_reply_service=SimpleNamespace(synthesize_reply_voice_file=lambda t: None),
+        i18n=SimpleNamespace(t=lambda key, default=None: default or key),
+    )
+    return QQReplyDeliveryNode(plugin), client
+
+
+def _plan(text: str = "一句话") -> QQDeliveryPlan:
+    return QQDeliveryPlan(
+        target_type="group", target_id=GROUP,
+        blocks=[QQMessageBlock(text=text)],
+    )
+
+
+def test_successful_send_logs_one_line(caplog):
+    node, client = _node()
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(node.deliver(_plan("你好呀")))
+
+    assert result is not None and result.delivered is True
+    assert client.sent == [(GROUP, "你好呀")]
+    hits = [r.message for r in caplog.records if "[Send]" in r.message]
+    assert len(hits) == 1, f"成功发送应恰好留一行 [Send] 日志，实际 {hits}"
+    assert GROUP in hits[0] and "3 字" in hits[0], hits[0]
+
+
+def test_failed_send_does_not_log_success(caplog):
+    """未确认送达时不许记"已发送"——那正是这条日志要防的谎报。"""
+    node, _client = _node(fail=True)
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(node.deliver(_plan("你好呀")))
+
+    assert result is not None and result.delivered is False
+    assert not [r for r in caplog.records if "[Send]" in r.message], "发送失败却记了已发送"
+
+
+def test_private_send_is_logged_too(caplog):
+    """私聊同样要留痕（她今天就 0 条私聊，正因为看不到才无从确认）。"""
+    node, client = _node()
+    plan = QQDeliveryPlan(target_type="private", target_id="820040531",
+                          blocks=[QQMessageBlock(text="在的")])
+    with caplog.at_level(logging.INFO):
+        asyncio.run(node.deliver(plan))
+    assert client.sent == [("820040531", "在的")]
+    hits = [r.message for r in caplog.records if "[Send]" in r.message]
+    assert hits and "private" in hits[0], hits

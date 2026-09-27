@@ -147,8 +147,21 @@ class QQReplyDeliveryNode:
         # 开放平台单条发送失败返回 None（不抛异常）：只要有正文块未确认
         # 就不得报 delivered=True——buffer 会据此清未投递标并记 mention，
         # 而排除名单是整行粒度的，部分未发出的内容也会进 scoped 提取。
+        delivered = content_sent if content_attempted else decoration_sent
+        # 发送成功**必须留一行文件日志**（2026-09-27 真机验收的缺口）：
+        # 这条路径原来只在失败/跳过时写日志，成功时只进 `_emit_log` 的内存环形
+        # 缓冲（UI 面板）——于是"她今天到底发出去几条"在日志里查不到，
+        # 只能靠"生成了几轮"间接推断。
+        if delivered:
+            try:
+                self.plugin.logger.info(
+                    f"[Send] {plan.target_type} {plan.target_id} 已发送"
+                    f"（{len(first_text)} 字, blocks={len(blocks)}）"
+                )
+            except Exception:  # noqa: BLE001 —— 日志失败不该影响投递结论
+                pass
         return QQDeliveryResult(
-            delivered=content_sent if content_attempted else decoration_sent,
+            delivered=delivered,
             target_type=plan.target_type,
             target_id=plan.target_id,
             reply_text=first_text,
