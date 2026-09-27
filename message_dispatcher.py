@@ -34,6 +34,10 @@ class QQMessageDispatcher:
     #: 「跟戳」不等于陪到底 —— 没有这道闸就是无限互戳（对方戳一下、她戳一下…）。
     POKE_BACK_WINDOW_SECONDS = 300.0
     POKE_BACK_MAX_PER_POKER = 2
+    #: 「跟戳别人之间的戳」时，同一个群两次跟戳的最小间隔。
+    #: 没有这条限速，5 个人连戳时她会在同一秒里把所有被戳的人都戳一遍 ——
+    #: 像机关枪，不像人。**戳她本人的回戳不受它限制**（那是对她的动作，该立刻回应）。
+    POKE_FOLLOW_MIN_INTERVAL_SECONDS = 15.0
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -42,6 +46,8 @@ class QQMessageDispatcher:
         #: 只进内存、不落盘：它是「现在还没认领的人」，重启后由新消息自然重
         #: 建。落盘等于把一份 openid 名单永久化，而这些 id 正是敏感的那类。
         self._open_platform_pending_claims: dict[str, dict[str, dict]] = {}
+        #: 群 → 上次「跟戳别人之间的戳」的时刻（限速用，内存态即可）。
+        self._last_poke_follow: dict[str, float] = {}
 
     async def _maybe_reserve_open_platform_admin(
         self, message: dict[str, Any],
@@ -415,6 +421,36 @@ class QQMessageDispatcher:
                 return nick
         return f"QQ用户{uid}"
 
+    def _poke_follow_allowed(self, group_id: str, now: float) -> bool:
+        """「跟戳别人之间的戳」的群级限速（见 `POKE_FOLLOW_MIN_INTERVAL_SECONDS`）。"""
+        last = self._last_poke_follow.get(group_id, 0.0)
+        if now - last < self.POKE_FOLLOW_MIN_INTERVAL_SECONDS:
+            return False
+        self._last_poke_follow[group_id] = now
+        return True
+
+    async def _poke_back(self, group_id: str, user_id: str, now: float) -> bool:
+        """戳回去（或跟着戳）。返回是否真的戳了。
+
+        每人 5 分钟最多 `POKE_BACK_MAX_PER_POKER` 次：跟戳不等于陪到底，
+        没有这道闸就是无限互戳。失败只记日志 —— 戳一戳是轻量互动，
+        戳不出去不该把整条派发炸掉。
+        """
+        uid = str(user_id or "").strip()
+        if not uid:
+            return False
+        timestamps = self.plugin._poke_timestamps.setdefault(uid, [])
+        timestamps[:] = [t for t in timestamps if t > now - self.POKE_BACK_WINDOW_SECONDS]
+        if len(timestamps) >= self.POKE_BACK_MAX_PER_POKER:
+            return False
+        timestamps.append(now)
+        try:
+            await self.plugin.qq_client.send_group_poke(group_id, uid)
+        except Exception as e:
+            self.plugin._emit_log("INFO", f"回戳失败: {e}")
+            return False
+        return True
+
     def _has_waking_keyword(self, message_text: str) -> bool:
         """检查消息是否包含唤醒关键词。"""
         text = str(message_text or "").strip()
@@ -544,16 +580,18 @@ class QQMessageDispatcher:
                 f"用户黑名单过滤: user={blacklist_sender} type={message.get('message_type')}",
             )
             return
-        # 戳一戳通知：戳她 → **一律只跟戳、不回话**；戳别人 → LLM 决定是否也戳。
+        # 戳一戳通知：**一律只跟戳，不回话**（戳她 → 回戳她的人；戳别人 → 跟着戳被戳的人）。
         #
-        # 使用者 2026-09-27：「戳戳风暴就不需要回复了，只需要跟戳」。
+        # 使用者 2026-09-27：「戳戳风暴就不需要回复了，只需要跟戳」，以及追问后选的
+        # 「poke 通知一律不进对话，只跟戳」。
         # 改之前这里是反的：「人少 → 回戳不说话；人多（风暴）→ 不回戳、丢给 LLM 让她
-        # 在群里说点什么」。真机 15:20 那次风暴就因此多花了一轮生成 —— 她要的语义是
-        # 戳一戳本来就是轻量互动，**不管几个人戳都只跟戳**，不必说话、也不必为它
-        # 开一轮对话（顺带不再把它当成"有人在点名她"，不再抢焦点/上锁）。
+        # 在群里说点什么」，戳别人则整个交给模型。真机 15:20 那次风暴就因此多花了一轮
+        # 生成 —— 她要的语义是：戳一戳本来就是轻量互动，不必说话、也不必为它开一轮对话
+        # （顺带不再把它当成"有人在点名她"，不再抢焦点/上锁）。
         #
-        # 保留的两道闸：
+        # 三道闸：
         #   · 每人 5 分钟内最多回戳 2 次（跟戳不等于陪到底，否则就是无限互戳）；
+        #   · 跟戳别人之间的戳每群 15 秒最多一次（免得同一秒戳一串人）；
         #   · 黑名单用户的戳在更早的位置已被拦掉（见 handle_message 顶部的用户黑名单）。
         if message.get("message_type") == "notice" and message.get("notice_type") == "poke":
             group_id = str(message.get("group_id") or "").strip()
@@ -564,6 +602,17 @@ class QQMessageDispatcher:
                 return
             is_poke_me = bool(self_id and target_id == self_id)
             now = __import__("time").time()
+            # 她自己戳别人 → NapCat 会把这次动作**回显**成一条通知（user = 她自己）。
+            # 那不是群里的互动，是她的动作回声：真机 2026-09-27 全日志 69 条戳通知里
+            # 有 10 条是这种回显，每一条都被当成"某人戳了某人"喂进管线 —— 白开一轮
+            # 生成，模型还可能再戳一次，于是**自己喂自己**（15:20:40 回显 → 生成 →
+            # 15:20:52 又戳一次）。放在最前面拦掉，连"戳别人"那条路都不进。
+            # 拿不到 self_id 时不猜（宁可照旧处理，也不要误吞真人的戳）。
+            if self_id and poker_id == self_id:
+                self.plugin._emit_log(
+                    "DEBUG", f"[Poke] 忽略自己的戳回显（target={target_id}）",
+                )
+                return
             poker_name = self._resolve_poke_nickname(poker_id, message)
             target_name = self._resolve_poke_nickname(target_id, message) if target_id and not is_poke_me else ""
 
@@ -577,31 +626,27 @@ class QQMessageDispatcher:
                 if storm_count >= self.POKE_STORM_MIN_POKERS:
                     self.plugin._emit_log(
                         "INFO",
-                        f"[Poke] 群{group_id} 戳一戳风暴（{storm_count} 人）→ 只跟戳，不回复",
+                        f"[Poke] 群{group_id} 戳一戳风暴（{storm_count} 人，最近的是 {poker_name}）"
+                        f"→ 只跟戳，不回复",
                     )
-                timestamps = self.plugin._poke_timestamps.setdefault(poker_id, [])
-                timestamps[:] = [t for t in timestamps if t > now - self.POKE_BACK_WINDOW_SECONDS]
-                if len(timestamps) < self.POKE_BACK_MAX_PER_POKER:
-                    timestamps.append(now)
-                    try:
-                        await self.plugin.qq_client.send_group_poke(group_id, poker_id)
-                    except Exception as e:
-                        self.plugin._emit_log("INFO", f"回戳失败: {e}")
+                await self._poke_back(group_id, poker_id, now)
                 return  # 一律不回话：戳一戳不进管线，也不抢焦点
-            # 戳别人 → LLM 决定是否也戳一下
-            if target_name:
-                poke_text = f"[戳一戳] {poker_name} 戳了戳 {target_name}"
-            else:
-                poke_text = f"[戳一戳] {poker_name} 戳了戳某人"
-            message["is_at_bot"] = False
-
-            message["message_type"] = "group"
-            message["group_id"] = group_id
-            message["user_id"] = poker_id
-            message["content"] = poke_text
-            message["raw_message"] = poke_text
-            message["message_id"] = f"poke_{group_id}_{poker_id}_{int(now)}"
-            # 不 return，继续走正常的注意力门控 + LLM 管道
+            # 戳别人 → 她也**跟着戳一下**（跟戳被戳的那个人），但不说话、不进管线。
+            #
+            # 使用者 2026-09-27 选的正是这一条：「poke 通知一律不进对话，只跟戳」
+            # （选项里的"完全不理"没选）。所以模型这里彻底不用出场了 —— 戳一戳是
+            # 轻量互动，开一轮生成去决定"要不要戳"性价比极低。
+            #
+            # 跟戳限速：每群 `POKE_FOLLOW_MIN_INTERVAL_SECONDS` 一次。没有这条的话，
+            # 5 个人连戳时她会在同一秒里把所有被戳的人都戳一遍 —— 像机关枪，不像人。
+            # **戳她本人的回戳不受这条限制**：那是对她的动作，该立刻回应。
+            if self._poke_follow_allowed(group_id, now):
+                if await self._poke_back(group_id, target_id or poker_id, now):
+                    self.plugin._emit_log(
+                        "DEBUG",
+                        f"[Poke] 跟戳：{poker_name} 戳了 {target_name or target_id}",
+                    )
+            return
         # 新人入群通知 → 注入欢迎提示
         if message.get("notice_type") == "group_increase":
             group_id = str(message.get("group_id") or "").strip()

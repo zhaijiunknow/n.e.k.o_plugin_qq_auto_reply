@@ -164,29 +164,78 @@ def test_a_storm_never_sets_at_bot():
     assert plugin.pipeline == []
 
 
-# ── 二、戳别人：维持原样（交给模型决定） ─────────────────────────────
+# ── 二、戳别人：跟着戳，同样不说话 ─────────────────────────────────
 
-def test_poking_someone_else_still_reaches_the_pipeline():
-    """对照：她不是被戳对象时照旧进管线 —— 别把这条也一起关掉。"""
+def test_poking_someone_else_gets_a_follow_poke_not_a_reply():
+    """她不是被戳对象时：跟着戳**被戳的那个人**，但仍然不说话。
+
+    使用者 2026-09-27 选的就是这一条：「poke 通知一律不进对话，只跟戳」
+    （"完全不参与"那一项没选，所以不是什么都不做）。
+    """
     dispatcher, plugin = _dispatcher()
     _poke(dispatcher, poker=ALICE, target=CAROL, nickname="爱丽丝")
 
-    assert plugin.pokes == [], "戳的不是她，不该回戳"
-    assert plugin.backlog, "戳别人的消息应该照常进 backlog"
-    assert plugin.pipeline, "戳别人的消息应该照常走到群聊管线"
-    assert "爱丽丝" in plugin.backlog[0].get("content", ""), plugin.backlog[0]
+    assert plugin.pokes == [(GROUP, CAROL)], f"没有跟戳被戳的人: {plugin.pokes}"
+    assert plugin.pipeline == [], "戳别人的通知仍然进了管线 —— 使用者要的是「一律不进对话」"
+    assert plugin.backlog == []
 
 
-def test_unknown_self_id_treats_the_poke_as_poking_someone_else():
-    """拿不到 self_id 时无法判断"是不是戳她" → 按戳别人处理（不冒然回戳）。"""
+def test_follow_pokes_are_rate_limited_per_group():
+    """跟戳限速：同一群 15 秒内最多跟一次，免得像机关枪。
+
+    （戳她本人的回戳**不**受这条限制 —— 那是对她的动作，该立刻回应。）
+    """
+    dispatcher, plugin = _dispatcher()
+    _poke(dispatcher, poker=ALICE, target=CAROL)
+    _poke(dispatcher, poker=BOB, target=CAROL)
+
+    assert plugin.pokes == [(GROUP, CAROL)], f"同一秒里跟戳了多次: {plugin.pokes}"
+
+
+def test_a_follow_poke_falls_back_to_the_poker_when_target_is_missing():
+    """拿不到被戳对象时，退而戳戳人的那个人（宁可跟一下，也别什么都不做）。"""
+    dispatcher, plugin = _dispatcher()
+    _poke(dispatcher, poker=ALICE, target="")
+
+    assert plugin.pokes == [(GROUP, ALICE)], plugin.pokes
+    assert plugin.pipeline == []
+
+
+def test_unknown_self_id_still_follows_without_talking():
+    """拿不到 self_id 时无法判断"是不是戳她" → 按戳别人处理（跟戳，不说话）。"""
     dispatcher, plugin = _dispatcher(self_id="")
     _poke(dispatcher, poker=ALICE, target=BOT)
 
-    assert plugin.pokes == []
-    assert plugin.pipeline
+    assert plugin.pipeline == []
+    assert plugin.pokes == [(GROUP, BOT)], f"self_id 未知时跟戳了错误的对象: {plugin.pokes}"
 
 
-# ── 三、边界 ───────────────────────────────────────────────────────
+# ── 三、她自己戳别人的回显 ─────────────────────────────────────────
+
+def test_her_own_poke_echo_is_ignored():
+    """**NapCat 会把她自己戳别人回显成一条通知**（user = 她自己）。
+
+    真机全日志 69 条戳通知里有 10 条是这种回显，每条都被当成"某人戳了某人"喂进管线：
+    白开一轮生成，模型还可能再戳一次 —— 自己喂自己。
+    """
+    dispatcher, plugin = _dispatcher()
+    _poke(dispatcher, poker=BOT, target=CAROL)
+
+    assert plugin.pokes == [], "她自己的回显不该触发回戳"
+    assert plugin.pipeline == [], "她自己的戳回显被喂进了管线（会自己喂自己）"
+    assert plugin.backlog == []
+
+
+def test_her_own_poke_echo_does_not_count_as_a_storm():
+    dispatcher, plugin = _dispatcher()
+    _poke(dispatcher, poker=BOT, target=CAROL)
+    _poke(dispatcher, poker=ALICE)
+
+    assert plugin.pokes == [(GROUP, ALICE)]
+    assert "风暴" not in _logs(plugin), f"自己的回显被算进了风暴: {_logs(plugin)}"
+
+
+# ── 四、边界 ───────────────────────────────────────────────────────
 
 def test_missing_group_or_poker_is_dropped_quietly():
     dispatcher, plugin = _dispatcher()

@@ -1,13 +1,16 @@
-"""fail-to-pass 证据：戳一戳"只跟戳、不回话"的六处接线都是必要条件。
+"""fail-to-pass 证据：戳一戳"只跟戳、不回话"的八处接线都是必要条件。
 
-被验证的东西（使用者 2026-09-27：「戳戳风暴就不需要回复了，只需要跟戳」）：
+被验证的东西（使用者 2026-09-27：「戳戳风暴就不需要回复了，只需要跟戳」，
+以及追问后选的「**poke 通知一律不进对话，只跟戳**」）：
 
 - 风暴**要回戳**（旧行为是"人多就不回戳"）；
-- 风暴**不许进管线**（旧行为是"人多就注入 LLM 让她说话"）；
+- 戳她**不许进管线**（旧行为是"人多就注入 LLM 让她说话"）；
+- 戳别人也**只跟戳、不进管线**（旧行为是留给模型决定要不要戳/说话）；
+- 她自己的戳**回显要丢掉**（不然自己喂自己）；
 - "戳她"的判定**要真的按 target 判**（写死 True 会把"戳别人"也吞掉）；
 - 跟戳**要有上限**（否则同一人触发无限互戳）；
-- 风暴**要留痕**（不然日志里看不出发生过什么）；
-- 黑名单闸**仍在戳一戳分支之前**（这次改动没动它，但必须防回归）。
+- 跟戳**要有群级限速**（否则同一秒里把所有被戳的人都戳一遍）；
+- 风暴**要留痕**（不然日志里看不出发生过什么）。
 
 铁律同 verify_outbound_guard_fail_to_pass.py：目标用例先绿、锚点唯一、恢复放 finally
 并逐字节核对、每轮跑控制组。
@@ -34,14 +37,51 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "message_dispatcher.py",
         "风暴不回戳（旧行为：人多就不回戳）",
-        "                if len(timestamps) < self.POKE_BACK_MAX_PER_POKER:",
-        "                if storm_count < self.POKE_STORM_MIN_POKERS and len(timestamps) < self.POKE_BACK_MAX_PER_POKER:",
+        "                await self._poke_back(group_id, poker_id, now)\n"
+        "                return  # 一律不回话：戳一戳不进管线，也不抢焦点",
+        "                if storm_count < self.POKE_STORM_MIN_POKERS:\n"
+        "                    await self._poke_back(group_id, poker_id, now)\n"
+        "                return  # 一律不回话：戳一戳不进管线，也不抢焦点",
     ),
     (
         "message_dispatcher.py",
         "风暴仍然进管线（旧行为：人多就让她说话）",
         "                return  # 一律不回话：戳一戳不进管线，也不抢焦点",
         "                pass  # 变异：放它继续往下走（旧行为）",
+    ),
+    (
+        "message_dispatcher.py",
+        "戳别人也进管线（旧行为：留给模型决定）",
+        "            if self._poke_follow_allowed(group_id, now):\n"
+        "                if await self._poke_back(group_id, target_id or poker_id, now):\n"
+        "                    self.plugin._emit_log(\n"
+        "                        \"DEBUG\",\n"
+        "                        f\"[Poke] 跟戳：{poker_name} 戳了 {target_name or target_id}\",\n"
+        "                    )\n"
+        "            return",
+        "            if self._poke_follow_allowed(group_id, now):\n"
+        "                if await self._poke_back(group_id, target_id or poker_id, now):\n"
+        "                    self.plugin._emit_log(\n"
+        "                        \"DEBUG\",\n"
+        "                        f\"[Poke] 跟戳：{poker_name} 戳了 {target_name or target_id}\",\n"
+        "                    )\n"
+        "            pass  # 变异：放它继续往下走（旧行为）",
+    ),
+    (
+        "message_dispatcher.py",
+        "她自己的戳回显没被丢掉（自己喂自己）",
+        "            if self_id and poker_id == self_id:",
+        "            if False:",
+    ),
+    (
+        "message_dispatcher.py",
+        "跟戳没有群级限速（同一秒里戳一串人）",
+        "        last = self._last_poke_follow.get(group_id, 0.0)\n"
+        "        if now - last < self.POKE_FOLLOW_MIN_INTERVAL_SECONDS:\n"
+        "            return False",
+        "        last = self._last_poke_follow.get(group_id, 0.0)\n"
+        "        if False:\n"
+        "            return False",
     ),
     (
         "message_dispatcher.py",
@@ -61,7 +101,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         '                if storm_count >= self.POKE_STORM_MIN_POKERS:\n'
         '                    self.plugin._emit_log(\n'
         '                        "INFO",\n'
-        '                        f"[Poke] 群{group_id} 戳一戳风暴（{storm_count} 人）→ 只跟戳，不回复",\n'
+        '                        f"[Poke] 群{group_id} 戳一戳风暴（{storm_count} 人，最近的是 {poker_name}）"\n'
+        '                        f"→ 只跟戳，不回复",\n'
         '                    )',
         "                if False:\n"
         "                    pass",
@@ -136,7 +177,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 戳一戳「只跟戳」的五处接线都是必要条件")
+    print(f"[PASS] {len(results)}/{len(results)} —— 戳一戳「只跟戳」的八处接线都是必要条件")
     return 0
 
 
