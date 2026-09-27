@@ -156,7 +156,8 @@ class QQReplyDeliveryNode:
             try:
                 self.plugin.logger.info(
                     f"[Send] {plan.target_type} {plan.target_id} 已发送"
-                    f"（{self._describe_blocks(blocks)}, blocks={len(blocks)}）"
+                    f"（{self._describe_blocks(blocks)}, blocks={len(blocks)}"
+                    f"{', 问句结尾' if self._ends_with_question(blocks) else ''}）"
                 )
             except Exception:  # noqa: BLE001 —— 日志失败不该影响投递结论
                 pass
@@ -304,6 +305,24 @@ class QQReplyDeliveryNode:
         # 两个平台的文本发送现在都有回执：开放平台失败吞异常返回 None，
         # NapCat 走 echo 往返（超时返回 None）。显式 None = 未确认送达。
         return result is not None
+
+    @staticmethod
+    def _ends_with_question(blocks: list[QQMessageBlock]) -> bool:
+        """这条回复是不是**以问句收尾**（用于把"问句率"变成日志里可数的数字）。
+
+        由来（2026-09-27）：使用者问「群里有人说了她不知道的东西，她很容易去询问为什么」。
+        查下来根因是提示词里没人管"要不要用提问回应"，于是给她加了问句预算
+        （`DETAIL_CONSTRAINTS_SECTION`）。**加了约束就必须能验证** ——
+        宿主记忆库里只有私聊/本体对话（实测 1888 条她的发言里 43% 以问号结尾），
+        群聊里她的话**不落盘**，所以群侧的量只能在这里留痕：
+        `grep -c '问句结尾' / grep -c '已发送'` 就是群聊的问句率。
+        """
+        text = "".join(str(getattr(b, "text", "") or "").strip() for b in blocks)
+        if not text:
+            return False
+        import re as _re
+        stripped = _re.sub(r"<[^>]+>", "", text).strip()
+        return bool(stripped) and stripped[-1] in "？?"
 
     @staticmethod
     def _describe_blocks(blocks: list[QQMessageBlock]) -> str:

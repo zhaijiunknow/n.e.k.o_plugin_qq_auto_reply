@@ -182,7 +182,30 @@ def test_kaomoji_list_stays_available():
     assert listed, "颜文字清单被删空了 —— 这次只要求少发，不是禁用"
 
 
-# ── 5. 编辑器与层表一致 ─────────────────────────────────────────────
+# ── 5. 问句预算：不许"用提问代替回应"（2026-09-27）────────────────────
+#
+# 由来：使用者问「群里有人说了她不知道的东西，她很容易去询问为什么，是本体人设吗」。
+# 查下来**不是**人设（人设里没有任何鼓励好奇心的指令，只压了"我可以为你做什么 /
+# 有什么好玩的可聊"这一类问句），而是插件自己的两条正向指令在推 ——
+# 「主动找话题」「话题自检→主动切换新话题」最省力的执行方式就是提一个问题；
+# 加上细节约束只说"不确定就说不确定"，从没有人管"要不要用提问回应"。
+# 实测：宿主记忆库 1888 条她的发言里 **803 条（43%）以问号结尾**。
+
+def test_question_budget_is_in_the_detail_constraints():
+    """问她该问、但不该句句问：三条约束都要在（删掉任何一条都会让比例反弹）。"""
+    text = frag.DETAIL_CONSTRAINTS_SECTION
+    for needle in ("别用提问代替回应", "一次回复最多一个问句", "连续两条别都提问"):
+        assert needle in text, f"问句预算里缺少约束: {needle}"
+
+
+def test_question_rule_is_not_permissive():
+    """反向守卫：不许出现鼓励式措辞（"不懂就问""多问问""尽管提问"）。"""
+    text = _all_plugin_prompt_text()
+    for permissive in ("不懂就问", "多问", "尽管问", "积极提问", "主动提问"):
+        assert permissive not in text, f"提示词又鼓励提问了: {permissive}"
+
+
+# ── 6. 编辑器与层表一致 ─────────────────────────────────────────────
 
 def test_layer_name_i18n_keys_match_the_layer_table():
     """`ui.napcat.prompts.layer.<id>.name` 必须与层表一一对应（多的是死键，少的是空白标签）。"""

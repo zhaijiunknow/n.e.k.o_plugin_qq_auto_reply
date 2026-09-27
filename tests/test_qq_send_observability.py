@@ -151,6 +151,43 @@ def test_a_voice_reply_is_not_logged_as_zero_characters(caplog):
     assert "0 字" not in hits[0], f"语音被写成 0 字：{hits[0]}"
 
 
+def test_a_question_ending_reply_is_marked_in_the_log(caplog):
+    """**问句率要可数**（2026-09-27 给她加了问句预算，就得能验证）。
+
+    群聊里她的话不落盘（宿主记忆库只有私聊/本体对话），所以群侧只能靠日志：
+    `grep -c '问句结尾' / grep -c '已发送'`。
+    """
+    node, _client = _node()
+    with caplog.at_level(logging.INFO):
+        asyncio.run(node.deliver(_plan("这个我不太懂，你能给我讲讲吗？")))
+
+    hits = [r.message for r in caplog.records if "[Send]" in r.message]
+    assert hits and "问句结尾" in hits[0], hits
+
+
+def test_a_statement_is_not_marked_as_a_question(caplog):
+    node, _client = _node()
+    with caplog.at_level(logging.INFO):
+        asyncio.run(node.deliver(_plan("我懂了，谢谢。")))
+
+    hits = [r.message for r in caplog.records if "[Send]" in r.message]
+    assert hits and "问句结尾" not in hits[0], hits
+
+
+def test_question_detection_ignores_tags_and_wrapping():
+    """判据落在"真正发出去的正文"上：标签剥掉、空白去掉，再看最后一个字符。"""
+    node, _client = _node()
+    ends = node._ends_with_question
+
+    assert ends([QQMessageBlock(text="<text>是吗？</text>")]) is True
+    assert ends([QQMessageBlock(text="是吗?  ")]) is True
+    assert ends([QQMessageBlock(text="是吗。")]) is False
+    assert ends([QQMessageBlock(text="")]) is False, "空正文不该被算成问句"
+    assert ends([QQMessageBlock(poke="123")]) is False, "纯装饰块没有问句可言"
+
+
+# ── 三、发送内容摘要 ───────────────────────────────────────────────
+
 def test_a_sticker_only_send_is_described_as_a_sticker():
     """摘要按块里**真正有什么**写（fake 客户端没有 sticker/poke 能力，这里直接测摘要）。"""
     node, _client = _node()

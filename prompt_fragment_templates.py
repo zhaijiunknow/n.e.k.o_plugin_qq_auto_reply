@@ -202,6 +202,7 @@ FORMAT_PROMPT_SECTION_NEKO_DYNAMIC = """\
 DETAIL_CONSTRAINTS_SECTION = """\
 ## 细节约束（Detailed Constraints）
 - 不要编造事实，也不要把猜测说成记忆；不确定就说不确定。
+- 不懂就直说不懂或先说自己理解：别用提问代替回应、一次回复最多一个问句、连续两条别都提问。
 """
 
 #: `MEMORY_CONTEXT_SECTION` 已删除（2026-09-27 审计）：全仓只有它自己的定义一处引用，
