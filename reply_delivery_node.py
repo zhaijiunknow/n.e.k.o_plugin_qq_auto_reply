@@ -156,9 +156,21 @@ class QQReplyDeliveryNode:
 
     @staticmethod
     def _compose_text(block: QQMessageBlock) -> str:
-        """组合文字 + emoji + at + reply 为最终文本。"""
+        """组合文字 + emoji + at + reply 为最终文本。
+
+        **只有修饰（``<reply>`` / ``<at>``）而没有正文时返回空串**（2026-09-27）。
+        否则这一段会被当成"有东西可发"：composed 出来是
+        ``"[CQ:reply,id=…]"`` 这种非空字符串，``if not text`` 拦不住它，
+        于是 QQ 上出现一个**只有引用块、没有正文的空消息**（使用者实测截图）。
+        判据与 ``reply_postprocess_node.block_has_content`` 必须一致 ——
+        两处漂移的代价已经在 ``<msg></msg>`` 上付过一次了。
+        """
         import re as _re
 
+        body = str(getattr(block, "text", "") or "").strip()
+        face = str(getattr(block, "emoji", "") or "").strip()
+        if not body and not face:
+            return ""
         parts: list[str] = []
         if block.reply_to:
             parts.append(f"[CQ:reply,id={block.reply_to}]")

@@ -90,6 +90,18 @@ class QQReplyPostprocessNode:
         for msg_el in root.findall("msg"):
             block = QQMessageBlock()
 
+            # 裸文本：`<msg>文字</msg>` 的 `msg_el.text`，以及**每个子元素后面的 tail**
+            # ——`<msg><reply>1252066434</reply>你好</msg>` 里的"你好"就是 `reply` 的
+            # tail。旧写法只收 `msg_el.text`，于是这一整句正文被丢掉、块里只剩
+            # `reply_to`，投递层拼出一个**只有引用、没有正文的空消息**（使用者实测
+            # 截图就是它）。tail 必须一起收，否则"引用 + 正文"的常见写法必然丢正文。
+            loose_parts: list[str] = []
+            if msg_el.text and msg_el.text.strip():
+                loose_parts.append(msg_el.text.strip())
+            for child in msg_el:
+                if child.tail and child.tail.strip():
+                    loose_parts.append(child.tail.strip())
+
             # <text>
             text_el = msg_el.find("text")
             if text_el is not None and text_el.text:
@@ -140,9 +152,15 @@ class QQReplyPostprocessNode:
                 if ark_el.text:
                     block.ark["_body"] = ark_el.text.strip()
 
-            # 如果没有任何子元素但有直接文本（裸 <msg>text</msg>）
-            if not QQReplyPostprocessNode.block_has_content(block) and msg_el.text:
-                block.text = msg_el.text.strip()
+            # 裸文本并进正文（`<msg>text</msg>`、`<msg><reply>id</reply>text</msg>`、
+            # `<msg><emoji>277</emoji>text</msg>` 都走这里）。
+            #
+            # 旧写法只在"块里完全没内容"时才用裸文本，于是
+            # `<msg><emoji>277</emoji>裸文本</msg>` 会把那段文字丢掉 —— 判据本身
+            # 也把 `reply_to` 当内容，两个小毛病叠一起就是"发了条空引用"。
+            loose = "".join(loose_parts).strip()
+            if loose:
+                block.text = f"{block.text}{loose}" if block.text else loose
 
             blocks.append(block)
 
@@ -166,12 +184,17 @@ class QQReplyPostprocessNode:
         ``"<msg></msg>"`` 这个真值字符串 —— 于是所有
         ``outcome.action == "reply" and outcome.reply_text`` 的调用点全部误判：
         注意力被当成"已回复"扣了一次、用户消息被标成已读、回溯/破冰记成"成功"。
+
+        **2026-09-27 收紧**：``reply_to`` 与 ``at_user`` **不算内容** —— 它们是
+        「修饰」（引用谁、@谁），必须依附在一句话上；只有它们、没有正文时，
+        QQ 那边渲染出来是**一个只有引用块、没有正文的空消息**（使用者实测截图：
+        引用条 + 空白正文）。原来的判据把 ``reply_to`` 当内容，于是
+        ``<msg><reply>1252066434</reply></msg>`` 一路被当成真回复发出去，
+        而它表达的意思恰恰是"我不想说话"。
         """
         return bool(
             str(getattr(block, "text", "") or "").strip()
             or str(getattr(block, "emoji", "") or "").strip()
-            or str(getattr(block, "at_user", "") or "").strip()
-            or str(getattr(block, "reply_to", "") or "").strip()
             or str(getattr(block, "sticker", "") or "").strip()
             or str(getattr(block, "poke", "") or "").strip()
             or str(getattr(block, "record", "") or "").strip()

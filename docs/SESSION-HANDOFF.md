@@ -4300,3 +4300,73 @@ necessity 那段的注释担心的正是这件事（「若在这里返回 ignore
 `尽量少发` / `默认**不带**颜文字` / `最多一次`；鼓励式措辞（`自然地穿插`、
 `积极使用颜文字`…）不许回来；清单不能删空（少发 ≠ 禁用）。
 变异取证里加了第 9 处：把规则改回鼓励式 → 目标红、控制组绿、逐字节还原，**总计 10/10**。
+
+---
+
+## 26. 「只有引用、没有正文」的空回复：`reply_to` 不是内容
+
+使用者贴了一张真机截图：「是 `<msg></msg>` 也被回复出去了，这个是空文本啊」。
+
+### 26.1 截面对应的是哪一次
+
+从今天的日志与 `backlog_state.json` 的原始事件对齐出来：
+
+```
+12:38:25  [AttentionGate] 焦点切换: 985066274 → 1048307485
+12:38:30  [RetroReview] 回溯回复已发送: <msg><reply>1252066434</reply>你敢收双倍，我就敢把你藏的小鱼干全偷给尼…
+```
+
+`1252066434` 是余音发的那句「是是是，帮猫猫吃上小鱼干…」。也就是说她那轮**引用了对方的消息**，
+但 QQ 上渲染出来是**只有引用块、正文空白**的空消息。
+
+### 26.2 两个毛病叠在一起（都不是投递层"没跳过"）
+
+| # | 位置 | 毛病 |
+|---|---|---|
+| 1 | `reply_postprocess_node.block_has_content` | 把 **`reply_to` / `at_user` 也算"有内容"**。只有引用的块因此被判成真回复：`blocks` 非空 → `finalize` 不去归零 → 走到 `reply_xml` 分支（`llm_skip` 那条路根本没进） |
+| 2 | `reply_postprocess_node._parse_blocks` | **只收 `msg_el.text`，不收子元素的 `tail`**。`<msg><reply>id</reply>你好</msg>` 里的"你好"是 `reply` 的 tail，被整段丢掉 —— 于是"引用 + 正文"这种常见写法**连正文都没了**，正好凑成空引用 |
+
+投递层本身是清的：它按 `block_has_content` 的同口径跳过空块；而 `_compose_text` 会把
+`[CQ:reply,id=…]` 拼成一个**非空字符串**，所以 `if not text:` 那道闸也拦不住它 ——
+这就是为什么"空引用"能一路发到 QQ。
+
+**注意**：2026-09-23 修过一次同类问题（`<msg></msg>` → `llm_skip`），但当时的测试把
+`QQMessageBlock(reply_to="12345") → True` 与 `<msg><reply>12345</reply></msg>` 算回复
+**写进了断言**（`test_qq_empty_reply_not_a_reply.py` 第 106/134 行）——
+错误的判据被测试固化，于是这一半一直留着。这次连测试一起改。
+
+### 26.3 修法
+
+1. **`block_has_content`**：内容 = text / emoji / sticker / poke / record / keyboard / ark。
+   `reply_to`、`at_user` 是**修饰**（引用谁、@谁），要依附在一句话上 —— 单独出现时
+   QQ 那边不是"空引用"就是"干 @ 一下"，都不算一条消息。
+2. **`_parse_blocks`**：把 `msg_el.text` 与**每个子元素的 tail** 一起收进 `loose_parts`，
+   统一并进正文。这样 `<msg>text</msg>`、`<msg><reply>id</reply>text</msg>`、
+   `<msg><emoji>277</emoji>text</msg>` 三种写法都不再丢字。
+3. **`reply_delivery_node._compose_text`**：只有修饰、没有正文（text/emoji 都空）时
+   **返回空串** —— 与解析层同口径的第二道闸。两处判据必须一致，这条由既有测试
+   `test_block_has_content_agrees_with_delivery_compose_text` 盯着（这次把 `at_user` /
+   `reply_to` 单独出现时的期望值从 `True` 改成了 `False`，并补了"修饰 + 正文 = True"的几档）。
+
+### 26.4 行为证据（修前 → 修后）
+
+```
+<msg><reply>1252066434</reply></msg>
+   修前：action=reply reason=reply_xml → 投递 [CQ:reply,id=1252066434]（QQ 上就是空引用）
+   修后：action=reply reason=llm_skip reply_text=None → 投递层什么都不发 ✓
+
+<msg><reply>1252066434</reply>你敢收双倍，我就偷你小鱼干</msg>
+   修前：正文被丢掉（只收 msg_el.text）→ 又是一个空引用
+   修后：reply_text='你敢收双倍，我就偷你小鱼干' → [CQ:reply,id=1252066434]你敢收双倍… ✓
+```
+
+### 26.5 验证
+
+- `tests/test_qq_empty_reply_not_a_reply.py`：空消息档新增 3 条参数化用例（只有引用、
+   只有 @、引用 + @）；"仍算回复"档改成**修饰必须带正文**的写法，并补上
+   `<msg><reply>id</reply>你好</msg>`；口径一致性表把 `at_user` / `reply_to` 的期望值改成
+   `False`，另加一条端到端断言（只有引用的块**拼不出可发送文本**，而带上正文后引用照旧生效）。
+- 变异取证 `tests/verify_empty_reply_fail_to_pass.py` 改为源码级 4 处变异（恒真判据 /
+  把 `reply_to` 算回内容 / 不再收 tail / 投递层不拦）→ **5/5**，每项目标红 + 控制组绿 +
+  逐字节还原。
+- 全量 **1262 passed**；两套 ruff 都 exit=0。
