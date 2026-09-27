@@ -65,10 +65,10 @@ BASE = {
     "backlog_labels": [],
     # 本次要测的：
     "icebreaker_hold_seconds": 120,
-    "icebreaker_dormant_seconds": 1800,
+    # 使用者口径「**没 @ 一直休**」：0 = 不自动醒
+    "icebreaker_dormant_enabled": True,
+    "icebreaker_dormant_seconds": 0,
 }
-
-DORMANT = 1800
 
 
 class _Clock:
@@ -148,7 +148,8 @@ def test_silent_icebreaker_puts_the_group_to_sleep():
 
     st = svc._load_state(CALM)
     assert svc.is_dormant(CALM) is True, "破冰没人接却没有休眠"
-    assert int(st.dormant_until) == clock.now + DORMANT
+    assert st.dormant_forever is True, "默认口径是「没 @ 一直休」"
+    assert int(st.dormant_until) == 0
     assert st.last_focus_reason == "dormant:icebreaker_no_reply"
     assert st.feedback_tier == "silent"
 
@@ -165,26 +166,52 @@ def test_sleeping_group_stops_competing_so_others_take_over():
     )
 
 
-def test_dormancy_expires_and_the_group_competes_again():
-    """到期即醒：休眠是临时的，不是把一个群判死。"""
+def test_no_at_means_it_keeps_sleeping():
+    """**使用者口径「没 @ 一直休」**：时间过去多久都不会自己醒。
+
+    时间往未来推一年，休眠群仍然不参与竞争 —— 群里自己聊热了也不会提前结束
+    （这是使用者明确选的那一项："只有 @ 能提前唤醒"）。
+    """
     svc, clock = _service()
+    _seed(svc, CALM, 9.0, focus=True)
+    _seed(svc, BUSY, 1.0)
+    _break_ice_and_wait(svc, clock)
+
+    clock.now += 365 * 24 * 3600
+    assert svc.is_dormant(CALM) is True, "没人 @ 却自己醒了 —— 与「没 @ 一直休」不符"
+    assert _focus_of(svc, clock) == BUSY
+    # 群里聊得再热闹也不醒（分数会涨，但不会参与竞争）
+    _seed(svc, CALM, 10.0)
+    assert _focus_of(svc, clock) == BUSY, "休眠群仅凭分数就回来了"
+
+
+def test_configured_seconds_still_auto_wakes():
+    """填了正数才有"到期自动醒"—— 这条旋钮仍然可用，只是默认不用。"""
+    svc, clock = _service(icebreaker_dormant_seconds=600)
     _seed(svc, CALM, 6.0)
     _seed(svc, BUSY, 3.0)
     _break_ice_and_wait(svc, clock)
+    assert svc._load_state(CALM).dormant_forever is False
+    assert int(svc._load_state(CALM).dormant_until) == clock.now + 600
     assert _focus_of(svc, clock) == BUSY
 
-    clock.now += DORMANT + 1
+    clock.now += 601
     assert svc.is_dormant(CALM) is False
     assert _focus_of(svc, clock) == CALM, "休眠到期后应重新参与竞争（分数更高者拿回焦点）"
 
 
-def test_dormancy_seconds_zero_disables_the_sleep():
-    """`icebreaker_dormant_seconds=0` = 不启用（回到旧行为，便于对照）。"""
-    svc, clock = _service(icebreaker_dormant_seconds=0)
+def test_the_enable_switch_turns_the_sleep_off():
+    """关掉总开关 = 回到旧行为（`seconds=0` 现在表示"一直休"，关不了功能）。"""
+    svc, clock = _service(icebreaker_dormant_enabled=False)
     _seed(svc, CALM, 6.0)
     _break_ice_and_wait(svc, clock)
     assert svc.is_dormant(CALM) is False
     assert svc._load_state(CALM).feedback_tier == "silent", "关掉的是休眠，不是结算"
+
+
+def test_enter_dormancy_respects_the_enable_switch():
+    svc, _ = _service(icebreaker_dormant_enabled=False)
+    assert svc.enter_dormancy(CALM, reason="no_reply") is False
 
 
 # ── 二、@ 唤醒 ─────────────────────────────────────────────────────
@@ -335,15 +362,6 @@ def test_all_groups_dormant_is_not_a_global_mute():
     assert _focus_of(svc, clock) == BUSY, "全都在睡时必须仍有一个焦点（最高分）"
 
 
-def test_enter_dormancy_respects_the_switch():
-    """开关为 0 时**直接调用也不睡** —— `enter_dormancy` 是给别的调用方用的公开入口，
-    只靠结算路径里那道 `seconds > 0` 拦不住它（变异取证就是在这里发现漏测的）。
-    """
-    svc, _ = _service(icebreaker_dormant_seconds=0)
-    assert svc.enter_dormancy(CALM, reason="no_reply") is False
-    assert svc.is_dormant(CALM) is False
-
-
 def test_enter_dormancy_is_idempotent_and_reports_first_time_only():
     svc, _ = _service()
     assert svc.enter_dormancy(CALM, reason="no_reply") is True
@@ -382,35 +400,52 @@ def test_only_at_can_wake_a_sleeping_group():
 
 
 def test_dormancy_survives_a_restart():
-    """重启不该让她忘记"这个群我破冰没人接"——存档往返必须带上 dormant_until。"""
+    """重启不该让她忘记"这个群我破冰没人接"——存档往返必须带上休眠状态。"""
     svc, clock = _service()
     _seed(svc, CALM, 6.0)
     _break_ice_and_wait(svc, clock)
 
     raw = svc._load_state(CALM).to_dict()
-    assert int(raw.get("dormant_until") or 0) > 0, "to_dict 丢了 dormant_until"
+    assert raw.get("dormant_forever") is True, "to_dict 丢了 dormant_forever"
     restored = type(svc._load_state(CALM)).from_dict(raw, group_id=CALM)
-    assert restored.dormant_until == raw["dormant_until"], "from_dict 丢了 dormant_until"
+    assert restored.dormant_forever is True, "from_dict 丢了 dormant_forever"
+
+
+def test_a_timed_dormancy_also_survives_a_restart():
+    svc, clock = _service(icebreaker_dormant_seconds=600)
+    _seed(svc, CALM, 6.0)
+    _break_ice_and_wait(svc, clock)
+
+    raw = svc._load_state(CALM).to_dict()
+    restored = type(svc._load_state(CALM)).from_dict(raw, group_id=CALM)
+    assert restored.dormant_until == raw["dormant_until"]
+    assert restored.dormant_forever is False
 
 
 def test_old_archive_does_not_wake_up_sleeping():
-    """旧存档没有这个键 → 0（没睡过）。**不能**回落到"从现在开始睡"。"""
+    """旧存档没有这两个键 → 0/False（没睡过）。**不能**回落到"从现在开始睡"。"""
     from plugin.plugins.qq_auto_reply.attention_service import QQGroupAttentionState
 
     st = QQGroupAttentionState.from_dict({"attention_score": 5.0}, group_id=CALM)
     assert st.dormant_until == 0
+    assert st.dormant_forever is False
     assert st.proactive_pending is False
 
 
 def test_schema_defaults_and_floor():
-    """出厂值只有一处说法；0 是合法值（关掉休眠），不能被 `or` 吞掉。"""
+    """出厂值只有一处说法，且 `seconds=0` 就是使用者的默认口径「没 @ 一直休」。"""
     from plugin.plugins.qq_auto_reply import settings_schema
 
     spec = settings_schema.BY_KEY["icebreaker_dormant_seconds"]
-    assert spec.default == 1800
+    assert spec.default == 0, "0 = 一直休（只有 @ 能唤醒）"
     assert spec.floor == 0
     assert spec.saveable is True
     assert "icebreaker_dormant_seconds" in settings_schema.SAVEABLE_KEYS
 
+    switch = settings_schema.BY_KEY["icebreaker_dormant_enabled"]
+    assert switch.default is True, "默认启用休眠（这就是使用者要的行为）"
+    assert switch.saveable is True
+
     svc, _ = _service()
     assert svc._dormant_seconds() == spec.default
+    assert svc._dormant_enabled() is True

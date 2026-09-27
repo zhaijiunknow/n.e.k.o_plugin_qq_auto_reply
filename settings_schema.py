@@ -456,16 +456,21 @@ MISC = (
                 ui=UIInput("cfg-icebreaker-hold", min=0, max=1800, step=10,
                            label="ui.attention.icebreaker_hold",
                            hint="ui.attention.icebreaker_hold.hint")),
-    # 破冰没人接 → 这个群休眠多久（秒）。使用者 2026-09-27 的口径：
+    # 破冰没人接 → 这个群休眠。使用者 2026-09-27 的两句口径：
     # 「如果破冰一次还是没有人接话，可以直接把这个群拖入休眠状态，用其他群竞态。
-    #   休眠的群可以用 @ 唤醒。」
+    #   休眠的群可以用 @ 唤醒」+「**没 @ 一直休**」。
     # 「没人接」用的是现成的接话反馈窗口（`attention_feedback_window_seconds`，90s），
     # 不另开计时器 —— 同一个结论不该有两个判据。
-    # 默认 30 分钟：比自然回落（0.015/s，从满分掉到焦点线约 11 分钟）果断，
-    # 又不至于把一个群一整天判死。0 = 不启用休眠（退回旧行为）。
-    SettingSpec("icebreaker_dormant_seconds", "int", 1800, saveable=True,
+    #
+    # 两个键而不是一个：`seconds = 0` 现在是「一直休」（使用者要的默认口径），
+    # 所以"关掉这个功能"必须有独立开关，不能再用 0 兼职（那会变成关不掉的旋钮）。
+    SettingSpec("icebreaker_dormant_enabled", "bool", True, saveable=True,
+                description="save：破冰无人接话就把该群休眠（不参与焦点竞争）",
+                ui=UIInput("cfg-icebreaker-dormant-on", kind="checkbox",
+                           label="ui.attention.icebreaker_dormant_on")),
+    SettingSpec("icebreaker_dormant_seconds", "int", 0, saveable=True,
                 floor=0,
-                description="save：破冰后无人接话 → 该群休眠秒数（0=不休眠；@ 或到期即醒）",
+                description="save：休眠后多少秒自动醒（0=一直休，只有 @ 能唤醒）",
                 ui=UIInput("cfg-icebreaker-dormant", min=0, max=86400, step=60,
                            label="ui.attention.icebreaker_dormant",
                            hint="ui.attention.icebreaker_dormant.hint")),

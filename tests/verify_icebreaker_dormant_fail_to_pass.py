@@ -1,14 +1,15 @@
-"""fail-to-pass 证据：破冰休眠的六处接线都是必要条件。
+"""fail-to-pass 证据：破冰休眠的八处接线都是必要条件。
 
 被验证的东西（使用者 2026-09-27：「破冰一次还是没有人接话 → 拖入休眠，用其他群竞态；
-休眠的群可以用 @ 唤醒」）：
+休眠的群可以用 @ 唤醒」+「**没 @ 一直休**」）：
 
 - 「没人接」**要真的接在破冰那一轮上**（普通回复没人接不许睡群）；
 - 休眠群**要真的退出竞争**（否则"让其他群竞态"是空话）；
 - **全员休眠不许变成全体静音**（退回最高分群，而不是返回空焦点）；
 - 休眠**要放掉破冰那把锁**（锁优先于休眠过滤，不放锁等于白让）；
 - **@ 要能唤醒**（清休眠 + 照常上锁）；
-- 开关 **0 = 不启用**（可对照复现旧行为）。
+- 总开关 **关掉就真的不睡**；
+- 默认口径 **「没 @ 一直休」**不许被写成"到点自己醒"。
 
 铁律同 verify_outbound_guard_fail_to_pass.py：目标用例先绿、锚点唯一、恢复放 finally
 并逐字节核对、每轮跑控制组。
@@ -37,20 +38,20 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "破冰没人接也不再休眠（功能整个失效）",
-        "                seconds = self._dormant_seconds()\n"
-        "                if seconds > 0:",
-        "                seconds = self._dormant_seconds()\n"
-        "                if False:",
+        "            if tier == \"silent\" and self._apply_dormancy(\n"
+        "                state, now, reason=\"icebreaker_no_reply\",\n"
+        "            ):",
+        "            if tier == \"silent\" and False:",
     ),
     (
         "attention_service.py",
         "普通回复没人接也睡群（判据放宽到所有结算）",
         "        if state.proactive_pending:\n"
         "            state.proactive_pending = False\n"
-        "            if tier == \"silent\":",
+        "            if tier == \"silent\" and self._apply_dormancy(",
         "        if True:\n"
         "            state.proactive_pending = False\n"
-        "            if tier == \"silent\":",
+        "            if tier == \"silent\" and self._apply_dormancy(",
     ),
     (
         "attention_service.py",
@@ -74,24 +75,38 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_service.py",
-        "休眠不放锁（让位被 120s 的按住挡住）",
-        "                    state.lock_until = 0\n"
-        '                    state.last_focus_reason = "dormant:icebreaker_no_reply"',
-        '                    state.last_focus_reason = "dormant:icebreaker_no_reply"',
+        "休眠不放锁（让位被按住时长挡住）",
+        "        state.lock_until = 0\n"
+        "        state.last_focus_reason = f\"dormant:{reason}\"",
+        "        state.last_focus_reason = f\"dormant:{reason}\"",
     ),
     (
         "attention_service.py",
         "@ 不清休眠（唤醒失效）",
-        "        if int(state.dormant_until or 0):\n"
-        "            # 就地清、不调 `wake_from_dormancy`",
+        "        if int(state.dormant_until or 0) or bool(state.dormant_forever):\n"
+        "            state.dormant_until = 0\n"
+        "            state.dormant_forever = False\n"
+        "            self.plugin._emit_log(\n"
+        "                \"INFO\", f\"[Attention] 群{normalized_group_id} 从休眠中唤醒（点名）\",",
         "        if False:\n"
-        "            # 就地清、不调 `wake_from_dormancy`",
+        "            state.dormant_until = 0\n"
+        "            state.dormant_forever = False\n"
+        "            self.plugin._emit_log(\n"
+        "                \"INFO\", f\"[Attention] 群{normalized_group_id} 从休眠中唤醒（点名）\",",
     ),
     (
         "attention_service.py",
-        "开关 0 也能睡（关不掉）",
-        "        seconds = self._dormant_seconds()\n        if seconds <= 0:\n            return False",
-        "        seconds = self._dormant_seconds()\n        if False:\n            return False",
+        "总开关失效（关也关不掉）",
+        "        if not self._dormant_enabled() or self._state_is_dormant(state, now):",
+        "        if self._state_is_dormant(state, now):",
+    ),
+    (
+        "attention_service.py",
+        "「一直休」被当成自动醒（时间一过自己醒了）",
+        "        state.dormant_until = now + seconds if seconds > 0 else 0\n"
+        "        state.dormant_forever = seconds <= 0",
+        "        state.dormant_until = now + (seconds if seconds > 0 else 60)\n"
+        "        state.dormant_forever = False",
     ),
 ]
 
@@ -163,7 +178,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 破冰休眠的六处接线都是必要条件")
+    print(f"[PASS] {len(results)}/{len(results)} —— 破冰休眠的八处接线都是必要条件")
     return 0
 
 

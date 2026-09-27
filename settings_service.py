@@ -1096,7 +1096,10 @@ class QQSettingsService:
         icebreaker_hold_seconds = kwargs.get("icebreaker_hold_seconds")
         if icebreaker_hold_seconds is not None:
             self.plugin._qq_settings["icebreaker_hold_seconds"] = max(0, int(icebreaker_hold_seconds))
-        # 破冰没人接 → 群休眠秒数（0=不休眠）。
+        # 破冰没人接 → 群休眠（开关 + 自动醒秒数，0=一直休直到被 @）。
+        icebreaker_dormant_enabled = kwargs.get("icebreaker_dormant_enabled")
+        if icebreaker_dormant_enabled is not None:
+            self.plugin._qq_settings["icebreaker_dormant_enabled"] = bool(icebreaker_dormant_enabled)
         icebreaker_dormant_seconds = kwargs.get("icebreaker_dormant_seconds")
         if icebreaker_dormant_seconds is not None:
             self.plugin._qq_settings["icebreaker_dormant_seconds"] = max(0, int(icebreaker_dormant_seconds))
