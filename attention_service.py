@@ -1076,6 +1076,40 @@ class QQAttentionService:
             return "你刚才发过言，群里还没有人回应（也可能只是还没打完字）。"
         return "你上次发言之后，群里一直没人接话 —— 这个话题大概没被接住。"
 
+    def is_first_reply_after_own_speech(self, group_id: str, *, now: int | None = None) -> bool:
+        """她刚说完话，而**这一条**是之后的第一条发言 → 大概率是在接她的话。
+
+        真机由来（2026-09-27 17:37，使用者问「为什么破冰完没有后续的回复」）：
+
+        ```
+        17:37:21  她破冰开口（38 字），并按住焦点 120s
+        17:37:51  群里回了「是吗」——普通消息，没 @ 也没引用
+        17:37:53  她输出 <feeling>bored</feeling>（23 字符 + 换行 = 日志里那个固定的"24 字"），
+                  让出焦点，一个字都没回
+        ```
+
+        原因是提示词里那条**逐条标注**只看"有没有显式指向"：没 @、没引用 → 一律标成
+        「这条消息不是冲你来的…不要每条都接」。于是"她刚开口、对方第一句回应"这种
+        最该接的情况，反而被标注劝退。
+
+        判据直接用现成的反馈闭环状态，不另存字段：`msgs_after_reply` 在
+        `note_proactive_speech` / `update_on_reply` 里清零，别人每说一条 +1 ——
+        而门控在**建提示词之前**已经为当前这条 +1 过，所以它 `== 1` 恰好就是
+        "她说完之后的第一条"。再加一个时间窗（复用反馈窗口，默认 90s），
+        免得十分钟后冒出来的一句也被算成"接她的话"。
+        """
+        key = str(group_id or "").strip()
+        if not key:
+            return False
+        state = self._load_state(key)
+        last_reply_at = int(state.last_reply_at or 0)
+        if last_reply_at <= 0:
+            return False
+        ts = int(now if now is not None else self._current_time())
+        if ts - last_reply_at > self._feedback_window_seconds():
+            return False
+        return max(0, int(state.msgs_after_reply or 0)) == 1
+
     # ── 频率软提示（把硬崖变成坡）────────────────────────────────────
 
     def _pacing_hint_enabled(self) -> bool:

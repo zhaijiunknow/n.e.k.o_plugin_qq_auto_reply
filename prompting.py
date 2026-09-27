@@ -231,10 +231,17 @@ class QQAutoReplyPromptingMixin:
         return queued
 
     @staticmethod
-    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_reply_to_bot: bool = False, quoted_message_id: str = "", mentions_other_user: bool = False, mentions_all: bool = False) -> str:
+    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_reply_to_bot: bool = False, quoted_message_id: str = "", mentions_other_user: bool = False, mentions_all: bool = False, first_reply_after_own_speech: bool = False) -> str:
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
         is_at_bot = (str(group_scene_mode or "").strip() == "directed_user")
         # 构建定向提示：明确告诉模型这条消息是冲谁来的
+        #
+        # 判据分两层：**显式指向**（@ 你 / 引用你 / 引用别人 / @ 别人 / @全体）优先，
+        # 都判不出来时再看**对话时序** —— `first_reply_after_own_speech` 表示
+        # "她刚说完话，而这是之后的第一条发言"。真机（2026-09-27 17:37）踩的就是
+        # 缺了这一层：她破冰开口 30 秒后对方回「是吗」（没 @ 没引用），被判成
+        # 「不是冲你来的…不要每条都接」，她于是输出 `<feeling>bored</feeling>` 走人，
+        # 一个字都没回 —— 使用者看到的是「破冰完没有后续」。
         if is_at_bot:
             hint = "【这条消息是冲你来的】对方直接@了你，在对你说话。你应该回复。"
         elif is_reply_to_bot:
@@ -245,6 +252,8 @@ class QQAutoReplyPromptingMixin:
             hint = "【这条消息不是冲你来的】对方@了别人，不是在跟你说话。不要自作多情。除非内容与你高度相关，不要插话。"
         elif mentions_all:
             hint = "【这条消息是@全体成员】对方对全群广播。内容与你或群里讨论的话题相关时可以回复。"
+        elif first_reply_after_own_speech:
+            hint = "【这条消息很可能是在接你的话】你刚刚才在群里说过话，而这是之后的第一条发言 —— 大概率是在回应你。该接就接，别晾着对方；确实与你无关再忽略。"
         else:
             hint = "【这条消息不是冲你来的】群里的人在和其他人聊天，不是跟你说话。只有当你真的有话想说、能贡献独特见解时再回复，不要每条都接。"
         return (
