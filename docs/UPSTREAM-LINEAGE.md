@@ -197,9 +197,17 @@ Role 正文），外加 Chat Environment 的整段字段列表同序。**
 > `本文件**不是**上游的逐字副本：除了 lint 修复，还有三处功能性改动是插件侧加的（上游 utils/connection/onebot/qq_open_plat.py 没有）… **重新同步上游时必须把这些重新应用**，否则会静默回退`
 > `注意：本副本与上游恰好同为 1126 行，行数不能用来判断是否一致。`
 
-`qq_open_platform_media.py:28` 则明确反向声明：**插件自撰，上游没有对应模块**。
+`qq_open_platform_media.py:1`（`LOCAL-PATCH` 头，写在 docstring **之前** —— 守卫只认文件头
+40 行）则明确反向声明：**插件自撰，上游没有对应模块**，形状是"`QQOpenPlatformMediaMixin`
+独占上传流程 + 三个模块级包装函数把它绑到任意连接对象上"（见 `SESSION-HANDOFF.md` §35、
+`PROVENANCE.md`）。
 配套：`_vendor/connection_onebot/PROVENANCE.md` 的「真机生效面」表 + `tests/test_qq_connector_seam.py`
 的守卫（谁丢了 `LOCAL-PATCH` 标记就红）。
+
+上游状态（2026-09-28 更新）：`Project-N-E-K-O/N.E.K.O#2996` **已合并**（merge commit
+`3618e75fe9`，维护者随后 3 个 commit 把 `utils/connection/` 拆成 `base` / `onebot` / `qq`）。
+按方法名逐字对照拆分后的宿主，副本与它**只剩 3 处真差异**（全是 `LOCAL-PATCH`），
+其余差异是注释 —— 也就是**这次拆分没有带来上游行为变化**（`PROVENANCE.md`「副本 ↔ 拆分后宿主」）。
 
 **诚实评价**：这是"抄上游"的**正确姿势**，可以直接当模板用。
 

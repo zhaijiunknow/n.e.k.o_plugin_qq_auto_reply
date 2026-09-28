@@ -124,26 +124,26 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "_vendor/connection_onebot/qq_open_platform_media.py",
         "分片缺片也照合并（上传残缺文件还说成功）",
-        """    if offset != len(payload):""",
-        """    if False:""",
+        """        if offset != len(payload):""",
+        """        if False:""",
     ),
     (
         "_vendor/connection_onebot/qq_open_platform_media.py",
         "单聊图片误用群聊的上传入口（平台语义上不能跨用）",
-        """    file_info = await upload_image(conn, scope="users", owner_id=target, source=source)""",
-        """    file_info = await upload_image(conn, scope="groups", owner_id=target, source=source)""",
+        """        file_info = await self.upload_image(scope="users", owner_id=target, source=source)""",
+        """        file_info = await self.upload_image(scope="groups", owner_id=target, source=source)""",
     ),
     (
         "_vendor/connection_onebot/qq_open_platform_media.py",
         "本地文件先走文档的分片、后走旧式直传（顺序反了）",
-        """    for label, attempt in (
-        ("直传", _upload_legacy),
-        ("分片", _upload_chunked),
-    ):""",
-        """    for label, attempt in (
-        ("分片", _upload_chunked),
-        ("直传", _upload_legacy),
-    ):""",
+        """        for label, attempt in (
+            ("直传", self._media_upload_legacy),
+            ("分片", self._media_upload_chunked),
+        ):""",
+        """        for label, attempt in (
+            ("分片", self._media_upload_chunked),
+            ("直传", self._media_upload_legacy),
+        ):""",
     ),
 ]
 

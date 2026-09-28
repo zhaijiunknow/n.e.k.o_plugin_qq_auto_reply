@@ -8,8 +8,46 @@
 | 项 | 值 |
 |---|---|
 | 仓库 | `https://github.com/zhaijiunknow/N.E.K.O.git`（`origin`） |
-| 分支 / commit | `QQ` @ `4e83ac50e89dc9f4a6ea78af8bcde3a6280671d2`（2026-09-12） |
-| 上游 PR | `Project-N-E-K-O/N.E.K.O#2996`（`feat(qq): 适配器从插件中拆除并合入本体`），**未合并** |
+| 副本基线 | 分支 `QQ` @ `4e83ac50e89dc9f4a6ea78af8bcde3a6280671d2`（2026-09-12，作者分支的最后一个 commit） |
+| 上游 PR | `Project-N-E-K-O/N.E.K.O#2996`（`feat(qq): 适配器从插件中拆除并合入本体`）—— **已合并**（2026-09-28T06:19:42Z，merge commit `3618e75fe9`，base `main` ← head `QQ`） |
+| 合并后维护者追加 | `dc1890bd5`（onebot 注释/文档）、`fa4305b73`（恢复 503/925 个宿主测试函数；`test_qq_auto_reply_forward_client.py` → `test_onebot_client_forward.py`）、`c66368d79`（把 `utils/connection/` 拆成 `base` / `onebot` / `qq`） |
+| 对照的宿主版本 | `88e733a8e49517a935a4f28c3b5573377f29eec8`（2026-09-28 14:25 +0800，即拆分已落地的 `main`） |
+
+**合并后的宿主布局**（`c66368d79` 之后）：
+
+```
+utils/connection/base.py                     ConnectionBase / ChatConnector / InboundMessage
+utils/connection/onebot/                     OneBotClient + NapCatActionsMixin(70 个扩展动作)
+                                             + factory.py + onebot_connection.py
+                                             + qq_open_plat.py（57 行薄 re-export，不再是实现）
+utils/connection/qq/open_platform.py         QQOpenPlatformConnection
+utils/connection/qq/factory.py               create_qq_connection
+```
+
+拆分时**刻意保留**了插件在找的那 9 个名字（`OneBotClient` / `QQOpenPlatformConnection` /
+`create_qq_connection` …），并且是**同一批对象**（不是重新导出），所以 `connector_seam` 的
+解析名字一个都不用改 —— 宿主侧用 `tests/unit/test_connection_compat_surface.py`（20 条）
+把这个兼容面钉住了。
+
+维护者 `wehos` 的两条提示（2026-09-28 comment）：
+
+* 插件在找的 `utils.connection.onebot.qq_open_platform_media` 是**插件自撰**的模块，上游没有；
+  插件以后若要依赖宿主里**新的内部模块**，那个模块得落在 `onebot/` 下，或者宿主提供兼容入口；
+* 他拿本插件 `d7cbc89` 的测试套在**拆分前/后**两份宿主上各跑了一遍：都是 **1462 passed**。
+
+### 副本 ↔ 拆分后宿主的差异（2026-09-28 复核）
+
+按方法名逐字对照（`qq_open_plat.py` ↔ `qq/open_platform.py`，脚本
+`.dsh-artifacts/cmp-openplat-funcs.py`）：**逐字相同 99 ｜ 有差异 12 ｜ 只在副本 1 ｜ 只在宿主 0**。
+把 docstring/注释剥掉之后再比，**只有下面 3 处是真差异**，全是本仓库的 `LOCAL-PATCH`：
+
+* `send_group_image` / `_upload_group_image`：副本转发到 `qq_open_platform_media`，宿主仍是内联的旧式直传；
+* `send_private_image`：副本新增，宿主没有；
+* `_extract_attachments`：副本多带一个 `name`。
+
+其余 9 处差异只是注释改写或空行，`onebot_client.py` 那边同理（134 个函数逐字相同，6 处差异
+全是注释/空行 + 两个函数内多余的 `import time` 被删）。**结论：拆分没有带来任何上游行为变化，
+副本也没有落后于拆分** —— 所以这次不需要重新同步，只需记下基线换了。
 
 副本一共 6 个文件，其中 5 个来自 `utils/connection/onebot/`，1 个是插件自撰：
 
@@ -49,7 +87,7 @@ grep -rn "LOCAL-PATCH" _vendor/connection_onebot/
 | `QQOpenPlatformConnection.send_private_image`（新方法） | 不存在 | 薄转发到 `qq_open_platform_media.send_private_image` | 仅回退部署（插件**刻意不用**它，见下） |
 | `QQOpenPlatformConnection._upload_group_image` | 内联的旧式直传（56 行） | 薄转发到 `qq_open_platform_media.upload_image(scope="groups", …)`：旧式直传仍是首选，文档里的 URL / 分片作回退 | 仅回退部署 |
 | `QQOpenPlatformConnection._extract_attachments` | 只产出 `{"type", "url"}` | 平台给了文件名就带 `"name"`（消费方回退到 URL 尾巴） | 仅回退部署 → **真机上拿不到文件名**，见下 |
-| `qq_open_platform_media.py`（整个文件） | **不存在** | 上传流程的**自由函数**版（第一个参数是连接对象），好让**宿主那份**连接器也能用 | ✅ **真机生效**（群图 + 单聊图都走它） |
+| `qq_open_platform_media.py`（整个文件） | **不存在** | 上传流程写成**适配层**形状：`QQOpenPlatformMediaMixin`（混进连接类就是那三个动作）+ 三个模块级包装函数（`upload_image(conn, …)` 等，把 mixin 绑到任意连接对象上，供宿主那份连接器使用） | ✅ **真机生效**（群图 + 单聊图都走它） |
 
 ### 真机生效面（2026-09-27 核实）
 
@@ -57,9 +95,17 @@ grep -rn "LOCAL-PATCH" _vendor/connection_onebot/
 `[QQ] 连接器来源: host (utils.connection.onebot)`），所以上表里**只有最后一行的
 `qq_open_platform_media` 在真机路径上**；`qq_open_plat.py` 那 5 个 hunk 只有在"宿主没带
 连接器"的回退部署里才会跑到。插件侧对应的调用点是
-`reply_delivery_node._send_sticker`：开放平台的群图与单聊图**一律直调** media 里的自由函数
+`reply_delivery_node._send_sticker`：开放平台的群图与单聊图**一律直调** media 里的包装函数
 （私聊刻意不走连接器上那个 `send_private_image()` —— 它固定 `record_sent=True`，而表情包
 一直是 `record_sent=False`）。
+
+**为什么是"mixin + 包装函数"而不是纯自由函数**：宿主类不可能被插件加上基类，所以混入这条路
+在真机上走不通，必须有"对任何连接对象都能跑"的入口；但如果这个入口自己实现一遍上传流程，
+就会和 mixin 各漂各的。现在的分工是 mixin 独占流程、包装函数只负责把 mixin 绑上去
+（`_MediaAdapter`：mixin 的方法优先，其余属性转给连接对象，**不往连接对象上挂任何东西**）。
+`tests/test_qq_open_platform_media.py` 里那组"适配层形状"测试盯的就是这个：包装体里出现第二个
+实现、或覆盖方法的签名吃不下来被覆盖者的调用形状（`sub_type=`），都会红。宿主哪天自己把 mixin
+混进 `QQOpenPlatformConnection`，包装函数会自动让路（`_adapter()` 对已混入的对象原样返回）。
 
 **真机证据（2026-09-27 03:19，开放平台正式环境）**::
 

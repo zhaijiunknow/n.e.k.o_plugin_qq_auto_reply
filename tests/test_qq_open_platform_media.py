@@ -362,6 +362,120 @@ def test_the_media_module_is_resolved_from_the_seam():
     assert not MEDIA.is_open_platform(object())
 
 
+# ── 适配层形状：mixin 是主体，包装函数只是"绑上去" ──────────────────────
+#
+# 这块守的是**形状**而不是行为，因为形状错了真机上不会立刻报错：宿主连接类加不了基类，
+# 所以运行时走的是模块级包装函数；包装函数哪天被写成"第二份实现"，两份就会各自漂移，
+# 而症状只是某一边发不出图。
+
+def test_the_mixin_works_on_any_class_that_has_the_members():
+    """mixin 直接混进一个只有那几个成员的类就能跑 —— 不要求宿主基类、不要求继承。"""
+    class _Mixed(MEDIA.QQOpenPlatformMediaMixin, _Conn):
+        pass
+
+    conn = _Mixed(lambda method, url, body: {"id": "MID"} if url.endswith("/messages") else {"file_info": "FI"})
+
+    assert _run(conn.send_private_image("U1", "https://cdn.example/a.png")) == "MID"
+    assert _run(conn.upload_image(scope="groups", owner_id="G1", source="https://cdn.example/a.png")) == "FI"
+
+
+def test_the_mixin_overrides_the_transports_own_group_image():
+    """同名方法必须由 mixin 盖掉：宿主/副本类自带的那份是旧的直传实现。
+
+    MRO 上 mixin 在前 —— 这条断了，混入后群图会静默退回"上传失败→发 [图片] 三个字"。
+    """
+    class _Transport:
+        async def send_group_image(self, group_id, image_data, *, reply_message_id="", at_user_id="", sub_type=""):
+            return "transport-legacy"
+
+    class _Mixed(MEDIA.QQOpenPlatformMediaMixin, _Transport, _Conn):
+        pass
+
+    assert _Mixed.send_group_image is MEDIA.QQOpenPlatformMediaMixin.send_group_image
+
+
+def test_the_mixin_adds_exactly_three_public_members():
+    """混进宿主类时只多这三个公开方法 —— 别的都走 ``_media_`` 私有前缀。
+
+    宿主侧有兼容面契约测试（``tests/unit/test_connection_compat_surface.py``）钉着连接类的
+    成员集合，这里是插件这一侧的镜像：新加公开成员必须是**有意**的。
+    """
+    public = {
+        name for name in vars(MEDIA.QQOpenPlatformMediaMixin)
+        if not name.startswith("_")
+    }
+    assert public == {"upload_image", "send_private_image", "send_group_image"}, public
+
+
+def test_the_media_override_accepts_the_transport_signature():
+    """覆盖方法的签名要能吃下被覆盖者的调用形状，包括 ``sub_type``。
+
+    ``send_group_image(group_id, image_data, *, reply_message_id, at_user_id, sub_type)``
+    是连接类原有的形状；比它窄的覆盖会在混入那天以 ``TypeError`` 炸掉调用方。
+    """
+    import inspect
+
+    params = inspect.signature(MEDIA.QQOpenPlatformMediaMixin.send_group_image).parameters
+    transport_style = {"reply_message_id", "at_user_id", "sub_type"}
+    assert transport_style <= set(params), f"覆盖方法缺参数: {transport_style - set(params)}"
+
+
+def test_the_wrappers_are_thin_forwards_over_the_mixin():
+    """三个包装函数体内只准有"绑上适配器 + 调 mixin 那一个方法"。"""
+    import ast
+    import inspect
+    import textwrap
+
+    for name in ("upload_image", "send_private_image", "send_group_image"):
+        wrapper = getattr(MEDIA, name)
+        tree = ast.parse(textwrap.dedent(inspect.getsource(wrapper)))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        targets = {
+            ast.unparse(node.func) for node in calls
+            if ast.unparse(node.func).startswith("QQOpenPlatformMediaMixin.")
+        }
+        assert targets == {f"QQOpenPlatformMediaMixin.{name}"}, f"{name} 的包装体应只调 mixin 一次: {targets}"
+        assert not any(
+            "._http" in ast.unparse(node.func) for node in calls
+        ), f"{name} 的包装体里出现了直接网络调用 —— 那是第二份实现"
+
+
+def test_the_adapter_leaves_the_connection_object_alone():
+    """适配器不给连接对象挂任何属性：只读连接、``__slots__`` 连接都得能用。"""
+    class _Slotted:
+        CHANNEL = "open"
+        __slots__ = ("_http", "_API_BASE", "logger", "token_calls", "recorded")
+
+        def __init__(self, responder):
+            self._http = _FakeHTTP(responder)
+            self._API_BASE = "https://api.example"
+            self.logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+            self.token_calls = 0
+            self.recorded = []
+
+        async def _ensure_token(self):
+            self.token_calls += 1
+
+        def _auth_headers(self):
+            return {}
+
+        def record_sent_message_id(self, mid):
+            self.recorded.append(str(mid))
+
+    conn = _Slotted(lambda method, url, body: {"file_info": "FI"})
+    assert _run(MEDIA.upload_image(conn, scope="users", owner_id="U1", source="https://cdn.example/a.png")) == "FI"
+    assert not hasattr(conn, "_media_post"), "适配器不该把 mixin 方法挂到连接对象上"
+
+
+def test_an_already_mixed_connection_is_not_wrapped_again():
+    """已经混过 mixin 的连接原样通过 —— 宿主将来自己混入时不需要改这里。"""
+    class _Mixed(MEDIA.QQOpenPlatformMediaMixin, _Conn):
+        pass
+
+    conn = _Mixed(lambda method, url, body: {})
+    assert MEDIA._adapter(conn) is conn
+
+
 def _run(coro):
     """跑一遍协程；所有 ``{...}/messages`` 的 POST 都回一个消息 id。"""
     import asyncio

@@ -133,12 +133,13 @@
   引用链与**转发链**两处时间头都要覆盖（见 §4.0ab）
 - `verify_reply_chain_tz_fail_to_pass.py` — 同上，两处时间头各换成 UTC → 各红 3 条，
   还原逐字节一致，对照绿（只钉引用链时转发链那处变异**全绿**，见 §4.0ab）
-- `test_qq_open_platform_media.py`（14 条）— 开放平台富媒体：URL 上传 / 旧式直传 /
+- `test_qq_open_platform_media.py`（21 条）— 开放平台富媒体：URL 上传 / 旧式直传 /
   分片上传三条的形状与顺序、scope 隔离（单聊 vs 群聊不能跨用）、**群聊发图**、
   失败与超限一律降级、缺片不许合并；外加**连接成员漂移守卫**（见 §4.0ad）
+  与**适配层形状守卫** 7 条（见 §35）
 - `verify_open_platform_media_fail_to_pass.py` — 同上 10 种注入全红 + 对照绿
 - `test_qq_private_image_delivery.py`（10 条）— 表情包投递的两条通道分流
-  （开放平台走富媒体自由函数 / OneBot 走原生 image 段），群聊与私聊各一条回归守卫
+  （开放平台走富媒体包装函数 / OneBot 走原生 image 段），群聊与私聊各一条回归守卫
 - `test_qq_voice_channel_gate.py`（8 条）— `supports_voice=False` 时**一次都不许合成**、
   回退判据与原有一致、无该属性的连接按支持处理（§4.0ad）
 - `test_qq_attachment_files.py`（18 条）— 开放平台入站非图片附件：取用规则
@@ -5273,3 +5274,96 @@ docstring 本次一并改对（保留原文作为"错在哪"的记录）。
 要动就动这个：加一条 `[Delivery]` 观测（session_key / source_kind / 本轮块数 /
 是否并批 / 窗口内第几轮），拿真机数据分清"合并没生效"与"节奏本来就快"。
 在那之前**不要**改频率机制 —— 计数闸会把真正的病根掩掉。
+
+## 35. `qq_open_platform_media` 改成适配层写法（行为不变的重构）
+
+### 35.1 口径
+
+使用者 2026-09-28 原话：
+
+> 「qq_open_platform_media 用更符合适配层的写法上优化」
+
+背景是维护者 `wehos` 在 PR #2996 的评论里给的那条：插件以后若要依赖宿主里**新的内部模块**，
+那个模块得落在 `onebot/` 下，或者由宿主提供兼容入口。这个文件当初写成"自由函数 + 连接对象
+当第一参数"，是因为插件改不了宿主的类；现在把它收拾成与宿主连接层同一套形状，但**不改变
+任何一处调用点与行为**。
+
+### 35.2 改成了什么形状
+
+| 层 | 内容 | 为什么 |
+|---|---|---|
+| 主体 | `QQOpenPlatformMediaMixin`：公开动作 `upload_image` / `send_private_image` / `send_group_image`，管道私有化（`_media_post` / `_media_api_base` / `_media_log` / `_media_upload_by_url` / `_media_upload_chunked` / `_media_upload_legacy`） | 与 NapCat 扩展动作的 `NapCatActionsMixin` 同一种形状：连接类只管协议，某个平台的额外动作集中在一处、按需混入 |
+| 覆盖 | `send_group_image` 与连接类同名 → 混入即覆盖（那份是旧的直传实现） | 同名覆盖是**有意**的；为避免覆盖者签名比被覆盖者窄，签名里收下并忽略 `sub_type`（Open Platform 无此语义），否则混入那天调用方 `TypeError` |
+| 兼容入口 | 三个模块级包装函数，签名与旧版**一字不改** | 宿主类不可能被插件加基类（运行期连的是宿主那份连接器，日志 `[QQ] 连接器来源: host (utils.connection.onebot)`），所以必须有"对任何连接对象都能跑"的入口；`reply_delivery_node._send_sticker` 与副本 `qq_open_plat.py` 的 3 处接线原样继续用 |
+| 绑定 | `_MediaAdapter(conn)`：mixin 的方法优先，其余属性转给连接对象，**不往连接对象挂任何东西**（`__slots__` / 只读连接也能用）；`_adapter()` 对已混入的连接原样返回 | 包装函数不许有第二份实现，否则两份流程会各漂各的；宿主哪天自己把 mixin 混进 `QQOpenPlatformConnection`，包装函数自动让路 |
+
+三种做法里为什么选这个：**只留 mixin** 在真机走不通（插件加不了基类）；**只留自由函数**
+就等于流程与可混入的动作是两套东西，迟早漂移。现在是"mixin 独占流程 + 包装函数只负责绑上去"。
+
+### 35.3 证据
+
+- 全量 **1468 passed**（重构前 1461；+7 = 新增的"适配层形状"测试）。
+- `tests/test_qq_open_platform_media.py` 21 条（原 14 + 新 7，新 7 条守形状：mixin 在只有那几个
+  成员的类上能跑、同名方法确实被 mixin 盖掉、公开成员恰好三个、覆盖方法吃得下 `sub_type`、
+  包装体内没有第二种实现也没有直接网络调用、适配器不在连接对象上留属性、已混入的连接不再包一层）。
+- 变异证据 **6/6**（脚本 `.dsh-artifacts/verify-media-mutations.py`，打在**挂载副本**上，
+  仓库一个字节不动）：
+
+  | 拆掉哪一处 | 结果 |
+  |---|---|
+  | `_adapter()` 直接返回 conn（包装函数等于调 `conn.upload_image`） | 13 failed |
+  | 覆盖方法去掉 `sub_type` 参数 | 4 failed |
+  | 分片缺片也照合并 | 1 failed |
+  | 单聊图片误用群聊上传入口 | 2 failed |
+  | 直传/分片顺序反过来 | 2 failed |
+  | 对照（什么都不改） | 31 passed，退出 0 |
+
+- 两道 ruff 门都 `All checks passed!`（仓库 `ruff.toml` 那道，以及 CI 那道
+  `--ignore-noqa --isolated --target-version py311 --line-length 120 --select E4,E7,E9,F,I`；
+  带不带 `--exclude vendor` 都干净）。
+- **行为不变，所以没有真机证据也不该有**：请求形状、日志前缀（`[QQOpenPlatform]`）、
+  降级路径（上传失败 → `[图片]` 文字）全部没动，真机生效面的唯一入口仍是
+  `reply_delivery_node._send_sticker` 直调那三个包装函数。
+
+### 35.4 一并修掉的过期锚点与文档
+
+- `tests/verify_open_platform_media_fail_to_pass.py` 里三处锚点还在描述旧的自由函数形状
+  （`upload_image(conn, …)` / `_upload_legacy` / `_upload_chunked`）—— 重构后这些锚点会
+  `[MISS]`（"锚点出现 0 次"= 结论无效，而不是"通过了"）。已按新形状更新（8 空格缩进 +
+  `self.media_*` / `self._media_upload_*`）。
+- `_vendor/connection_onebot/PROVENANCE.md`：PR #2996 由"未合并"改成**已合并**
+  （2026-09-28T06:19:42Z，merge commit `3618e75fe9`，维护者随后追加 3 个 commit），
+  补上合并后的宿主布局与"插件要依赖新内部模块得落在 `onebot/` 下或走兼容入口"这条提示，
+  并新增一节**副本 ↔ 拆分后宿主**的逐方法对照：`qq_open_plat.py` ↔ `qq/open_platform.py`
+  逐字相同 99 / 有差异 12 / 只在副本 1，剥掉注释与 docstring 后**只剩 3 处真差异**
+  （`send_group_image`-`_upload_group_image` 转发、新增 `send_private_image`、
+  `_extract_attachments` 的 `name`，全是 `LOCAL-PATCH`）；`onebot_client.py` 134 个函数逐字相同。
+  结论：**拆分没有带来任何上游行为变化，副本也没有落后，这次不需要重新同步**。
+- `qq_open_platform_media.py` 的 `LOCAL-PATCH` 标记移到 docstring **之前**：守卫只认文件头
+  40 行，而这段 docstring 有 45 行 —— 标记跟在后面等于没标（这一条是这轮**真的红过**的：
+  全量里唯一一条 failure 就是它）。
+
+### 35.5 顺带暴露的一件事：插件移出宿主树之后，测试该怎么跑
+
+插件 2026-09-28 被移出宿主树（现在是独立仓库 `D:\NekoClaw\n.e.k.o_plugin_qq_auto_reply`），
+而它的测试有两个硬前提：按 `plugin.plugins.qq_auto_reply.X` 导入，以及 37 个文件按
+`Path(__file__).resolve().parents[4]` 找"应用根"。于是场外直接跑是跑不动的，几种试法：
+
+| 试法 | 结果 |
+|---|---|
+| 直接在场外跑（默认 import 模式） | `ModuleNotFoundError: No module named 'plugin.plugins.qq_auto_reply'` |
+| 把包名 alias 到克隆上 | 根 `__init__.py` 的 `from . import _lib_bootstrap` 报"attempted relative import with no known parent package"（别名没有真正导入该包） |
+| `--import-mode=importlib -o consider_namespace_packages=true` | 同上，14 条全 ERROR |
+| 用 **junction** 挂到无点目录名 | pytest 通了，但 `resolve()` 把 junction 解成真路径（`D:\NekoClaw\n.e.k.o_plugin_qq_auto_reply\tests\…`，只有 3 级）→ `IndexError: 4`（`parents[4]`） |
+| ✅ **真副本**挂载 | `parents[4]` = 挂载根，`plugin.plugins.qq_auto_reply` 是正常包，全绿 |
+
+可用做法（两个脚本都在 `.dsh-artifacts/`，不进仓库）：
+
+- `sync-plugin-mount.py`：把仓库同步到 `.dsh-artifacts/mount/plugin/plugins/qq_auto_reply`
+  —— 层级与市场 CI 挂载后的 `<root>/plugin/plugins/<id>` 完全一致（这是 `parents[4]` 能对上的原因）；
+- `run-plugin-tests.py`：同步后把这个目录接进宿主**真实** `plugin.plugins` 包的 `__path__`，
+  再跑 pytest（`--no-sync` 可跳过拷贝）。
+
+宿主树依旧一个字节不用改；副作用是好的：`verify_*_fail_to_pass.py` 那些**会改文件**的脚本
+改的是副本，仓库不会被半途改坏。仓库里那些 `verify_*` 脚本本身仍按"部署布局"写
+（`python plugin/plugins/qq_auto_reply/tests/verify_….py`），在市场挂载或宿主树里跑照旧。

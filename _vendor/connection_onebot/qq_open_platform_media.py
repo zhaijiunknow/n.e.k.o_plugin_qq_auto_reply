@@ -1,34 +1,60 @@
-"""QQ 开放平台富媒体上传 —— 图片走这条路，群聊与单聊各一份。
-
-**为什么单独一个模块**：上传流程比"发一条消息"复杂得多，而且是**两条并存的协议**：
-
-1. **旧式直传**（本仓库群聊一直在用的那条，见 ``qq_open_plat._upload_group_image``）：
-   ``POST /v2/{scope}/{id}/files {file_type, file_name, file_size, mime_type}``
-   → 响应里给 ``upload_url`` → 客户端 ``PUT`` 字节 → 拿 ``file_info``。
-2. **当前官方文档**（bot.q.qq.com wiki，2026-07/08 更新）只列另外两条：
-   * **URL 上传**：``{file_type, url, srv_send_msg: false}``，平台自己去下载转存
-     —— 只接受 http(s) 地址，**本地文件走不了**；
-   * **分片上传**：``upload_prepare``（要给 ``file_size``/``md5``/``sha1``/``md5_10m``）
-     → 逐片 ``PUT`` 预签名 URL → 每片 ``upload_part_finish`` → 带 ``upload_id``
-     调 ``files`` 合并。
-
-   文档里**没有**第 1 条的字段（``file_size``/``mime_type``/``upload_url``）——
-   也就是说群聊那条直传到底还算不算数，只能靠真机才知道。所以这里的策略是
-   **两条都试**：本地文件先试旧式直传（与既有行为完全一致，不会比今天更差），
-   失败再走文档的分片上传；http 地址直接走文档的 URL 上传。哪条成功都会写日志，
-   下次真机接上开放平台时，日志本身就回答了"哪条还活着"。
-
-**宿主副本问题**：运行时优先用宿主那份连接器（``connector_seam``），而插件**改不了宿主
-的文件**。所以这些函数写成**自由函数**（第一个参数是连接对象），插件侧对任何一份连接
-都能用；副本里的方法只是薄薄一层转发。函数只依赖连接对象的这几个成员
-（``_http`` / ``_API_BASE`` / ``_ensure_token`` / ``_auth_headers`` / ``logger``），
-``tests/test_qq_open_platform_media.py`` 里有针对它们的漂移守卫。
-"""
-
 # LOCAL-PATCH: 4302a9ea 本文件是**插件自撰**，不是上游副本（上游没有对应模块）。
 # 它必须跟着 _vendor/connection_onebot/ 一起留下来：副本里的 qq_open_plat.py 用
 # `from . import qq_open_platform_media` 引它，删了会让整个副本包 import 失败。
 # 明细与同步顺序见同目录 PROVENANCE.md。
+#
+# 标记写在 docstring **之前**：`tests/test_qq_connector_seam.py` 的守卫只认文件头 40 行，
+# 而这段 docstring 有 45 行 —— 标记跟在后面就等于没标。
+
+"""QQ Open Platform rich media: image upload and image sending.
+
+Image sending on the Open Platform is not one request but two: upload the bytes to
+get a ``file_info``, then send a ``msg_type=7`` message carrying it. Both halves are
+QQ-platform-specific, so they live here rather than in the platform-neutral
+``base`` layer.
+
+Two upload protocols coexist on this platform:
+
+1. **Legacy direct upload** — ``POST /v2/{scope}/{id}/files`` with
+   ``file_type``/``file_name``/``file_size``/``mime_type``, which answers with an
+   ``upload_url`` to ``PUT`` the bytes to. This is what the transport class used
+   before; the current platform docs no longer list those request fields, and a live
+   run on 2026-09-26 showed the group flow failing on it.
+2. **Documented upload** — either a **URL upload** (hand the platform an http(s)
+   address and let it fetch), or a **chunked upload**
+   (``upload_prepare`` → per-part ``PUT`` + ``upload_part_finish`` → merge).
+   A local file cannot use the URL flow.
+
+So for local files both are attempted, legacy first: that keeps the previously
+working deployment working, and whichever succeeds is named in the log, which is how
+"which protocol is still alive" gets answered without guessing.
+
+Shape
+-----
+
+The actions sit on :class:`QQOpenPlatformMediaMixin`, the same way NapCat /
+go-cqhttp extensions sit on ``NapCatActionsMixin``: the transport class stays about
+the protocol, and a platform's extras stay in one place next to it. Mixing it into
+``QQOpenPlatformConnection`` overrides ``send_group_image`` (same name, and the
+transport's own implementation is the stale legacy path described above) and adds
+``upload_image`` and ``send_private_image``.
+
+The consuming plugin cannot add bases to the host's class, and it resolves whichever
+connector the host provides -- the host's, or its own vendored copy. The three
+operations therefore also exist as module-level wrappers taking any connection
+object. Each wrapper binds the mixin over that object (:class:`_MediaAdapter`: mixin
+methods win, everything else comes from the connection) and calls one mixin method,
+so the flow lives in exactly one place and there is no second implementation to
+drift. On the day the host class composes the mixin, the adapter steps aside.
+
+Dependencies
+------------
+
+Only these members of the connection object, all present on the resolved connector
+(``tests/test_qq_open_platform_media.py`` guards them): ``_http``, ``_API_BASE``,
+``_ensure_token()``, ``_auth_headers()``, ``logger``, and ``record_sent_message_id()``
+for the send half.
+"""
 
 from __future__ import annotations
 
@@ -37,51 +63,27 @@ import mimetypes
 import os
 from typing import Any
 
-#: 平台口径的媒体类型。
+#: Platform media type for an image.
 FILE_TYPE_IMAGE = 1
 
-#: 图片软限制（超过平台会把图片降级成"文件"类型，我们宁可降级成文字也不偷偷改语义）。
+#: Soft image limit. Past this the platform stores the upload as a "file" instead of
+#: an image; this module refuses rather than silently changing what it sends.
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
-#: ``upload_prepare`` 要的 ``md5_10m`` = **前 10002432 字节**的 MD5（文档原文）。
+#: ``upload_prepare`` wants ``md5_10m``: the MD5 of the first 10002432 bytes.
 _MD5_10M_BYTES = 10_002_432
 
 
 def is_open_platform(conn: Any) -> bool:
-    """这个连接是不是 QQ 开放平台。
+    """Is this connection the QQ Open Platform?
 
-    读 ``CHANNEL`` 优先（``"open"``，与 ``OneBotClient.CHANNEL`` 的取值域一致），
-    再退到 ``mode``。两个都是既有属性，不新增协议字段。
+    Reads ``CHANNEL`` first (``"open"``, the same value domain as
+    ``OneBotClient.CHANNEL``), then falls back to ``mode``. Both already exist; no
+    protocol member is added for this.
     """
     if str(getattr(conn, "CHANNEL", "") or "").strip() == "open":
         return True
     return str(getattr(conn, "mode", "") or "").strip() == "open_platform"
-
-
-def _api_base(conn: Any) -> str:
-    return str(getattr(conn, "_API_BASE", "") or "").rstrip("/")
-
-
-def _log(conn: Any, level: str, message: str) -> None:
-    logger = getattr(conn, "logger", None)
-    if logger is None:
-        return
-    try:
-        getattr(logger, level, logger.info)(f"[QQOpenPlatform] {message}")
-    except Exception:
-        pass
-
-
-async def _post(conn: Any, path: str, body: dict[str, Any]) -> dict[str, Any]:
-    """带鉴权的 POST，返回解析后的 JSON（拿不到就空 dict，绝不抛给调用方）。"""
-    response = await conn._http.post(
-        f"{_api_base(conn)}{path}", json=body, headers=conn._auth_headers(),
-    )
-    try:
-        data = response.json()
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _local_path(source: str) -> str:
@@ -92,7 +94,7 @@ def _local_path(source: str) -> str:
 
 
 def _read_source(source: str) -> tuple[bytes, str]:
-    """读本地文件，返回 ``(字节, 文件名)``；读不了就是 ``(b"", "")``。"""
+    """Read a local file -> ``(bytes, file_name)``; unreadable is ``(b"", "")``."""
     path = _local_path(source)
     if not path or not os.path.isfile(path):
         return b"", ""
@@ -108,239 +110,349 @@ def _digests(payload: bytes) -> dict[str, str]:
     }
 
 
-async def _upload_by_url(conn: Any, *, scope: str, owner_id: str, url: str, file_type: int) -> str:
-    """文档里的 URL 上传：把地址给平台，由平台下载转存。"""
-    data = await _post(
-        conn, f"/v2/{scope}/{owner_id}/files",
-        {"file_type": file_type, "url": url, "srv_send_msg": False},
-    )
-    return str(data.get("file_info") or "")
+class QQOpenPlatformMediaMixin:
+    """Rich-media actions for ``QQOpenPlatformConnection``.
 
+    Every method is written against ``self`` as the connection object, so the mixin
+    works on any class that provides the members listed in the module docstring.
+    Failures return empty/``None`` instead of raising: the caller decides how to
+    degrade (the delivery layer falls back to a ``[图片]`` text line).
+    """
 
-async def _upload_chunked(
-    conn: Any, *, scope: str, owner_id: str, payload: bytes, file_name: str, file_type: int,
-) -> str:
-    """文档里的分片上传：prepare → 逐片 PUT + part_finish → 带 upload_id 合并。"""
-    digests = _digests(payload)
-    prepare = await _post(
-        conn, f"/v2/{scope}/{owner_id}/upload_prepare",
-        {
-            "file_type": file_type,
-            "file_size": str(len(payload)),
-            "file_name": file_name,
-            **digests,
-        },
-    )
-    upload_id = str(prepare.get("upload_id") or "")
-    parts = prepare.get("parts")
-    if not upload_id or not isinstance(parts, list) or not parts:
-        return ""
+    # ── transport plumbing ─────────────────────────────────────────────
 
-    mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
-    ordered = sorted(
-        (p for p in parts if isinstance(p, dict)),
-        key=lambda p: int(p.get("index") or 0),
-    )
-    offset = 0
-    for part in ordered:
+    def _media_log(self, level: str, message: str) -> None:
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            return
         try:
-            size = int(part.get("block_size") or 0)
-        except (TypeError, ValueError):
-            size = 0
-        chunk = payload[offset:offset + size] if size > 0 else payload[offset:]
-        presigned = str(part.get("presigned_url") or "")
-        if not chunk or not presigned:
-            return ""
-        await conn._http.put(presigned, content=chunk, headers={"Content-Type": mime_type})
-        await _post(
-            conn, f"/v2/{scope}/{owner_id}/upload_part_finish",
+            getattr(logger, level, logger.info)(f"[QQOpenPlatform] {message}")
+        except Exception:
+            pass
+
+    def _media_api_base(self) -> str:
+        return str(getattr(self, "_API_BASE", "") or "").rstrip("/")
+
+    async def _media_post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Authenticated POST returning parsed JSON; a non-dict answer is ``{}``.
+
+        Transport errors are left to the caller to catch -- the same contract the
+        connection's own send methods have.
+        """
+        response = await self._http.post(
+            f"{self._media_api_base()}{path}", json=body, headers=self._auth_headers(),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    # ── upload protocols ───────────────────────────────────────────────
+
+    async def _media_upload_by_url(
+        self, *, scope: str, owner_id: str, url: str, file_type: int,
+    ) -> str:
+        """Documented URL upload: the platform fetches and stores the address."""
+        data = await self._media_post(
+            f"/v2/{scope}/{owner_id}/files",
+            {"file_type": file_type, "url": url, "srv_send_msg": False},
+        )
+        return str(data.get("file_info") or "")
+
+    async def _media_upload_chunked(
+        self, *, scope: str, owner_id: str, payload: bytes, file_name: str, file_type: int,
+    ) -> str:
+        """Documented chunked upload: prepare -> per-part PUT + finish -> merge."""
+        digests = _digests(payload)
+        prepare = await self._media_post(
+            f"/v2/{scope}/{owner_id}/upload_prepare",
             {
-                "upload_id": upload_id,
-                "part_index": int(part.get("index") or 0),
-                "block_size": str(len(chunk)),
-                "md5": hashlib.md5(chunk).hexdigest(),
+                "file_type": file_type,
+                "file_size": str(len(payload)),
+                "file_name": file_name,
+                **digests,
             },
         )
-        offset += len(chunk)
+        upload_id = str(prepare.get("upload_id") or "")
+        parts = prepare.get("parts")
+        if not upload_id or not isinstance(parts, list) or not parts:
+            return ""
 
-    if offset != len(payload):
-        # 分片列表没覆盖完整个文件：合并上去就是**残缺文件**，而平台不会替我们
-        # 发现这件事。宁可这次不发图，也不要上传一个坏文件后说"成功了"。
-        _log(conn, "warning", f"分片只覆盖 {offset}/{len(payload)} 字节，放弃合并")
-        return ""
+        mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
+        ordered = sorted(
+            (p for p in parts if isinstance(p, dict)),
+            key=lambda p: int(p.get("index") or 0),
+        )
+        offset = 0
+        for part in ordered:
+            try:
+                size = int(part.get("block_size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            chunk = payload[offset:offset + size] if size > 0 else payload[offset:]
+            presigned = str(part.get("presigned_url") or "")
+            if not chunk or not presigned:
+                return ""
+            await self._http.put(presigned, content=chunk, headers={"Content-Type": mime_type})
+            await self._media_post(
+                f"/v2/{scope}/{owner_id}/upload_part_finish",
+                {
+                    "upload_id": upload_id,
+                    "part_index": int(part.get("index") or 0),
+                    "block_size": str(len(chunk)),
+                    "md5": hashlib.md5(chunk).hexdigest(),
+                },
+            )
+            offset += len(chunk)
 
-    merged = await _post(
-        conn, f"/v2/{scope}/{owner_id}/files",
-        {"file_type": file_type, "upload_id": upload_id, "srv_send_msg": False, "file_name": file_name},
-    )
-    return str(merged.get("file_info") or "")
+        if offset != len(payload):
+            # The part list did not cover the whole file: merging would store a
+            # truncated file and the platform will not flag it. Skipping this send is
+            # better than uploading a broken image and reporting success.
+            self._media_log(
+                "warning", f"分片只覆盖 {offset}/{len(payload)} 字节，放弃合并",
+            )
+            return ""
 
+        merged = await self._media_post(
+            f"/v2/{scope}/{owner_id}/files",
+            {"file_type": file_type, "upload_id": upload_id, "srv_send_msg": False, "file_name": file_name},
+        )
+        return str(merged.get("file_info") or "")
 
-async def _upload_legacy(
-    conn: Any, *, scope: str, owner_id: str, payload: bytes, file_name: str, file_type: int,
-) -> str:
-    """旧式直传：申请 ``upload_url`` 再 PUT。仓库里群聊原来一直在用这条。"""
-    mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
-    data = await _post(
-        conn, f"/v2/{scope}/{owner_id}/files",
-        {
-            "file_type": file_type,
-            "file_name": file_name,
-            "file_size": len(payload),
-            "mime_type": mime_type,
-        },
-    )
-    upload_url = str(data.get("upload_url") or "")
-    if not upload_url:
-        return ""
-    response = await conn._http.put(upload_url, content=payload, headers={"Content-Type": mime_type})
-    file_info = ""
-    try:
-        file_info = str((response.json() or {}).get("file_info") or "")
-    except Exception:
+    async def _media_upload_legacy(
+        self, *, scope: str, owner_id: str, payload: bytes, file_name: str, file_type: int,
+    ) -> str:
+        """Legacy direct upload: apply for an ``upload_url``, then PUT."""
+        mime_type = mimetypes.guess_type(file_name)[0] or "image/png"
+        data = await self._media_post(
+            f"/v2/{scope}/{owner_id}/files",
+            {
+                "file_type": file_type,
+                "file_name": file_name,
+                "file_size": len(payload),
+                "mime_type": mime_type,
+            },
+        )
+        upload_url = str(data.get("upload_url") or "")
+        if not upload_url:
+            return ""
+        response = await self._http.put(
+            upload_url, content=payload, headers={"Content-Type": mime_type},
+        )
         file_info = ""
-    return file_info or str(data.get("file_info") or "")
+        try:
+            file_info = str((response.json() or {}).get("file_info") or "")
+        except Exception:
+            file_info = ""
+        return file_info or str(data.get("file_info") or "")
+
+    # ── public operations ──────────────────────────────────────────────
+
+    async def upload_image(self, *, scope: str, owner_id: str, source: str) -> str:
+        """Upload one image into ``scope`` (``"groups"`` / ``"users"``), return ``file_info``.
+
+        ``scope`` is the platform's own isolation: an upload made through the private
+        interface can only be sent privately, and the other way round, so callers must
+        pass the one matching where the image goes. Failure returns ``""`` and leaves
+        the degradation choice to the caller.
+        """
+        url = str(source or "").strip()
+        if not url:
+            return ""
+        if url.startswith(("http://", "https://")):
+            try:
+                await self._ensure_token()
+                file_info = await self._media_upload_by_url(
+                    scope=scope, owner_id=owner_id, url=url, file_type=FILE_TYPE_IMAGE,
+                )
+            except Exception as exc:
+                self._media_log("warning", f"图片 URL 上传异常: {exc}")
+                return ""
+            if file_info:
+                self._media_log("info", f"图片上传成功(url): {file_info[:24]}")
+            else:
+                self._media_log("warning", "图片 URL 上传失败")
+            return file_info
+
+        try:
+            payload, file_name = _read_source(url)
+        except Exception as exc:
+            self._media_log("warning", f"图片读取失败: {exc}")
+            return ""
+        if not payload:
+            self._media_log("warning", f"图片文件不存在或为空: {_local_path(url)}")
+            return ""
+        if len(payload) > MAX_IMAGE_BYTES:
+            self._media_log(
+                "warning",
+                f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {len(payload)} 字节",
+            )
+            return ""
+
+        try:
+            await self._ensure_token()
+        except Exception as exc:
+            self._media_log("warning", f"取 token 失败，无法上传图片: {exc}")
+            return ""
+
+        # Both protocols, legacy first: never worse than the behaviour that shipped,
+        # and the log says which one worked.
+        for label, attempt in (
+            ("直传", self._media_upload_legacy),
+            ("分片", self._media_upload_chunked),
+        ):
+            try:
+                file_info = await attempt(
+                    scope=scope, owner_id=owner_id,
+                    payload=payload, file_name=file_name, file_type=FILE_TYPE_IMAGE,
+                )
+            except Exception as exc:
+                self._media_log("warning", f"图片{label}上传异常: {exc}")
+                continue
+            if file_info:
+                self._media_log("info", f"图片上传成功({label}): {file_info[:24]}")
+                return file_info
+            self._media_log("warning", f"图片{label}上传未拿到 file_info")
+        return ""
+
+    async def send_private_image(
+        self, user_id: str, source: str, *,
+        content: str = "", reply_message_id: str = "", record_sent: bool = True,
+    ) -> str | None:
+        """Send one image to a private chat (``msg_type=7`` + ``media.file_info``).
+
+        Returns the message id, or ``None`` at any failure for the caller to degrade.
+        """
+        target = str(user_id or "").strip()
+        if not target:
+            return None
+        file_info = await self.upload_image(scope="users", owner_id=target, source=source)
+        if not file_info:
+            return None
+        body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
+        text = str(content or "").strip()
+        if text:
+            body["content"] = text
+        reply_id = str(reply_message_id or "").strip()
+        if reply_id:
+            body["msg_id"] = reply_id
+        try:
+            data = await self._media_post(f"/v2/users/{target}/messages", body)
+        except Exception as exc:
+            self._media_log("warning", f"发送单聊图片失败: {exc}")
+            return None
+        message_id = str(data.get("id") or "")
+        if message_id and record_sent:
+            try:
+                self.record_sent_message_id(message_id)
+            except Exception:
+                pass
+        return message_id or None
+
+    async def send_group_image(
+        self, group_id: str, source: str, *,
+        content: str = "", reply_message_id: str = "", at_user_id: str = "",
+        sub_type: str = "", record_sent: bool = False,
+    ) -> str | None:
+        """Send one image to a group chat (``msg_type=7`` + ``media.file_info``).
+
+        Overrides the connection's own ``send_group_image`` when mixed in, which is
+        deliberate: that one only implemented the legacy direct upload, and a live run
+        on 2026-09-26 showed it failing on the Open Platform -- the group sticker path
+        had been silently degrading to a ``[图片]`` text line, while the private path
+        only worked because it went through this module's chunked fallback. Both
+        directions now take the same route.
+
+        ``sub_type`` is the transport's own image flavour (e.g. OneBot's flash image);
+        the Open Platform has no equivalent, so an override with the same signature
+        accepts and ignores it instead of breaking its callers with a ``TypeError``.
+        """
+        target = str(group_id or "").strip()
+        if not target:
+            return None
+        file_info = await self.upload_image(scope="groups", owner_id=target, source=source)
+        if not file_info:
+            return None
+        body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
+        at = str(at_user_id or "").strip()
+        text = str(content or "").strip()
+        if at or text:
+            body["content"] = (f"<@!{at}>" if at else "") + text
+        reply_id = str(reply_message_id or "").strip()
+        if reply_id:
+            body["msg_id"] = reply_id
+        try:
+            data = await self._media_post(f"/v2/groups/{target}/messages", body)
+        except Exception as exc:
+            self._media_log("warning", f"发送群聊图片失败: {exc}")
+            return None
+        message_id = str(data.get("id") or "")
+        if message_id and record_sent:
+            try:
+                self.record_sent_message_id(message_id)
+            except Exception:
+                pass
+        return message_id or None
+
+
+# ── compatibility surface ──────────────────────────────────────────────
+#
+# The same three operations, callable with any connection object. This is what the
+# plugin's delivery layer and the vendored ``qq_open_plat`` patches use: the host's
+# connection class cannot be given new bases from here, and the resolved connector may
+# be either implementation. The wrappers are thin -- the flow is in the mixin above.
+
+
+class _MediaAdapter(QQOpenPlatformMediaMixin):
+    """Bind the mixin over a connection object that does not inherit it.
+
+    Attribute lookup finds the mixin's own methods first (including the private
+    ``_media_*`` plumbing) and delegates everything else to the wrapped connection,
+    which is where ``_http`` / ``_API_BASE`` / ``_ensure_token`` / ``_auth_headers`` /
+    ``logger`` / ``record_sent_message_id`` come from. The connection object itself is
+    left untouched: no attribute is set on it, so a class with ``__slots__`` or a
+    read-only connection works the same.
+    """
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+def _adapter(conn: Any) -> Any:
+    """A connection ready for the mixin methods; already-mixed connections pass through."""
+    return conn if isinstance(conn, QQOpenPlatformMediaMixin) else _MediaAdapter(conn)
 
 
 async def upload_image(conn: Any, *, scope: str, owner_id: str, source: str) -> str:
-    """把一张图传到 ``scope``（``"groups"`` / ``"users"``），返回 ``file_info``。
-
-    ``scope`` 是**平台语义**上的隔离：用单聊接口传的只能发到单聊，反之亦然
-    （文档原话），所以调用方必须传对。失败一律返回空串，由调用方决定怎么降级。
-    """
-    url = str(source or "").strip()
-    if not url:
-        return ""
-    if url.startswith(("http://", "https://")):
-        try:
-            await conn._ensure_token()
-            file_info = await _upload_by_url(
-                conn, scope=scope, owner_id=owner_id, url=url, file_type=FILE_TYPE_IMAGE,
-            )
-        except Exception as exc:
-            _log(conn, "warning", f"图片 URL 上传异常: {exc}")
-            return ""
-        if file_info:
-            _log(conn, "info", f"图片上传成功(url): {file_info[:24]}")
-        else:
-            _log(conn, "warning", "图片 URL 上传失败")
-        return file_info
-
-    try:
-        payload, file_name = _read_source(url)
-    except Exception as exc:
-        _log(conn, "warning", f"图片读取失败: {exc}")
-        return ""
-    if not payload:
-        _log(conn, "warning", f"图片文件不存在或为空: {_local_path(url)}")
-        return ""
-    if len(payload) > MAX_IMAGE_BYTES:
-        _log(
-            conn, "warning",
-            f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 软限制，放弃上传: {len(payload)} 字节",
-        )
-        return ""
-
-    try:
-        await conn._ensure_token()
-    except Exception as exc:
-        _log(conn, "warning", f"取 token 失败，无法上传图片: {exc}")
-        return ""
-
-    # 两条都试，旧式优先：与仓库既有行为一致，不会比今天更差。
-    for label, attempt in (
-        ("直传", _upload_legacy),
-        ("分片", _upload_chunked),
-    ):
-        try:
-            file_info = await attempt(
-                conn, scope=scope, owner_id=owner_id,
-                payload=payload, file_name=file_name, file_type=FILE_TYPE_IMAGE,
-            )
-        except Exception as exc:
-            _log(conn, "warning", f"图片{label}上传异常: {exc}")
-            continue
-        if file_info:
-            _log(conn, "info", f"图片上传成功({label}): {file_info[:24]}")
-            return file_info
-        _log(conn, "warning", f"图片{label}上传未拿到 file_info")
-    return ""
+    return await QQOpenPlatformMediaMixin.upload_image(
+        _adapter(conn), scope=scope, owner_id=owner_id, source=source,
+    )
 
 
 async def send_private_image(
     conn: Any, user_id: str, source: str, *,
     content: str = "", reply_message_id: str = "", record_sent: bool = True,
 ) -> str | None:
-    """给单聊发一张图（文档口径：``msg_type=7`` + ``media.file_info``）。
-
-    返回消息 id；任何一步失败都返回 ``None``，由调用方降级成文字。
-    """
-    target = str(user_id or "").strip()
-    if not target:
-        return None
-    file_info = await upload_image(conn, scope="users", owner_id=target, source=source)
-    if not file_info:
-        return None
-    body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
-    text = str(content or "").strip()
-    if text:
-        body["content"] = text
-    reply_id = str(reply_message_id or "").strip()
-    if reply_id:
-        body["msg_id"] = reply_id
-    try:
-        data = await _post(conn, f"/v2/users/{target}/messages", body)
-    except Exception as exc:
-        _log(conn, "warning", f"发送单聊图片失败: {exc}")
-        return None
-    message_id = str(data.get("id") or "")
-    if message_id and record_sent:
-        try:
-            conn.record_sent_message_id(message_id)
-        except Exception:
-            pass
-    return message_id or None
+    return await QQOpenPlatformMediaMixin.send_private_image(
+        _adapter(conn), user_id, source,
+        content=content, reply_message_id=reply_message_id, record_sent=record_sent,
+    )
 
 
 async def send_group_image(
     conn: Any, group_id: str, source: str, *,
-    content: str = "", reply_message_id: str = "", at_user_id: str = "", record_sent: bool = False,
+    content: str = "", reply_message_id: str = "", at_user_id: str = "",
+    sub_type: str = "", record_sent: bool = False,
 ) -> str | None:
-    """给群聊发一张图（``msg_type=7`` + ``media.file_info``）。
-
-    **为什么群聊也要走这里** —— 2026-09-26 真机实测逼出来的。投递层原来直接调连接器的
-    ``send_group_image``，而那份（宿主副本）只实现了**旧式直传**。真机上旧式直传在开放
-    平台**已经失效**，日志原文：
-
-        [QQOpenPlatform] 图片直传上传未拿到 file_info
-        [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJ9rU
-
-    也就是说**群聊表情包在开放平台上一直是坏的**（静默降级成 `[图片]` 三个字），
-    而私聊那条只是因为走了本模块的分片兜底才成功。两边现在走同一条。
-    """
-    target = str(group_id or "").strip()
-    if not target:
-        return None
-    file_info = await upload_image(conn, scope="groups", owner_id=target, source=source)
-    if not file_info:
-        return None
-    body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
-    at = str(at_user_id or "").strip()
-    text = str(content or "").strip()
-    if at or text:
-        body["content"] = (f"<@!{at}>" if at else "") + text
-    reply_id = str(reply_message_id or "").strip()
-    if reply_id:
-        body["msg_id"] = reply_id
-    try:
-        data = await _post(conn, f"/v2/groups/{target}/messages", body)
-    except Exception as exc:
-        _log(conn, "warning", f"发送群聊图片失败: {exc}")
-        return None
-    message_id = str(data.get("id") or "")
-    if message_id and record_sent:
-        try:
-            conn.record_sent_message_id(message_id)
-        except Exception:
-            pass
-    return message_id or None
+    return await QQOpenPlatformMediaMixin.send_group_image(
+        _adapter(conn), group_id, source,
+        content=content, reply_message_id=reply_message_id,
+        at_user_id=at_user_id, sub_type=sub_type, record_sent=record_sent,
+    )
