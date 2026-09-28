@@ -29,8 +29,9 @@ from plugin.plugins.qq_auto_reply._vendor.connection_onebot import (
 
 
 class _Response:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code: int = 200):
         self._payload = payload
+        self.status_code = status_code
         self.text = json.dumps(payload) if payload is not None else ""
 
     def json(self):
@@ -39,23 +40,33 @@ class _Response:
         return self._payload
 
     def raise_for_status(self):
-        return None
+        """照 httpx 的行为：4xx/5xx 抛异常，而不是被当成一个能用的响应。"""
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 class _FakeHTTP:
-    """按 ``responder(method, url, body)`` 出响应，并记录每一次调用。"""
+    """按 ``responder(method, url, body)`` 出响应，并记录每一次调用。
+
+    responder 可以直接返回 ``_Response`` —— 需要造非 2xx 时（片 PUT 被拒、
+    ``upload_part_finish`` 失败）用得上。
+    """
 
     def __init__(self, responder):
         self._responder = responder
         self.calls: list[tuple[str, str, object]] = []
 
+    def _answer(self, method, url, body) -> _Response:
+        raw = self._responder(method, url, body)
+        return raw if isinstance(raw, _Response) else _Response(raw)
+
     async def post(self, url, json=None, headers=None):
         self.calls.append(("POST", url, json))
-        return _Response(self._responder("POST", url, json))
+        return self._answer("POST", url, json)
 
     async def put(self, url, content=None, headers=None):
         self.calls.append(("PUT", url, content))
-        return _Response(self._responder("PUT", url, content))
+        return self._answer("PUT", url, content)
 
     def posts(self):
         return [(url, body) for method, url, body in self.calls if method == "POST"]
@@ -245,6 +256,79 @@ def _truncated_parts(method, url, body):
     if url.endswith("/upload_part_finish"):
         return {}
     return {}
+
+
+# ── 每一片都必须确认成功，否则不许合并 ──────────────────────────────────
+#
+# httpx 自己不会因为 4xx/5xx 抛异常，所以"这片传失败了"以前和"传成功了"长得一模一样：
+# 循环照旧往下走、覆盖检查照样通过、合并还会返回一个看起来正常的 file_info ——
+# 一张残缺的图被当成发出去了。Greptile 在宿主那份 PR（#3210）上把这条点出来了。
+
+def _no_merge(conn) -> bool:
+    return not any(
+        url.endswith("/files") and body.get("upload_id") for url, body in conn._http.posts()
+    )
+
+
+def test_a_rejected_part_upload_is_refused_before_merging(tmp_path):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    def responder(method, url, body):
+        if method == "PUT":
+            return _Response({}, status_code=403)      # 预签名 URL 过期/被拒
+        return _legacy_then_nothing(method, url, body)
+
+    conn = _Conn(responder)
+
+    assert _run(MEDIA.upload_image(conn, scope="users", owner_id="U1", source=str(sticker))) == ""
+    assert _no_merge(conn), "片 PUT 被拒时不该走到合并那一步"
+
+
+def test_a_failing_part_finish_is_refused_before_merging(tmp_path):
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    def responder(method, url, body):
+        if method == "POST" and url.endswith("/upload_part_finish"):
+            return _Response({}, status_code=500)
+        return _legacy_then_nothing(method, url, body)
+
+    conn = _Conn(responder)
+
+    assert _run(MEDIA.upload_image(conn, scope="users", owner_id="U1", source=str(sticker))) == ""
+    assert _no_merge(conn), "upload_part_finish 失败时不该走到合并那一步"
+
+
+def test_a_part_finish_error_envelope_is_refused_before_merging(tmp_path):
+    """200 但带着平台的错误信封（``{"code": 500, …}``）同样算失败。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"y" * 16)
+
+    def responder(method, url, body):
+        if method == "POST" and url.endswith("/upload_part_finish"):
+            return {"code": 500, "message": "part rejected"}
+        return _legacy_then_nothing(method, url, body)
+
+    conn = _Conn(responder)
+
+    assert _run(MEDIA.upload_image(conn, scope="users", owner_id="U1", source=str(sticker))) == ""
+    assert _no_merge(conn), "错误信封不该走到合并那一步"
+
+
+def test_a_rejected_legacy_put_is_not_reported_as_success(tmp_path):
+    """旧式那条：PUT 失败时不许拿"申请上传"那一步的 file_info 冒充成功。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"x" * 32)
+
+    def responder(method, url, body):
+        if method == "PUT":
+            return _Response({}, status_code=403)
+        return {"upload_url": "https://cos.example/put/1", "file_info": "FI-upfront"}
+
+    conn = _Conn(responder)
+
+    assert _run(MEDIA.upload_image(conn, scope="groups", owner_id="G1", source=str(sticker))) == ""
 
 
 # ── 失败与拒绝：一律返回空，让调用方降级 ────────────────────────────────
