@@ -5367,3 +5367,88 @@ docstring 本次一并改对（保留原文作为"错在哪"的记录）。
 宿主树依旧一个字节不用改；副作用是好的：`verify_*_fail_to_pass.py` 那些**会改文件**的脚本
 改的是副本，仓库不会被半途改坏。仓库里那些 `verify_*` 脚本本身仍按"部署布局"写
 （`python plugin/plugins/qq_auto_reply/tests/verify_….py`），在市场挂载或宿主树里跑照旧。
+
+**但 §35.5 那个 mount 目录当不了"应用根"**（没有宿主 SDK，`python -m pytest` 从它里面跑
+是导入错误，`verify_*` 脚本的对照会直接 exit 2 —— 所有变异看起来都"红了"，全是假的）。
+跑那些脚本要用**真应用根**的沙箱：`.dsh-artifacts/host-pr`（上游 main 的 blobless 克隆，
+稀疏检出 `utils tests/unit scripts plugin config 'tests/*.py'`，插件用好 `robocopy` 复制进
+`plugin/plugins/qq_auto_reply`），在那里 `cd` 到插件目录跑 `tests/verify_*.py` 即可，
+`parents[4]` 落在 host-pr。
+
+## 36. （编号保留给 `promo-no-napcat-ui` 分支）
+
+录制包那条分支有一个**分支专用**的 §36（NapCat 前端隐藏的第二版 + 本地打包配方）。
+它只存在于那条分支上，main 不合并它；main 这边从 §37 继续，避免并进 promo 时撞号。
+
+## 37. 插件改用上游适配器：能力优先、副本回退（`_vendor` 退役的第一步）
+
+> 使用者口径（2026-09-29）：「修改插件，适配上游的适配器，等上游打出新包上传 steam 之后
+> 肯定是需要移除内置的适配器的」。
+
+### 37.1 之前是什么样
+
+开放平台发图原来**只能**由插件自己实现：宿主那份连接器的单聊没有富媒体方法、群图只实现
+已在真机失效的旧式直传（§35 的现场日志）。所以 `reply_delivery_node._send_sticker` 与另外
+两处通道判定都直连 `connector_seam.open_platform_media`（`_vendor` 里那份自撰模块），
+而 `connector_seam` 的解析判据是"**连接器**来自宿主还是副本"。
+
+问题在于：连接器来源和"连接对象有没有媒体能力"**是两件事**。宿主的连接器完全可能还没混入
+媒体 mixin —— 那时"宿主连接器 + 副本富媒体"才是事实，而旧的判据表达不了这个组合。
+
+### 37.2 现在是什么样
+
+| 位置 | 内容 |
+|---|---|
+| `media_seam.py`（新） | 富媒体的唯一入口：`is_open_platform()`（判据搬进插件，不再向副本借）、`host_adapter_available()`（能力探测）、`upload_image` / `send_group_image` / `send_private_image`（有宿主适配器就调连接对象的方法，否则回退副本） |
+| 能力指纹 | `upload_image` —— **只有**开放平台的媒体 mixin 提供。`send_private_image` **不能**当判据：OneBot 侧也有同名方法（2 参、没有 `record_sent`），拿它当判据会把 NapCat 误判成开放平台 |
+| 回退是**惰性**的 | 副本用 `importlib.import_module` 在回退分支里才导入；宿主适配器可用时连导入都不发生 —— 退役时可以整段删 |
+| 调用点 | `reply_delivery_node._send_sticker`（群图/单聊图）、`plugin_tool_followup_service`、`reply_generation_service`（后两处只用了通道判定） |
+| `connector_seam.py` | 富媒体的解析**搬走**，留墓碑说明为什么（判据变了）+ 为什么不再需要它 |
+| 启动日志 | 新增一行 `[QQ] 富媒体来源: 宿主适配器（连接对象自带 upload_image）` / `内置副本（…）`，与既有的 `[QQ] 连接器来源:` 并列 —— 排查"装的到底是哪份"看日志文件那份 |
+
+群图那条的细节：宿主那份 `send_group_image` **没有** `record_sent` 参数（它内部固定不记账），
+所以 `media_seam.send_group_image` **不收**这个参数（收着只会让人以为能打开）；带文字时改走
+`send_group_message_segments`（图仍由宿主先上传再 `msg_type=7`，只是能带上文字/引用/@）。
+
+### 37.3 退役清单（上游发版之后）
+
+两件到位才删：宿主带连接器（PR #2996 已合并 ✔）**且**宿主带媒体 mixin（本轮那个 PR）。
+再叠发布条件：插件声明的"最低支持宿主版本"里已包含这两件（Steam 上的包）。
+删的时候只动四步（`media_seam` 是副本的唯一富媒体引用点）：
+
+1. 删 `_vendor/`；
+2. `media_seam.py` 删 `VENDORED_MODULE` + `_vendored()` + 三个函数的回退分支；
+3. `connector_seam.py` 收敛成一行 re-export；
+4. 清掉 `test_qq_connector_seam.py` 的回退/漂移守卫、`test_qq_media_seam.py` 最后那条
+   "副本仍随包发布"。
+
+细节与"哪条能力会一起消失"写在 `_vendor/connection_onebot/PROVENANCE.md`
+（`_extract_attachments` 的附件文件名**没有**进宿主那份 PR，删副本后那条能力就没了 ——
+现状用宿主连接器时本来就拿不到，要保住得另开宿主 PR）。
+
+### 37.4 证据
+
+- `tests/test_qq_media_seam.py`（新，14 条）：能力指纹、两条后端各调谁、宿主路径**连副本都不导入**、
+  回退路径的关键字透传、`describe()` 的文案、**只有 `media_seam` 引用副本**（退役守卫）。
+- 全量 **1484 passed**；两道 ruff 门全过。
+- `tests/verify_open_platform_media_fail_to_pass.py` **13/13 PASS**（锚点跟着改成 `media_seam.*`）；
+  在 host-pr 应用根沙箱里跑（mount 目录跑不了，见 §35.5 补充）。
+- `media_seam` 变异证据 **6/6**：能力判据恒否 → 7 failed；恒真 → 6 failed；宿主私聊丢
+  `record_sent` → 1；宿主群图硬传 `record_sent` → 2；投递节点绕过 `media_seam` 直接用副本 → 1
+  （退役守卫）；对照 25 passed。
+- **真机**（2026-09-29 02:14，开放平台正式环境，插件链路里那份 v0.11.0 reload 后）：
+
+  ```
+  [QQ] 连接器来源: host (utils.connection.onebot)
+  [QQ] 富媒体来源: 宿主适配器（连接对象自带 upload_image）
+  ```
+
+  也就是：宿主的 `open_platform_media` 已经在链路上，插件确实会用它。发图本身的
+  现场日志见 §35 与 PROVENANCE（旧式直传失效、分片成功，三次独立复现）。
+
+### 37.5 还没做的
+
+- **宿主那份 PR 还只在本地**（`D:\NekoClaw\N.E.K.O` 的 `QQ` 分支工作树里，未提交未推送）；
+  上游发版之前，副本仍是 Steam 旧宿主的唯一靠山。
+- `_extract_attachments` 的 `"name"`（附件文件名）没进宿主 PR —— 留给上游。
+- 宿主适配器**只在开放平台通道**有，OneBot 那边本来就是原生 image 段，不走这条。

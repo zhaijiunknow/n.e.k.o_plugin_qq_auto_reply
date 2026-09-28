@@ -39,7 +39,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "reply_delivery_node.py",
         "私聊表情包退回「静默不发」（这轮补的那条路）",
         """        if is_open_platform:
-            message_id = await media.send_private_image(
+            message_id = await media_seam.send_private_image(
                 client, plan.target_id, sticker_path, record_sent=False,
             )
             return self._confirm_platform_result(message_id)
@@ -51,7 +51,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         )""",
         """        return False
         if is_open_platform:
-            message_id = await media.send_private_image(
+            message_id = await media_seam.send_private_image(
                 client, plan.target_id, sticker_path, record_sent=False,
             )
             return self._confirm_platform_result(message_id)""",

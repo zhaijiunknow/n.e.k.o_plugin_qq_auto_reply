@@ -82,23 +82,13 @@ QQOpenPlatformConnection = _provider.QQOpenPlatformConnection
 create_onebot_connection = _provider.create_onebot_connection
 
 
-def _resolve_open_platform_media() -> ModuleType:
-    """QQ 开放平台的富媒体（图片上传/单聊发图）流程。
-
-    单独解析，**不放进** ``_REQUIRED_ATTRS``：那是"宿主算不算提供了连接器"的判据，
-    而富媒体是插件这轮才加的能力 —— 把它算进去会让"有连接器但还没这个模块"的宿主
-    整体判成不可用，退回副本，等于把宿主的第一方实现丢掉。
-
-    反过来，宿主哪天自己带上了同名模块，这里自然会用宿主那份：流程只是几个
-    以连接对象为第一参数的自由函数，谁实现都能跑。
-    """
-    try:
-        return importlib.import_module(f"{CONNECTOR_MODULE}.qq_open_platform_media")
-    except (ImportError, ModuleNotFoundError):
-        return importlib.import_module(f"{VENDORED_PACKAGE}.qq_open_platform_media")
-
-
-open_platform_media = _resolve_open_platform_media()
+# 墓碑（2026-09-28）：本模块以前还负责解析富媒体模块
+# （``{CONNECTOR_MODULE}.qq_open_platform_media``，拿不到就回退 ``_vendor``）。那时富媒体
+# 只能靠"以连接对象为第一参数的自由函数"，所以它得跟着连接器来源走。
+#
+# 现在宿主的连接对象自己混入了媒体 mixin（``upload_image`` 等），富媒体变成**连接对象的能力**，
+# 与"连接器来自宿主还是副本"无关 —— 判据换成能力探测，整件事搬到了 ``media_seam.py``
+# （那里也是 ``_vendor`` 唯一的富媒体引用点，退役时删那一个模块就够）。
 
 __all__ = [
     "CONNECTOR_MODULE",
@@ -113,6 +103,5 @@ __all__ = [
     "factory",
     "onebot_client",
     "onebot_connection",
-    "open_platform_media",
     "qq_open_plat",
 ]

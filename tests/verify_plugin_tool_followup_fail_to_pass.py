@@ -52,7 +52,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "plugin_tool_followup_service.py",
         "拆掉通道闸（NapCat 通道上也主动说话）",
-        """        if client is None or not connector_seam.open_platform_media.is_open_platform(client):
+        """        if client is None or not media_seam.is_open_platform(client):
             return False, "当前不是开放平台通道\"""",
         """        if client is None:
             return False, "当前不是开放平台通道\"""",

@@ -89,43 +89,52 @@ grep -rn "LOCAL-PATCH" _vendor/connection_onebot/
 | `QQOpenPlatformConnection._extract_attachments` | 只产出 `{"type", "url"}` | 平台给了文件名就带 `"name"`（消费方回退到 URL 尾巴） | 仅回退部署 → **真机上拿不到文件名**，见下 |
 | `qq_open_platform_media.py`（整个文件） | **不存在** | 上传流程写成**适配层**形状：`QQOpenPlatformMediaMixin`（混进连接类就是那三个动作）+ 三个模块级包装函数（`upload_image(conn, …)` 等，把 mixin 绑到任意连接对象上，供宿主那份连接器使用） | ✅ **真机生效**（群图 + 单聊图都走它） |
 
-### 真机生效面（2026-09-27 核实）
+### 真机生效面（2026-09-29 复核：宿主适配器优先）
 
-运行时连的是**宿主那份**连接器（插件日志每轮都打
-`[QQ] 连接器来源: host (utils.connection.onebot)`），所以上表里**只有最后一行的
-`qq_open_platform_media` 在真机路径上**；`qq_open_plat.py` 那 5 个 hunk 只有在"宿主没带
-连接器"的回退部署里才会跑到。插件侧对应的调用点是
-`reply_delivery_node._send_sticker`：开放平台的群图与单聊图**一律直调** media 里的包装函数
-（私聊刻意不走连接器上那个 `send_private_image()` —— 它固定 `record_sent=True`，而表情包
-一直是 `record_sent=False`）。
+插件现在**优先用宿主适配器**：宿主连接对象混入 `QQOpenPlatformMediaMixin` 之后自带
+`upload_image` / `send_private_image`，`media_seam.py` 就调它的方法；宿主还没带那个 mixin 时
+（比如 Steam 上已发布的旧包）才回退到本目录这份副本。判据是**能力**（`upload_image` 只有那个
+mixin 有；`send_private_image` 不能当判据 —— OneBot 侧也有同名方法），启动时日志会写明跑的是哪份：
 
-**为什么是"mixin + 包装函数"而不是纯自由函数**：宿主类不可能被插件加上基类，所以混入这条路
-在真机上走不通，必须有"对任何连接对象都能跑"的入口；但如果这个入口自己实现一遍上传流程，
-就会和 mixin 各漂各的。现在的分工是 mixin 独占流程、包装函数只负责把 mixin 绑上去
+```
+[QQ] 连接器来源: host (utils.connection.onebot)
+[QQ] 富媒体来源: 宿主适配器（连接对象自带 upload_image）     ← 或：内置副本（…qq_open_platform_media）
+```
+
+2026-09-29 02:14 真机（开放平台正式环境）已确认第一行形态。所以本目录这份副本现在的定位是
+**回退实现**，不再是唯一实现 —— 上表最后一行"真机生效"要按宿主版本读：宿主带 mixin 时它不生效。
+
+`qq_open_plat.py` 那 5 个 hunk 依旧只在"宿主没带连接器"的回退部署里跑到。
+
+**为什么副本当初是"mixin + 包装函数"而不是纯自由函数**：宿主类不可能被插件加上基类，所以混入
+这条路在**插件侧**走不通，必须有"对任何连接对象都能跑"的入口；但如果这个入口自己实现一遍上传
+流程，就会和 mixin 各漂各的。现在的分工是 mixin 独占流程、包装函数只负责把 mixin 绑上去
 （`_MediaAdapter`：mixin 的方法优先，其余属性转给连接对象，**不往连接对象上挂任何东西**）。
 `tests/test_qq_open_platform_media.py` 里那组"适配层形状"测试盯的就是这个：包装体里出现第二个
-实现、或覆盖方法的签名吃不下来被覆盖者的调用形状（`sub_type=`），都会红。宿主哪天自己把 mixin
-混进 `QQOpenPlatformConnection`，包装函数会自动让路（`_adapter()` 对已混入的对象原样返回）。
+实现、或覆盖方法的签名吃不下来被覆盖者的调用形状（`sub_type=`），都会红。
+**宿主哪天自己混入（就是现在这个 PR 的方向），包装函数自动让路** —— `_adapter()` 对已混入的
+对象原样返回。
 
-**真机证据（2026-09-27 03:19，开放平台正式环境）**::
+**真机证据（2026-09-27 03:19 / 2026-09-29 02:04，开放平台正式环境）**::
 
     03:19:39  WARNING - [QQOpenPlatform] 图片直传上传未拿到 file_info
     03:19:41  INFO    - [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJ4t6
+    02:04:51  WARNING - [QQOpenPlatform] 图片直传上传未拿到 file_info
+    02:04:53  INFO    - [QQOpenPlatform] 图片上传成功(分片): wIFo43EanZwsn01Ru9mCJwOp
 
-两行都出自 `qq_open_platform_media`（`[QQOpenPlatform]` 前缀是它打的），结论是：
-**旧式直传在真机上已经失效，文档里的分片上传是活的** —— 这正是当初"两条都试"要回答的问题
-（2026-09-26 那次实测同结论，见 `reply_delivery_node._send_sticker` 的 docstring；
-上面是 09-27 的又一次独立复现）。所以这个自撰模块是**在役代码**，不是历史遗留。
+结论是：**旧式直传在真机上已经失效，文档里的分片上传是活的** —— 这正是"两条都试"要回答的问题
+（09-26 那次实测同结论，见 `reply_delivery_node._send_sticker` 的 docstring）。三次独立复现。
 
 **已知缺口**：`_extract_attachments` 那个 `"name"` 只在回退部署里生效，用宿主连接器时
 `enrichment._attachment_files` 只能拿 URL 尾巴当标签（只影响 prompt 里那行标签，不影响
-内容）。原始 `att` 字段在连接器归一化后就没了，插件侧接不住 —— 要真修得推宿主 PR。
+内容）。原始 `att` 字段在连接器归一化后就没了，插件侧接不住 —— 要真修得推宿主 PR
+（**宿主那份 `qq/open_platform.py` 现在也没补这一处**，改它属于上游的活）。
 
 **丢了会怎样**（这正是要标记的原因 —— 重新同步上游会**静默**回退，不报错）：
 
-1. `qq_open_platform_media.py` 被删或被改名：**真机立刻坏**。文件层面是
-   `connector_seam` 一解析就抛 `ModuleNotFoundError`（启动自动回复直接失败），
-   函数层面是表情包投递 `AttributeError` —— 群图与单聊图都直调它；
+1. `qq_open_platform_media.py` 被删或被改名：宿主带 mixin 时**真机不受影响**（走宿主那条），
+   但旧宿主上会坏 —— 文件层面 `media_seam` 一解析就抛 `ModuleNotFoundError`，
+   函数层面是表情包投递 `AttributeError`；
 2. `qq_open_plat.py` 那 5 个 hunk 被上游覆盖回去：**真机不变**（连的是宿主那份），
    但回退部署丢能力 —— 单聊发图退回只发 `[图片]`、群图退回只试（真机已失效的）旧式直传、
    附件文件名丢失；
@@ -178,16 +187,33 @@ ruff check --fix --unsafe-fixes --ignore-noqa --isolated --target-version py311 
 
 ## 什么时候删掉这个目录
 
-PR #2996 合并、且插件声明的最低支持宿主版本都带 `utils.connection.onebot` 之后：
+**前提（两件都到位）**：
 
-0. **先把副本里的功能性改动搬进宿主**（`qq_open_platform_media.py` 整套 + `qq_open_plat.py`
-   那三处接线）。删副本等于把这些能力一起删掉：单聊发图、URL/分片上传、附件文件名。
-   当初把它们写成"对任何一份连接对象都能跑的自由函数"，为的就是"插件改不了宿主文件"；
-   合并之后应当正着修在宿主里。
-1. 删除整个 `_vendor/`；
-2. 把 `connector_seam.py` 收敛成一行 re-export（或直接改回
-   `from utils.connection.onebot import …`）；
-3. 把 `tests/test_qq_connector_seam.py` 里"回退可用"那条与漂移守卫一起清掉。
+1. 宿主带 `utils.connection.onebot`（PR #2996 已合并 ✔）—— 连接器那半；
+2. 宿主带**媒体 mixin**（`utils/connection/qq/open_platform_media.py` 的
+   `QQOpenPlatformMediaMixin` 混进 `QQOpenPlatformConnection`，于是连接对象自带
+   `upload_image`）—— 富媒体那半。PR 见 `docs/SESSION-HANDOFF.md` §37。
+
+再叠一个**发布条件**：插件声明的"最低支持宿主版本"已经包含这两件（Steam 上发的包里有）。
+在那之前删掉本目录，Steam 上的旧宿主就会在表情包投递时 `ModuleNotFoundError`。
+
+**删的时候做什么**（现在的代码已经为这一步铺好，回退只在一处）：
+
+0. 确认宿主那两半都在（`[QQ] 连接器来源: host …` + `[QQ] 富媒体来源: 宿主适配器…` 两行日志）；
+1. 删整个 `_vendor/`；
+2. `media_seam.py` 里删 `VENDORED_MODULE`、`_vendored()` 与三个函数里的回退分支
+   （**富媒体对副本的唯一引用点就是它**，`tests/test_qq_media_seam.py` 有一条守卫盯着这点）；
+3. `connector_seam.py` 收敛成一行 re-export（或直接改回
+   `from utils.connection.onebot import …`）—— 富媒体的解析 2026-09-28 已从这里搬走，
+   现在只剩连接器本身；
+4. 把 `tests/test_qq_connector_seam.py` 里"回退可用"那条与漂移守卫、以及
+   `tests/test_qq_media_seam.py` 最后那条"副本仍随包发布"一起清掉；
+5. `PROVENANCE.md` 本身随目录一起消失；引用它的地方（`docs/UPSTREAM-LINEAGE.md`、
+   `SESSION-HANDOFF.md` 的 §35/§37）标成历史。
+
+> 注：`_extract_attachments` 的 `"name"`（附件文件名）**没有**进宿主那份 PR ——
+> 也就是说删副本之后那条能力就没了（现状：用宿主连接器时本来就拿不到文件名）。
+> 要保住它得另开一个宿主 PR（`docs/SESSION-HANDOFF.md` §37 里标成"留给上游"）。
 
 在这之前，`tests/test_qq_connector_seam.py` 的漂移守卫会在宿主存在时比对
 `OneBotConnector` 协议的成员集合，副本与宿主对不上就红 —— 那是拆分时的安全网；

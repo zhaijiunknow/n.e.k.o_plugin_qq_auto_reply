@@ -38,7 +38,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "reply_generation_service.py",
         "拆掉通道闸（NapCat 上也会挂别的插件的工具）",
         """        client = getattr(self.plugin, "qq_client", None)
-        if client is None or not connector_seam.open_platform_media.is_open_platform(client):
+        if client is None or not media_seam.is_open_platform(client):
             return [], []""",
         """        client = getattr(self.plugin, "qq_client", None)
         if client is None:

@@ -5,7 +5,7 @@ import random
 from collections.abc import Callable
 from typing import Any
 
-from . import connector_seam
+from . import media_seam
 from .pipeline_models import (
     QQDeliveryPlan,
     QQDeliveryResult,
@@ -355,12 +355,14 @@ class QQReplyDeliveryNode:
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
         """表情包投递。**两条通道走法不同，不能合并**：
 
-        * **开放平台**：一律走 `connector_seam.open_platform_media` 里的自由函数
-          （上传 + `msg_type=7` + `media`）。理由是硬的 ——
-          ① 宿主那份连接器没有单聊富媒体方法（插件改不了宿主的文件）；
-          ② 宿主那份的**群聊**图只实现旧式直传，而 2026-09-26 真机实测证明旧式直传
-          在开放平台已经失效（日志：「图片直传上传未拿到 file_info」→ 分片才成功）。
-          所以群聊也走这里，否则群聊表情包只会静默降级成「[图片]」三个字。
+        * **开放平台**：一律走 `media_seam` —— 它优先用**连接对象自带的宿主适配器**
+          （`upload_image` / `send_private_image`，群图走 `send_group_image`），宿主还没带
+          那个 mixin 时才回退内置副本。判据是能力（`upload_image`），不是类名或版本号。
+          这条路当初必须自己实现，是因为宿主那份连接器
+          ① 没有单聊富媒体方法（插件改不了宿主的文件）；
+          ② 群聊图只实现旧式直传，而 2026-09-26/27 真机实测证明旧式直传在开放平台已经失效
+          （「图片直传上传未拿到 file_info」→ 分片才成功）—— 不自己发，群聊表情包只会静默
+          降级成「[图片]」三个字。宿主新包把这两件事都补上了，插件这边只留"优先用它的"。
         * **OneBot（NapCat 等）**：`send_group_image` / `send_private_msg` 本来就认
           image 段，用现成接口。私聊刻意**不**走连接器上那个 `send_private_image()`：
           它固定 `record_sent=True`，而表情包这条一直是 `record_sent=False` ——
@@ -373,14 +375,13 @@ class QQReplyDeliveryNode:
         if not sticker_path:
             return False
         client = self.plugin.qq_client
-        media = connector_seam.open_platform_media
-        is_open_platform = media.is_open_platform(client)
+        is_open_platform = media_seam.is_open_platform(client)
 
         if plan.target_type == "group":
             if is_open_platform:
                 return self._confirm_platform_result(
-                    await media.send_group_image(
-                        client, plan.target_id, sticker_path, record_sent=False,
+                    await media_seam.send_group_image(
+                        client, plan.target_id, sticker_path,
                     ),
                 )
             return self._confirm_platform_result(
@@ -390,7 +391,7 @@ class QQReplyDeliveryNode:
             )
 
         if is_open_platform:
-            message_id = await media.send_private_image(
+            message_id = await media_seam.send_private_image(
                 client, plan.target_id, sticker_path, record_sent=False,
             )
             return self._confirm_platform_result(message_id)

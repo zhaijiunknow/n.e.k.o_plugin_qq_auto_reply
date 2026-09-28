@@ -4,8 +4,8 @@
 表情包在私聊里**静默消失**（不是没实现协议，是这条路根本没写）。这轮补上了，
 两条通道的走法不同，所以更要钉住分流本身：
 
-* **开放平台**：宿主那份连接器没有单聊富媒体方法（插件改不了宿主的文件），
-  必须走 `qq_open_platform_media` 里的自由函数；
+* **开放平台**：走 `media_seam` —— 它优先用连接对象自带的**宿主适配器**，
+  宿主还没带媒体 mixin 时才回退内置副本（哪个后端由 `tests/test_qq_media_seam.py` 钉）；
 * **OneBot（NapCat 等）**：`send_private_msg` 本来就认 image 段，用现成接口。
 
 走错任何一条的症状都是"私聊里表情包没了"，而且不会报错。
@@ -17,7 +17,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from plugin.plugins.qq_auto_reply import connector_seam
+from plugin.plugins.qq_auto_reply import media_seam
 from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryPlan, QQMessageBlock
 from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
 
@@ -93,7 +93,7 @@ def test_group_sticker_on_the_open_platform_goes_through_the_media_helper(monkey
         calls.append((conn, group_id, source, kw))
         return "mid-group-image"
 
-    monkeypatch.setattr(connector_seam.open_platform_media, "send_group_image", _fake)
+    monkeypatch.setattr(media_seam, "send_group_image", _fake)
     client = _Client(channel="open", mode="open_platform", needs_attention=False)
     node = _node(client)
 
@@ -101,20 +101,21 @@ def test_group_sticker_on_the_open_platform_goes_through_the_media_helper(monkey
 
     assert delivered is True
     assert calls and calls[0][1] == "1048307485" and calls[0][2] == STICKER_PATH
-    assert calls[0][3].get("record_sent") is False
+    # 群图不带额外关键字：记不记账由后端决定（宿主与副本的群图都不记账），不是调用方传的
+    assert calls[0][3] == {}
     # 走对了路就不该再往连接器那条（只会降级的）群聊图接口上发一遍
     assert client.group_images == []
 
 
 def test_private_sticker_on_the_open_platform_goes_through_the_media_helper(monkeypatch):
-    """开放平台：走富媒体自由函数（宿主连接器没有这个方法，所以才不能调客户端）。"""
+    """开放平台：走富媒体入口（表情包一律 `record_sent=False`，不进"她说过的话"的 id 缓存）。"""
     calls: list[tuple] = []
 
     async def _fake(conn, user_id, source, **kw):
         calls.append((conn, user_id, source, kw))
         return "mid-private-image"
 
-    monkeypatch.setattr(connector_seam.open_platform_media, "send_private_image", _fake)
+    monkeypatch.setattr(media_seam, "send_private_image", _fake)
     client = _Client(channel="open", mode="open_platform", needs_attention=False)
     node = _node(client)
 
@@ -145,7 +146,7 @@ def test_a_failed_private_upload_reports_undelivered(monkeypatch):
     async def _fail(conn, user_id, source, **kw):
         return None
 
-    monkeypatch.setattr(connector_seam.open_platform_media, "send_private_image", _fail)
+    monkeypatch.setattr(media_seam, "send_private_image", _fail)
     client = _Client(channel="open", mode="open_platform", needs_attention=False)
     node = _node(client)
 
@@ -174,6 +175,6 @@ def test_an_unresolvable_sticker_id_sends_nothing_on_either_target():
     ],
 )
 def test_the_open_platform_branch_is_decided_by_the_channel_marker(channel, mode, expected):
-    """分流判据就是 `is_open_platform`：两个字段任一命中即可（宿主/副本取值域不同）。"""
+    """分流判据就是 `media_seam.is_open_platform`：两个字段任一命中即可（宿主/副本取值域不同）。"""
     client = _Client(channel=channel, mode=mode)
-    assert connector_seam.open_platform_media.is_open_platform(client) is expected
+    assert media_seam.is_open_platform(client) is expected

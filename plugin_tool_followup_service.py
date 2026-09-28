@@ -472,10 +472,10 @@ class QQPluginToolFollowupService:
             return False, "开关关掉了"
         if not bool(getattr(self.plugin, "_running", False)):
             return False, "值班已停"
-        from . import connector_seam
+        from . import media_seam
 
         client = getattr(self.plugin, "qq_client", None)
-        if client is None or not connector_seam.open_platform_media.is_open_platform(client):
+        if client is None or not media_seam.is_open_platform(client):
             return False, "当前不是开放平台通道"
         pipeline = getattr(self.plugin, "reply_pipeline", None)
         if pipeline is None:

@@ -204,6 +204,11 @@ Role 正文），外加 Chat Environment 的整段字段列表同序。**
 配套：`_vendor/connection_onebot/PROVENANCE.md` 的「真机生效面」表 + `tests/test_qq_connector_seam.py`
 的守卫（谁丢了 `LOCAL-PATCH` 标记就红）。
 
+**2026-09-29 起它是"回退实现"**：同一个适配层形状正在推上游（宿主
+`utils/connection/qq/open_platform_media.py`，见 §37），插件侧 `media_seam.py` 现在是
+**能力优先**——宿主连接对象自带 `upload_image` 就用它的，没有才用本副本。
+真机日志里能直接看出跑的是哪份（`[QQ] 富媒体来源: …`）。上游发版后本目录整体退役。
+
 上游状态（2026-09-28 更新）：`Project-N-E-K-O/N.E.K.O#2996` **已合并**（merge commit
 `3618e75fe9`，维护者随后 3 个 commit 把 `utils/connection/` 拆成 `base` / `onebot` / `qq`）。
 按方法名逐字对照拆分后的宿主，副本与它**只剩 3 处真差异**（全是 `LOCAL-PATCH`），

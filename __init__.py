@@ -275,11 +275,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         source_msg = f"[QQ] 连接器来源: {CONNECTOR_SOURCE} ({CONNECTOR_MODULE})"
         self._emit_log("INFO", source_msg)
         self.logger.info(source_msg)
-        return create_onebot_connection(
+        connection = create_onebot_connection(
             self._qq_settings,
             logger=self.logger,
             emit_log=self._emit_log,
         )
+        # 富媒体走谁：宿主适配器（连接对象自带 upload_image）还是内置副本。
+        # 与上面那行一样两路都发 —— 排查"装上去到底跑哪份"时看的是日志文件那份。
+        from . import media_seam
+
+        media_msg = f"[QQ] 富媒体来源: {media_seam.describe(connection)}"
+        self._emit_log("INFO", media_msg)
+        self.logger.info(media_msg)
+        return connection
 
     # ── UI SSE 事件推送（#2822 通道）──────────────────────────
 

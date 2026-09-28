@@ -22,9 +22,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from plugin.plugins.qq_auto_reply import connector_seam
-
-MEDIA = connector_seam.open_platform_media
+from plugin.plugins.qq_auto_reply import connector_seam, media_seam
+from plugin.plugins.qq_auto_reply._vendor.connection_onebot import (
+    qq_open_platform_media as MEDIA,
+)
 
 
 class _Response:
@@ -353,13 +354,27 @@ def test_the_media_helpers_members_exist_on_the_resolved_connector():
     assert not missing, f"{connector_seam.CONNECTOR_MODULE} 的连接缺了这些成员: {missing}"
 
 
-def test_the_media_module_is_resolved_from_the_seam():
-    assert hasattr(MEDIA, "is_open_platform") and hasattr(MEDIA, "send_private_image")
-    # 只认开放平台：OneBot 连接不能被这条流程接管
-    assert MEDIA.is_open_platform(SimpleNamespace(CHANNEL="open"))
-    assert MEDIA.is_open_platform(SimpleNamespace(mode="open_platform"))
-    assert not MEDIA.is_open_platform(SimpleNamespace(CHANNEL="onebot", mode="napcat"))
-    assert not MEDIA.is_open_platform(object())
+def test_the_media_module_is_importable_and_has_the_entry_points():
+    """副本模块本身（回退路径）的入口点还在。
+
+    注意：**它不再由 ``connector_seam`` 解析** —— 富媒体的解析搬到了 ``media_seam``，
+    判据也从"连接器来源"换成了"连接对象有没有媒体能力"（见 ``tests/test_qq_media_seam.py``）。
+    这条只保证副本自己仍能被直接导入、仍提供那两个入口。
+    """
+    assert hasattr(MEDIA, "send_private_image") and hasattr(MEDIA, "upload_image")
+    assert hasattr(MEDIA, "is_open_platform"), "副本仍要能被单独使用（宿主没有 mixin 时它就是全部）"
+
+
+def test_the_channel_check_lives_in_the_plugin_now():
+    """分流判据是插件自己的，不再从副本借。
+
+    只认开放平台：OneBot 连接不能被这条流程接管。这段原本写在副本模块里，现在在
+    ``media_seam`` —— 因为退役时副本整个要删，判据不能跟着走。
+    """
+    assert media_seam.is_open_platform(SimpleNamespace(CHANNEL="open"))
+    assert media_seam.is_open_platform(SimpleNamespace(mode="open_platform"))
+    assert not media_seam.is_open_platform(SimpleNamespace(CHANNEL="onebot", mode="napcat"))
+    assert not media_seam.is_open_platform(object())
 
 
 # ── 适配层形状：mixin 是主体，包装函数只是"绑上去" ──────────────────────
