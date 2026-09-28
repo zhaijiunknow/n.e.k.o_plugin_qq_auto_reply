@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 from plugin.plugins.qq_auto_reply import connector_seam, media_seam
@@ -360,6 +361,64 @@ def test_an_oversized_image_is_refused_before_uploading(tmp_path, monkeypatch):
 
     assert _run(MEDIA.upload_image(conn, scope="groups", owner_id="G1", source=str(sticker))) == ""
     assert conn._http.calls == []
+
+
+# ── 大小先看、读在别的线程（Greptile P2，宿主 PR #3210）─────────────────
+#
+# 原来 `_read_source` 在异步路径上**整份同步读**，20 MB 上限是读完之后才判的：
+# 一个几百 MB 的文件会先占满内存、还堵着事件循环，最后才被拒。
+
+def _spy_on_read(monkeypatch, record):
+    """把模块里的读取函数换成记账版（`upload_image` 是运行时按名字取的，能拦到）。"""
+    real = MEDIA._read_source
+
+    def spy(source):
+        record.append(source)
+        return real(source)
+
+    monkeypatch.setattr(MEDIA, "_read_source", spy)
+    return spy
+
+
+def test_an_oversized_file_is_refused_without_reading_it(tmp_path, monkeypatch):
+    sticker = tmp_path / "huge.png"
+    sticker.write_bytes(b"b" * 4096)
+    monkeypatch.setattr(MEDIA, "MAX_IMAGE_BYTES", 64)
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    conn = _Conn(lambda method, url, body: {"file_info": "FI"})
+
+    assert _run(MEDIA.upload_image(conn, scope="groups", owner_id="G1", source=str(sticker))) == ""
+    assert read == [], "超限的文件根本不该被读进来"
+    assert conn._http.calls == []
+
+
+def test_a_missing_file_is_refused_without_reading_it(tmp_path, monkeypatch):
+    read: list[str] = []
+    _spy_on_read(monkeypatch, read)
+    conn = _Conn(lambda method, url, body: {"file_info": "FI"})
+
+    assert _run(MEDIA.upload_image(conn, scope="users", owner_id="U1", source=str(tmp_path / "nope.png"))) == ""
+    assert read == [], "不存在的文件不该被读"
+    assert conn._http.calls == []
+
+
+def test_a_local_file_is_read_off_the_event_loop(tmp_path, monkeypatch):
+    """整份文件 I/O 不许压在事件循环上：大文件或慢盘会把整条管线拖住。"""
+    sticker = tmp_path / "a.png"
+    sticker.write_bytes(b"x" * 8)
+    threads: list[bool] = []
+    real = MEDIA._read_source
+
+    def spy(source):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(source)
+
+    monkeypatch.setattr(MEDIA, "_read_source", spy)
+    conn = _Conn(lambda method, url, body: _legacy_ok() if method == "POST" else {"file_info": "FI-legacy"})
+
+    assert _run(MEDIA.upload_image(conn, scope="groups", owner_id="G1", source=str(sticker))) == "FI-legacy"
+    assert threads == [False], "本地文件必须在工作线程里读，不能直接堵在事件循环上"
 
 
 def test_a_token_failure_does_not_raise(tmp_path):
