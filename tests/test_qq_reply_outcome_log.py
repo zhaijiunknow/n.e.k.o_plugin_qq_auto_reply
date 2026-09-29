@@ -155,6 +155,39 @@ def test_an_empty_reply_now_carries_a_reason():
     assert "空回复" in note
 
 
+def test_an_empty_plan_is_not_blamed_on_the_connector():
+    """计划为空（`deliver()` 返回 None）**不许**说成"连接器没有回执"。
+
+    真机 2026-09-29 17:0x（群 1048307485 连续 6 轮）：模型每轮都回
+    `<feeling>…</feeling><msg></msg>`（`length: 36`，每轮一模一样）→ 后处理既没有
+    blocks 也没有正文 → `_build_delivery_plan` 返回 None → 直投分支里 `deliver(None)`
+    立刻返回 None。当时那行写的是「投递未确认：连接器没有回执」，使用者读成"她发不出去"，
+    真相是"她这一轮选择不说话" —— 传输层替内容层背了锅。
+    """
+    logs: list[str] = []
+    runner, _plan, outcome = _delivery_runner(logs, blocks=[], reply_text="")
+    # 空计划的真实形态：`deliver()` 在开头 `if not plan or not plan.blocks` 就返回 None，
+    # 一个字节都不发、也不打 `[Send] … **未投递**（blocks=…）` 那行诊断。
+    runner.plugin.reply_delivery_node = SimpleNamespace(deliver=_async(None))
+
+    async def _drive():
+        result = await runner._run_delivery(None, _request(), outcome, context=None)
+        return result, rp._OUTCOME_NOTE.get()
+
+    result, note = asyncio.run(_drive())
+
+    assert note, "计划为空这条出口必须留下原因"
+    assert "空回复" in note, f"又说成传输问题了：{note!r}"
+    assert "连接器" not in note, f"计划为空跟连接器无关：{note!r}"
+    # 原始输出必须一起落盘 —— 这一层只看得到"计划是空的"，"为什么空"只有原文能回答。
+    assert any("计划为空" in line and "原始输出" in line for line in logs), (
+        f"没把模型的原始输出打出来，下次还是查不出'为什么空'：{logs}"
+    )
+    # deliver() 那句 `if not plan or not plan.blocks: return None` 是唯一来源 ——
+    # 结果对象本身可以为 None，上层只看 `delivered`。
+    assert result is None or getattr(result, "delivered", False) is False
+
+
 def test_the_buffer_exit_says_how_long_and_how_many_blocks():
     logs: list[str] = []
     runner, plan, outcome = _delivery_runner(

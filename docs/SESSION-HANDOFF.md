@@ -5797,13 +5797,32 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 `napcat_directory` 指向哪里 —— 默认就在插件目录里。**任何带删除语义的镜像同步都不许直接
 对着插件目录跑。**
 
-**留待观察**：17:01–17:03 期间她的**文字回复**全部报
-`未投递（投递未确认：连接器没有回执（消息可能没发出去））`，而同期 `call_action`
-（`get_login_info`）与 `send_poke` 都**正常到达** NapCat（NapCat 日志里逐条可查），
-`send_group_msg` 则**一条都没到**。两者在宿主客户端里走的是不同取值方式
-（`call_action` 每次重新取 `_main_client = next(iter(self._connected_clients))`，
-`_send_text_action` 直接用缓存下来的 `self._main_client`）——高度怀疑是**缓存下来的那个
-socket 已经作废**。17:04:29 那个新进程之后还没等到下一轮真实回复，先挂在这里。
+**另一个发现（同一时段，跟 NapCat 无关）：她的文字回不出来，是"她这一轮选择不说话"，
+而日志把它写成了连接问题。** 17:00–17:08 连续 6 轮 `[Reply] … 结局: 未投递（投递未确认：
+连接器没有回执）`，使用者确认群里看不到她的文字（只有戳一戳正常）。查下来：
+
+1. `deliver()` 对未投递**本来会**打一行诊断
+   `[Send] group … **未投递**（blocks=N, 有正文块=…, 正文确认=…, 装饰=…）`——
+   **这行一条都没出现**，说明 `deliver()` 根本没动手；
+2. `deliver()` 只在 `if not plan or not plan.blocks` 时**直接 return None**（一个字节不发、
+   不打日志）；
+3. 走缓冲那条分支要求 `delivery_plan.blocks` 非空，它空了 → 落到直投分支 →
+   `deliver(None)` → 立刻返回 None；
+4. 也就是：**这一轮模型没给出可发的内容**（`AI 生成回复完成 length: 36` 每轮一模一样，
+   典型是只有 `<feeling>…</feeling><msg></msg>`），而那条出口当时写的是
+   「投递未确认：连接器没有回执（消息可能没发出去）」—— 使用者读成"她发不出去"。
+
+**修**（`reply_pipeline`）：`result is None` 单独一条出口，写
+「模型没有给出可发的内容（这一轮是空回复）」，并把模型的**原始输出**一起落盘
+（`[Send] 计划为空（模型没给出可发的内容），原始输出=…`）—— 这一层能看到的只有"计划是空的"，
+"为什么空"只有原文能回答。看门狗 `test_an_empty_plan_is_not_blamed_on_the_connector` +
+变异 `tests/verify_plan_empty_note_fail_to_pass.py`（2/2）。
+顺带把那条分支里 `delivery_plan.target_type` 的无保护访问改成 `getattr` 兜底（计划为 None
+且授权撤销时会 AttributeError）。
+
+**还没查的**：那 6 轮的原始输出到底是什么（同长度 36 每轮相同，很可能是模型对"群里一直
+戳她"的反应）。新加的那行日志下次会直接给出答案；`msg` 里若是空的，问题就从"传输层"
+变成"提示词/模型为什么选择沉默"。
 
 ### 40.7 前端：这一轮改了哪些字、哪些控件
 

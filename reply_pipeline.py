@@ -838,8 +838,10 @@ class QQReplyPipelineRunner:
             from .pipeline_models import QQDeliveryResult
             _note_outcome("发送前记忆授权已撤销，取消本轮投递")
             return QQDeliveryResult(
-                delivered=False, target_type=delivery_plan.target_type,
-                target_id=delivery_plan.target_id, reply_text=None,
+                delivered=False,
+                target_type=getattr(delivery_plan, "target_type", "group"),
+                target_id=getattr(delivery_plan, "target_id", "") or "",
+                reply_text=None,
             )
 
         def _mark_tail_undelivered() -> None:
@@ -930,7 +932,30 @@ class QQReplyPipelineRunner:
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
                 context, delivered_text,
             )
-        if getattr(result, "delivered", False):
+        if result is None:
+            # `deliver()` 的 None **只有一个来源**：计划里什么都没有（它开头那句
+            # `if not plan or not plan.blocks: return None`）。也就是说这一轮**没有可发
+            # 的内容**，跟连接器一点关系都没有。
+            #
+            # 真机 2026-09-29 17:0x 就是这里（群 1048307485，连续 6 轮）：模型每轮都
+            # 回 `<feeling>…</feeling><msg></msg>`（`AI 生成回复完成 length: 36`，每轮
+            # 一模一样），后处理之后既没有 blocks 也没有正文 → `build_delivery_plan`
+            # 返回 None → 落到直投分支 → `deliver(None)` 立刻返回 None。而这条出口当时
+            # 写的是「投递未确认：连接器没有回执」—— 使用者看到的是"她发不出去"，
+            # 真相是"她这一轮选择不说话"。同一类谎以前在 §32 查过一次（日志必须说得出
+            # "为什么没发"，而不是把责任推给传输层）。
+            #
+            # 原始输出一起打出来：这一层能看到的只有"计划是空的"，而"为什么空"
+            # （整条都是标签？`<msg></msg>`？被过滤光？）只有模型原文能回答。
+            try:
+                raw = str(getattr(outcome, "raw_reply_text", "") or "")
+                self.plugin.logger.warning(
+                    f"[Send] 计划为空（模型没给出可发的内容），原始输出={raw[:120]!r}"
+                )
+            except Exception:  # noqa: BLE001 —— 日志失败不该影响结论
+                pass
+            _note_outcome("模型没有给出可发的内容（这一轮是空回复）")
+        elif getattr(result, "delivered", False):
             _note_outcome(f"直接投递（无缓冲，{len(delivery_plan.blocks or [])} 块）")
         else:
             # 走到这里说明连接器没给回执（NapCat echo 超时 / 开放平台吞异常返回 None）
