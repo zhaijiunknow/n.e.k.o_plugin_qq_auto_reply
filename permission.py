@@ -37,6 +37,18 @@ class PermissionManager:
 
         if trusted_users:
             for user in trusted_users:
+                # 容错：手写配置常见 ["123456"] 字符串条目（真机已炸过一次
+                # startup：'str' object has no attribute 'get'）。非空字符串按
+                # 默认档位收录，其余坏条目跳过——一条脏数据不该炸整个插件。
+                if not isinstance(user, dict):
+                    raw = str(user or "").strip()
+                    if raw:
+                        self._users[raw] = {
+                            "level": "trusted",
+                            "nickname": "",
+                            "normal_relay_probability": None,
+                        }
+                    continue
                 qq = self._normalize_qq(user.get("qq", ""))
                 level = self._normalize_level(user.get("level", "trusted"))
                 nickname = str(user.get("nickname", "") or "").strip()

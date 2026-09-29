@@ -1,6 +1,6 @@
 # QQ集成 (qq_auto_reply)
 
-通过 OneBot v11（正向/反向 WebSocket，兼容 NapCat / LLOneBot / go-cqhttp / Lagrange 等任意 OneBot 后端）或 QQ 官方开放平台接入 QQ 的完整机器人集成插件。
+通过 OneBot v11（正向/反向 WebSocket，兼容 SnowLuma / NapCat / LLOneBot / go-cqhttp / Lagrange 等任意 OneBot 后端）或 QQ 官方开放平台接入 QQ 的完整机器人集成插件。
 
 - **双通道接入**：OneBot v11 泛用连接（正向/反向）+ QQ 官方开放平台
 - **多群注意力管理**：群间注意力竞争、焦点切换、回溯补回
@@ -31,3 +31,12 @@ uv run neko-plugin build qq_auto_reply
 ## 配置
 
 运行时配置（注意力阈值、回溯参数、群信任列表等）由 `business_config.json` 提供，位于 N.E.K.O 数据根目录 `data/plugins/qq_auto_reply/` 下。
+
+### SnowLuma 用户注意（真机实测，v1.14.20）
+
+- 正向 WebSocket 请连**根路径**（如 `ws://127.0.0.1:3002/`）：收事件 + 调动作。
+  SnowLuma 的 `wsServers` 在 `path: "/"` + `role: "Universal"` 时另有按路径分流的
+  语义——`/api` **只能调动作、不推送消息事件**（连上但收不到消息），`/event` 只收事件。
+  token 两种携带方式（`?access_token=` 与 `Authorization: Bearer`）都支持。
+- `trusted_users` / `trusted_groups` 条目是对象（`{"qq": "123", "level": "trusted"}`）。
+  写成字符串数组也能启动（按默认档收录），但面板编辑建议用对象格式。

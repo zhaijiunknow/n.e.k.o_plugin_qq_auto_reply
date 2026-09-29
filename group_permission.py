@@ -27,6 +27,16 @@ class GroupPermissionManager:
 
         if trusted_groups:
             for group in trusted_groups:
+                # 容错：字符串条目按默认档收录，坏条目跳过（与 permission.py
+                # 同一套防御，真机见过手写字符串数组炸 startup）。
+                if not isinstance(group, dict):
+                    raw = str(group or "").strip()
+                    if raw:
+                        self._groups[raw] = {
+                            "level": "normal",
+                            "normal_relay_probability": None,
+                        }
+                    continue
                 group_id = str(group.get("group_id", "") or "").strip()
                 level = group.get("level", "normal")
                 if group_id:
