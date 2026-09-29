@@ -178,19 +178,8 @@ def test_a_group_quiet_longer_than_the_warm_gap_cools_down():
     assert hot_score > 5.0, "热聊中的群该涨分"
 
 
-def test_dormant_group_neither_rises_nor_falls():
-    """休眠的群分数**冻住**：她主动开口没人接的群不该自己悄悄掉到 0。"""
-    svc = _service()
-    t = 100_000
-    st = _state(t - 99999)
-    st.attention_score = 5.0
-    st.last_decay_at = t
-    st.dormant_forever = True
-    svc._write_state(st)
-
-    after = svc._apply_decay(svc._load_state("g1"), t + 600)
-    assert after.heat == "dormant"
-    assert after.attention_score == pytest.approx(5.0)
+def test_the_prompt_and_settings_keys_are_consistent_after_the_removal():
+    """（占位：心跳档的键与提示词一致性由 test_qq_attention_heat.py 覆盖。）"""
 
 
 def test_a_burst_of_messages_shortens_the_gap_and_raises_the_rate():

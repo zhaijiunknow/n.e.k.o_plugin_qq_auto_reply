@@ -5923,3 +5923,76 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
   120 秒足够覆盖"有人在想怎么回"，又不会把彻底安静下来的群算成热聊。真机跑一天再定。
 - `attention_focus_threshold`（4.0）现在只是"档位线"：它不再让任何群获得或失去说话权，
   但仍参与唤醒垫高（`attention_wake_boost_ratio`）与频率档，所以没删。
+
+---
+
+## 42. 主动破冰 + 休眠：整套删除
+
+使用者口径（2026-09-29，紧接着热度档那一步）：
+
+> 不能用时间判断，需要换一个策略
+
+> （四个事件驱动备选之后）干脆不要这个先
+
+### 42.1 为什么它必须换、最后为什么直接删
+
+换掉相位机的当天，破冰的触发是**"这个群静默 1800 秒"** —— 那个 1800 是我拍的，使用者
+不接受"用时间判断"。我给了四个**事件驱动**的备选（都不用任何时长阈值）：
+
+| 备选 | 判据 |
+|---|---|
+| 她说完没人接 → 换个话题再试一次 | 接话反馈结算 `silent`（连续两次才休眠） |
+| 群里有人"喊冷场" → 她接 | 可配置词表命中（"好安静""有人吗"） |
+| 群里一直聊但从不带她 → 她插一句 | `_human_pair_streak` 连击条数 |
+| 话题收尾（没人接的问句 / 收尾语）→ 她起新话题 | 内容判据 |
+
+使用者的选择是**先都不要**（「干脆不要这个先」）。于是整套删除，而不是换判据。
+
+### 42.2 删掉了什么
+
+| 东西 | 位置 |
+|---|---|
+| 触发与冷却（静默窗口、按群冷却、一轮一次名额） | `attention_gate_service._maybe_break_ice` / `_icebreaker_idle_seconds` / `_last_icebreaker_at` |
+| 破冰本体（选话题 → 合成一轮 → 投递 → 按住焦点 + 记账） | `attention_gate_service._try_icebreaker` / `_pick_proactive_topic` / `_DEFAULT_PROACTIVE_TOPICS` / `_icebreaker_hold_seconds` |
+| **休眠**（它的唯一触发源就是"她主动开口没人接"） | `attention_service`：`enter_dormancy` / `wake_from_dormancy` / `is_dormant` / `_is_asleep` / `_apply_dormancy` / `_dormancy_phrase` / `_dormant_enabled` / `_dormant_seconds` / `_settle_feedback` 里的休眠分支 / `_choose_focus_state` 的休眠过滤 / `decay_all` 的总开关清理 |
+| 只服务破冰的记账 | `attention_service.note_proactive_speech` + `proactive_pending` 字段 |
+| 热度档的第三档 | `dormant`（现在只剩 `warm` / `cooling`） |
+| 状态字段 | `dormant_until` / `dormant_forever` / `proactive_pending`（**旧存档里的这三个键不再读**） |
+| 配置键 | `icebreaker_idle_seconds` / `icebreaker_hold_seconds` / `icebreaker_dormant_enabled` / `icebreaker_dormant_seconds` / `proactive_topics`（全部进 `_LEGACY_ZOMBIE_KEYS`） |
+| 界面 | 「主动破冰 / 休眠」四个输入框；提示词页的「主动话题」整页（tab + 两个 JS 函数） |
+| 入口 | `config` 的 `save_topics` action + `proactive_topics` 快照字段 |
+| 来源常量 | `pipeline_models.KIND_PROACTIVE_SPEECH`（零生产者，看门狗 `test_no_declared_kind_is_dead` 当场报出来） |
+
+**旧存档的迁移是有意做的**：`from_dict` 不再读 `dormant_*` —— 不清掉的话，使用者配置里那些
+被旧破冰睡过的群会被一个**永远没有触发源**的标记冻住（`_advance_heat` 曾对 dormant 档直接
+`return`，分数再也不会动）。看门狗 `test_a_phase_era_archive_cannot_freeze_a_group_forever`
+钉住这件事。
+
+### 42.3 现在剩下什么
+
+- 门控：点名优先（@ / 关键词 / 引用她）→ 本群自己的注意力闸 → 必要度判定；
+- 按群维护循环**只剩一件事**：谁有群记忆增量谁推摘要（`_maybe_push_digest`）；
+- 回暖补回（凉转热）、接话反馈闭环（她说完有没有人接 → 加减分 + 提示词里那一句）都在；
+- `lock_group`（@ 锁定）还在，但它**已经不影响谁能说话**（跨群取舍删除的后果）——
+  只决定 UI 快照里显示哪个群，以及 `lock_until` 参与"有人点名，别另起话题"的判断。
+  那句「期内独占焦点」的日志因此不准确，属于 §40.5 待清理清单。
+
+### 42.4 证据
+
+- 全量 **1506 passed**；两道 ruff 门全过。
+- 删掉的测试：`test_qq_icebreaker_hold.py`、`test_qq_icebreaker_dormant.py`、
+  `verify_icebreaker_hold_fail_to_pass.py`（整套功能没了，用例跟着走）。
+- 改写的测试：`test_qq_per_group_maintenance.py`（只留摘要 + 单飞 + 循环存活，并加一条
+  **结构性断言**：`_maybe_break_ice` / `_try_icebreaker` / `_icebreaker_idle_seconds`
+  等名字不许再出现在服务上）；`test_qq_attention_heat.py`（去掉 dormant 三档，
+  加"旧存档不许冻住群"）；`test_qq_frequency_scaled_rise.py`、`test_qq_settings_schema.py`
+  （`test_icebreaker_family_is_gone` 一次钉住六个键的退役）、`test_qq_source_kind_sets.py`。
+- 变异脚本跟着收窄：`verify_per_group_triggers_fail_to_pass.py` **10/10**（去掉破冰六个变异，
+  保留摘要 / 单飞 / 循环存活 / 回溯补回三处）；`verify_heat_tiers_fail_to_pass.py` **9/9**。
+
+### 42.5 边界
+
+- **她再也不会主动开口了**。现在所有群发言都由"群里有人说话"触发（点名 / 在聊 / 补回），
+  没有任何"她主动起话题"的路径。想接回来时，那四个事件驱动判据已经写在上面那张表里。
+- 休眠一起没了：以前"破冰没人接 → 那个群安静下来等 @"的行为不再存在。现在一个群冷下来
+  只是热度档变成 `cooling`（分数回落），**不再阻止任何东西** —— 被点名照常回。

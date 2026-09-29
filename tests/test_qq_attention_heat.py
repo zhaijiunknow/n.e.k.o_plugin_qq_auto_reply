@@ -1,11 +1,13 @@
-"""热度档（warm / cooling / dormant）：每个群按**自己的**静默时长涨落。
+"""热度档（warm / cooling）：每个群按**自己的**静默时长涨落。
 
-2026-09-29：删掉跨群取舍之后，rise/fall 相位机（蜜月 + 让位）整套退役，换成三个
+2026-09-29：删掉跨群取舍之后，rise/fall 相位机（蜜月 + 让位）整套退役，换成两个
 热度档。判据**只有本群自己的时间戳**：
 
 - ``warm``：``now - last_message_at < attention_heat_warm_gap_seconds`` → 增长
 - ``cooling``：静默超过那个窗口 → 回落
-- ``dormant``：休眠（破冰没人接 / 一直休）→ **分数冻住**，不涨也不掉
+
+（原本还有第三档 ``dormant``（休眠）：它随**主动破冰**一起删除 —— 休眠的唯一触发源
+就是"她主动开口没人接"。见 `docs/SESSION-HANDOFF.md` §42。）
 
 这些用例钉住"档位怎么定、每种档怎么动、以及旧存档还读不读得进来"。
 """
@@ -94,20 +96,26 @@ def test_zero_gap_means_never_cools():
     assert svc._heat_tier(st, 10_000_000) == "warm"
 
 
-@pytest.mark.parametrize("field,value", [("dormant_forever", True), ("dormant_until", 2000)])
-def test_dormancy_outranks_everything(field, value):
-    """休眠优先于"有没有人说话"：一个刚好有人说话的休眠群仍是 dormant。"""
-    svc = _service()
-    st = QQGroupAttentionState(group_id="g1", last_message_at=1000)
-    setattr(st, field, value)
-    assert svc._heat_tier(st, 1000) == "dormant"
+def test_a_phase_era_archive_cannot_freeze_a_group_forever():
+    """旧存档里的 `dormant_forever` 不再读 —— 否则那些群会被一个没有触发源的标记冻住。
 
-
-def test_a_timed_dormancy_expires_by_itself():
+    休眠随主动破冰一起删除（2026-09-29）：它的唯一触发源是"她主动开口没人接"。
+    """
     svc = _service()
-    st = QQGroupAttentionState(group_id="g1", last_message_at=1500, dormant_until=1500)
-    assert svc._heat_tier(st, 1200) == "dormant"
-    assert svc._heat_tier(st, 1600) == "warm"     # 自动醒，且群里刚有人说过话
+    legacy = {
+        "group_id": "g1",
+        "attention_score": 5.0,
+        "dormant_forever": True,
+        "dormant_until": 0,
+        "proactive_pending": True,
+        "last_message_at": 1000 - 600,
+        "last_decay_at": 1000,
+    }
+    st = QQGroupAttentionState.from_dict(legacy, group_id="g1")
+    assert not hasattr(st, "dormant_forever"), "休眠字段又回来了"
+    after = svc._apply_decay(st, 1010)
+    assert after.heat == "cooling", "旧存档把群冻住了"
+    assert after.attention_score < 5.0, "冷群该往下掉"
 
 
 # ── 每种档怎么动 ────────────────────────────────────────────────────
@@ -138,16 +146,6 @@ def test_cooling_never_goes_below_zero():
     st.last_decay_at = 1000
     after = svc._apply_decay(st, 100_000)
     assert after.attention_score == 0.0
-
-
-def test_dormant_group_is_frozen():
-    svc = _service()
-    st = QQGroupAttentionState(group_id="g1", attention_score=5.0, last_message_at=1000 - 600)
-    st.last_decay_at = 1000
-    st.dormant_forever = True
-    after = svc._apply_decay(st, 100_000)
-    assert after.heat == "dormant"
-    assert after.attention_score == pytest.approx(5.0), "休眠期间分数该冻住"
 
 
 def test_a_positive_emotion_slows_the_cooling():

@@ -482,19 +482,9 @@ MISC = (
                 floor=0, description="save：同一个群两次回溯补回之间至少隔多少秒（0=不限）",
                 ui=UIInput("cfg-retro-cooldown", min=0, max=3600, step=30,
                            label="ui.napcat.config.retro_review_cooldown")),
-    # 「这个群静了多久才值得她主动开口」。原来触发条件是"焦点反复落到同一群却没人
-    # 说话"（`icebreaker_cold_threshold` 数的是**焦点切换次数**）。
-    # 跨群取舍删掉后没有切换事件可数 —— 而"这个群没人说话了"本来就是每群自己的事实，
-    # 于是判据换成**每群自己的静默时长**，由 `_maintenance_loop` 每分钟核对一次。
-    # 0 = 关掉主动破冰（显式取值，不用 `or` 兜底）。
-    SettingSpec("icebreaker_idle_seconds", "int", 1800, saveable=True,
-                floor=0, description="save：群静默多少秒后主动破冰（0=禁用）",
-                ui=UIInput("cfg-icebreaker-threshold", min=0, max=86400, step=60,
-                           label="ui.attention.icebreaker", hint="ui.attention.icebreaker.hint")),
-    # 按群维护循环的 tick 间隔：破冰判据是"静了多久"（分钟级），群记忆摘要是防丢
-    # （游标幂等，多久推一次只影响及时性）。
+    # 按群维护循环的 tick 间隔：群记忆摘要按它推（游标幂等，多久推一次只影响及时性）。
     SettingSpec("attention_maintenance_interval_seconds", "float", 60.0, saveable=True,
-                floor=5.0, description="save：按群维护循环（破冰 / 群记忆摘要）的间隔秒数",
+                floor=5.0, description="save：按群维护循环（群记忆摘要）的间隔秒数",
                 ui=UIInput("cfg-att-maintenance-interval", min=5, max=600, step=5,
                            label="ui.attention.maintenance_interval",
                            hint="ui.attention.maintenance_interval.hint")),
@@ -503,35 +493,13 @@ MISC = (
                 ui=UIInput("cfg-gm-digest-interval", min=0, max=3600, step=30,
                            label="ui.attention.digest_interval",
                            hint="ui.attention.digest_interval.hint")),
-    # 破冰后按住焦点的秒数。破冰的语义是「我主动开口了，等人接」——发完就把焦点
-    # 让给最热闹的群，等于白破（真机 2026-09-27 14:28：破冰后 2 秒焦点被抢走，
-    # 接话的人被 non_focus 丢掉）。与 `attention_lock_seconds`（被 @ 的来由）
-    # 分开配，默认 120s：够等一两轮接话，又不至于长期霸占。
-    # 0 = 不按（退回旧行为，便于对照复现）。
-    SettingSpec("icebreaker_hold_seconds", "int", 120, saveable=True,
-                floor=0,
-                description="save：主动破冰后按住焦点的秒数（0=不按，破冰后立刻回到分数仲裁）",
-                ui=UIInput("cfg-icebreaker-hold", min=0, max=1800, step=10,
-                           label="ui.attention.icebreaker_hold",
-                           hint="ui.attention.icebreaker_hold.hint")),
-    # 破冰没人接 → 这个群休眠。使用者 2026-09-27 的两句口径：
-    # 「如果破冰一次还是没有人接话，可以直接把这个群拖入休眠状态，用其他群竞态。
-    #   休眠的群可以用 @ 唤醒」+「**没 @ 一直休**」。
-    # 「没人接」用的是现成的接话反馈窗口（`attention_feedback_window_seconds`，90s），
-    # 不另开计时器 —— 同一个结论不该有两个判据。
-    #
-    # 两个键而不是一个：`seconds = 0` 现在是「一直休」（使用者要的默认口径），
-    # 所以"关掉这个功能"必须有独立开关，不能再用 0 兼职（那会变成关不掉的旋钮）。
-    SettingSpec("icebreaker_dormant_enabled", "bool", True, saveable=True,
-                description="save：破冰无人接话就把该群休眠（不参与焦点竞争）",
-                ui=UIInput("cfg-icebreaker-dormant-on", kind="checkbox",
-                           label="ui.attention.icebreaker_dormant_on")),
-    SettingSpec("icebreaker_dormant_seconds", "int", 0, saveable=True,
-                floor=0,
-                description="save：休眠后多少秒自动醒（0=一直休，只有 @ 能唤醒）",
-                ui=UIInput("cfg-icebreaker-dormant", min=0, max=86400, step=60,
-                           label="ui.attention.icebreaker_dormant",
-                           hint="ui.attention.icebreaker_dormant.hint")),
+    # ── 主动破冰 + 休眠：整套删除（2026-09-29 使用者口径「干脆不要这个先」）──
+    # 原触发判据是"这个群静默 1800 秒"（`icebreaker_idle_seconds`）—— 使用者明确不要
+    # 用时间判断；给他的四个事件驱动备选（她说完没人接 / 有人喊冷场 / 群在聊但不带她 /
+    # 话题收尾）他选了"先不要"。随之删除的还有它带出来的休眠
+    # （`icebreaker_dormant_enabled` / `icebreaker_dormant_seconds`）与破冰话题表
+    # （`proactive_topics`）—— 休眠的唯一触发源就是"她主动开口没人接"。
+    # 五个键全部进 `config_store._LEGACY_ZOMBIE_KEYS`。见 docs/SESSION-HANDOFF.md §42。
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。

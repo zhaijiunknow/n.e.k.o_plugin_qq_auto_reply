@@ -1582,14 +1582,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             })
         self._emit_log("INFO", f"[PromptEditor] mode={mode} is_napcat={is_napcat} locale={locale} layers={len(layers)}")
         self.logger.info(f"[PromptEditor] mode={mode} is_napcat={is_napcat} locale={locale} layers={len(layers)}")
-        proactive_topics = list((self._qq_settings or {}).get("proactive_topics") or [])
-        if not proactive_topics and self.attention_gate_service:
-            proactive_topics = list(getattr(self.attention_gate_service, "_DEFAULT_PROACTIVE_TOPICS", []))
         return Ok({
             "mode": mode,
             "locale": locale,
             "layers": layers,
-            "proactive_topics": proactive_topics,
         })
 
     async def _config_init(self, kw: dict[str, Any]):
@@ -1912,14 +1908,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
 
-    async def _config_save_topics(self, kw: dict[str, Any]):
-        topics = kw.get("topics")
-        topic_list = [str(t).strip() for t in (topics or []) if str(t).strip()]
-        self._qq_settings["proactive_topics"] = topic_list
-        success = await self._persist_business_config()
-        self._emit_log("INFO", f"主动发言话题已更新: {len(topic_list)}条")
-        return Ok({"count": len(topic_list), "persisted": success})
-
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         await self.handler_runtime_service.run_message_handler(message)
 
@@ -1942,20 +1930,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="config",
         name=tr("entries.config.name", default="保存配置"),
-        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / save_topics / attention_adjust / memory_forget。"),
+        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / attention_adjust / memory_forget。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["save", "init", "nl", "prompt_save", "prompt_reset",
                                 "group_prompt_save", "group_prompt_delete",
-                                "save_topics", "attention_adjust", "memory_forget"],
-                       "description": "save=保存设置（其余参数见下）；init=初始化配置；nl=用自然语言改 OneBot 地址/token；prompt_save/reset=提示词覆盖；group_prompt_save/delete=群专属提示词；save_topics=主动发言话题；attention_adjust=调群注意力；memory_forget=清除群长期记忆"},
+                                "attention_adjust", "memory_forget"],
+                       "description": "save=保存设置（其余参数见下）；init=初始化配置；nl=用自然语言改 OneBot 地址/token；prompt_save/reset=提示词覆盖；group_prompt_save/delete=群专属提示词；attention_adjust=调群注意力；memory_forget=清除群长期记忆"},
             "message": {"type": "string", "description": "nl：自然语言指令"},
             "locale": {"type": "string", "description": "prompt_save / prompt_reset：语言"},
             "layer_id": {"type": "string", "description": "prompt_save / prompt_reset：提示词层 id"},
             "text": {"type": "string", "description": "prompt_save / group_prompt_save：内容（群提示词传空串=删除）"},
             "group_id": {"type": "string", "description": "group_prompt_save / group_prompt_delete / attention_adjust / memory_forget：群号"},
             "delta": {"type": "number", "description": "attention_adjust：正数加分、负数扣分"},
-            "topics": {"type": "array", "items": {"type": "string"}, "description": "save_topics：话题列表"},
             # ── action="save" 的键由 settings_schema.input_schema_properties() 生成。
             #    加键只改那张表 —— 过去这里要和白名单、save_settings 签名三处手工对齐，
             #    漏一处就静默失效。
@@ -1990,8 +1977,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._config_group_prompt_save(kw)
         if action == "group_prompt_delete":
             return await self._config_group_prompt_delete(kw)
-        if action == "save_topics":
-            return await self._config_save_topics(kw)
         if action == "attention_adjust":
             return await self._config_attention_adjust(kw)
         if action == "memory_forget":
@@ -1999,7 +1984,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Err(SdkError(
             f"BAD_ACTION: config 不支持 {action!r}"
             f"（可选 save/init/nl/prompt_save/prompt_reset/group_prompt_save/"
-            f"group_prompt_delete/save_topics/attention_adjust/memory_forget）"))
+            f"group_prompt_delete/attention_adjust/memory_forget）"))
 
     async def _config_save(self, kw: dict[str, Any]):
         """保存设置。只认白名单里的键 —— 多余的**记一条日志**后丢弃。
@@ -2036,7 +2021,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "WARNING",
                 f"[Config] save 丢弃了 {len(dropped)} 个不可识别的键: {dropped}"
                 f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个；"
-                f"注意有些键有专用入口，例如 proactive_topics 要走 save_topics）",
+                f"注意有些键有专用入口（例如 group_prompts 走 group_prompt_save））",
             )
         if not payload:
             return Err(SdkError(

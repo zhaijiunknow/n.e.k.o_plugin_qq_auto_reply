@@ -55,11 +55,12 @@ FROZEN_DEFAULTS: dict[str, object] = {
     # 随 rise/fall 相位机一起退役（2026-09-29）：那套"蜜月 + 让位"的前提是
     # 同一时刻只有一个群能说话。热度改由 `attention_heat_warm_gap_seconds` 决定。
     "attention_heat_warm_gap_seconds": 120,
-    # 有意删除（不在此快照里）："icebreaker_cold_threshold"（原默认 3）。
-    # 它数的是**焦点切换次数** —— 跨群焦点取舍删掉后没有切换事件可数，
-    # 判据换成 `icebreaker_idle_seconds`（每群自己静默多久），老键进
-    # `_LEGACY_ZOMBIE_KEYS`，见 `test_icebreaker_cold_threshold_is_gone`。
-    "icebreaker_idle_seconds": 1800,
+    # 有意删除（不在此快照里）：「冷场破冰」整套的四个键 —— 相位时代的
+    # `icebreaker_cold_threshold` 先被换成 `icebreaker_idle_seconds`，同一天稍后
+    # 主动破冰与休眠**整套删除**（使用者口径「干脆不要这个先」），四个键一起退役：
+    # icebreaker_idle_seconds / icebreaker_hold_seconds /
+    # icebreaker_dormant_enabled / icebreaker_dormant_seconds，
+    # 连带只服务破冰的话题表 `proactive_topics`。见 `test_icebreaker_family_is_gone`。
     "retroactive_review_min_unreviewed": 5,
     "retroactive_review_cooldown_seconds": 300,
     "group_memory_digest_interval_seconds": 300,
@@ -419,22 +420,30 @@ def test_waking_keys_are_gone():
     assert "addressee_penalty" in settings_schema.BY_KEY
 
 
-def test_icebreaker_cold_threshold_is_gone():
-    """「冷场破冰阈值」删除契约（2026-09-29 跨群取舍删除）。
+def test_icebreaker_family_is_gone():
+    """「主动破冰 + 休眠」删除契约（2026-09-29）。
 
-    旧键数的是**焦点切换次数**（"焦点反复落到同一群却没人说话"）。跨群焦点取舍删掉后
-    没有切换事件可数，破冰判据换成 `icebreaker_idle_seconds`（**每群自己**静默多久）。
-    谁把旧键加回来，这条会红。
+    使用者口径：「不能用时间判断，需要换一个策略」→ 四个事件驱动备选给他选 →
+    「干脆不要这个先」。于是触发判据（`icebreaker_idle_seconds`）、按住时长
+    （`icebreaker_hold_seconds`）、休眠开关与自动醒秒数、以及只服务破冰的话题表
+    （`proactive_topics`）一起退役；更早的 `icebreaker_cold_threshold` 已经在
+    §40 那轮进过僵尸名单。谁把它们加回来，这条会红。
     """
     from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
 
-    assert "icebreaker_cold_threshold" not in settings_schema.BY_KEY, "旧键被加回真源表了"
-    assert "icebreaker_cold_threshold" not in settings_schema.defaults(), "旧键又写进默认值了"
-    assert "icebreaker_cold_threshold" in QQAutoReplyConfigStore._LEGACY_ZOMBIE_KEYS, (
-        "旧键不在僵尸键名单里 —— 老配置文件里的残留值会被原样传下去"
-    )
-    # 新机制的键在位（删旧的不是把功能删掉）。
-    assert "icebreaker_idle_seconds" in settings_schema.BY_KEY
+    for key in (
+        "icebreaker_cold_threshold",
+        "icebreaker_idle_seconds",
+        "icebreaker_hold_seconds",
+        "icebreaker_dormant_enabled",
+        "icebreaker_dormant_seconds",
+        "proactive_topics",
+    ):
+        assert key not in settings_schema.BY_KEY, f"{key} 被加回真源表了"
+        assert key not in settings_schema.defaults(), f"{key} 又写进默认值了"
+        assert key in QQAutoReplyConfigStore._LEGACY_ZOMBIE_KEYS, (
+            f"{key} 不在僵尸键名单里 —— 老配置文件里的残留值会被原样传下去"
+        )
 
 
 def test_legacy_strategy_key_is_dropped_on_load(tmp_path):

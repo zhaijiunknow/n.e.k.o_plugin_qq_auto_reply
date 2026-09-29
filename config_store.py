@@ -173,6 +173,17 @@ class QQAutoReplyConfigStore:
         "attention_honeymoon_seconds",
         "attention_fall_seconds",
         "attention_fall_boost_attenuation",
+        # **主动破冰 + 休眠**整套删除后的遗留键（2026-09-29）。使用者口径：
+        # 「不能用时间判断，需要换一个策略」→ 四个事件驱动备选给他选 → 「干脆不要这个先」。
+        # 于是触发判据（`icebreaker_idle_seconds`）、按住时长（`icebreaker_hold_seconds`）、
+        # 休眠开关与自动醒秒数、以及只服务破冰的话题表（`proactive_topics`）一起退役。
+        # 休眠的**唯一触发源**就是"她主动开口没人接"，所以它也一并删除（连带状态字段：
+        # 老存档里的 `dormant_*` 不再读，免得那些群被一个没有触发源的标记冻住分数）。
+        "icebreaker_idle_seconds",
+        "icebreaker_hold_seconds",
+        "icebreaker_dormant_enabled",
+        "icebreaker_dormant_seconds",
+        "proactive_topics",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现

@@ -3,12 +3,14 @@
 职责：
 1. 每条群消息到达时，更新该群注意力、判定是否回复（点名优先，注意力垫底）
 2. 本群**凉转热**时回头看它错过的消息（回溯补回，见 `_note_in_conversation`）
-3. 按群维护循环：谁静得够久谁破冰、谁的群记忆有增量谁推摘要（`_maintenance_loop`）
-4. 全局休眠判定
+3. 按群维护循环：谁的群记忆有增量谁推摘要（`_maintenance_loop`）
+4. 全局休眠判定（所有群分数都在最低线以下）
 
 2026-09-29：跨群取舍（"唯一的焦点群说了算"）整体删除 —— 使用者口径「每个群自己管自己
-的注意力」。原来挂在焦点切换上的机制（回溯补回、记忆摘要、冷场破冰计数）全部改成
-**按群触发**；门控里那道「非焦点群一律 block」的闸门换成"本群分数过没过保持线"。
+的注意力」。原来挂在焦点切换上的机制（回溯补回、记忆摘要）全部改成**按群触发**；门控里
+那道「非焦点群一律 block」的闸门换成"本群分数过没过保持线"。
+同日稍后：**主动破冰 + 休眠整套删除**（使用者：「干脆不要这个先」）—— 那套的触发判据是
+`icebreaker_idle_seconds`（"静默 30 分钟"），使用者要求不要用时间判断，而他选了"先不要"。
 
 底层依赖 QQAttentionService 提供注意力分数、衰减、`is_in_conversation` 判定。
 """
@@ -69,17 +71,18 @@ class QQAttentionGateService:
     """基于注意力的多群门控 + 回溯补回（每群自己管自己）"""
 
     async def start_proactive_loop(self) -> None:
-        """启动**按群**的维护循环（冷场破冰 + 群记忆摘要）。
+        """启动**按群**的维护循环（群记忆摘要）。
 
-        这两件事原来挂在**跨群焦点切换**上（`check_focus_shift`）：切换发生时给旧焦点群
-        推记忆摘要、给新焦点群做回溯补回，冷场计数也由"焦点反复落到同一群却没人说话"
-        驱动。跨群取舍删掉后（2026-09-29 使用者口径：「每个群自己管自己的注意力」）
-        没有"切换"这个事件可挂了，于是改成**每个群自己一个时钟**：谁静得够久谁破冰，
-        谁的群记忆有增量谁推摘要。判据全部来自各群自己的状态，与别的群无关。
+        这件事原来挂在**跨群焦点切换**上（`check_focus_shift`）：切换发生时给旧焦点群
+        推记忆摘要。跨群取舍删掉后（2026-09-29 使用者口径：「每个群自己管自己的注意力」）
+        没有"切换"这个事件可挂了，于是改成**每个群自己一个时钟**：谁的群记忆有增量谁推摘要。
+        判据全部来自各群自己的状态（游标 + 时间戳），与别的群无关。
+
+        （同一天稍后：这里原本还负责"冷场破冰"，整套已删除 —— 见模块 docstring。）
 
         **进程内只允许一条**（_maintenance_owner()，见模块级注释）：宿主在启动阶段会把
         插件的初始化跑不止一遍（真机 2026-09-29 16:32:08 的日志里同一行出现了两次），
-        两条循环会各破一次冰、各推一次摘要 —— 她是一个人，不是两支队伍。
+        两条循环会把同一份摘要推两遍 —— 一个进程只需要一个维护者。
         """
         owner = _maintenance_owner()
         if owner is not None and owner._maintenance_task is not None and not owner._maintenance_task.done():
@@ -89,12 +92,12 @@ class QQAttentionGateService:
         if task is not None and not task.done():
             return
         interval = self._maintenance_interval()
-        # 起一行标记：这条循环是**纯后台**的（她主动开口、推群记忆），没有它就没有
-        # 任何"我起来了"的凭据 —— 真机验收只能靠"她怎么不说话"来反推。
+        # 起一行标记：这条循环是**纯后台**的（推群记忆），没有它就没有任何"我起来了"
+        # 的凭据 —— 真机验收只能靠"她怎么不推摘要"来反推。
         self._logger.info(
             f"[Gate] 按群维护循环已启动（每 {interval:.0f}s 过一遍每个群："
-            f"静默 {self._icebreaker_idle_seconds()}s 破冰 / 群记忆摘要每 "
-            f"{self._digest_interval_seconds()}s，均为**每群自己的**时钟）"
+            f"群记忆摘要每 {self._digest_interval_seconds()}s，均为**每群自己的**时钟；"
+            f"主动破冰已于 2026-09-29 删除）"
         )
         self._maintenance_task = asyncio.create_task(
             self._maintenance_loop(interval),
@@ -120,8 +123,8 @@ class QQAttentionGateService:
         """按群维护循环。
 
         单轮异常**就地吞掉**（与 `attention_service._decay_loop` 同款理由）：它要碰
-        磁盘与 memory server，一次坏 JSON / 网络抖动若把循环杀掉，破冰与群记忆会
-        无声无息地永久停摆 —— 那种故障在日志里只表现为"她再也不主动说话了"。
+        磁盘与 memory server，一次坏 JSON / 网络抖动若把循环杀掉，群记忆会无声无息地
+        永久停摆 —— 那种故障在日志里只表现为"群记忆怎么不涨了"。
         """
         while True:
             try:
@@ -136,29 +139,16 @@ class QQAttentionGateService:
                 self._logger.warning(f"[Gate] 按群维护轮次异常，已跳过本轮: {e}")
 
     async def run_maintenance_tick(self) -> None:
-        """走一遍所有参与竞争的群，每群各自判断要不要破冰 / 推记忆摘要。
+        """走一遍所有群，按**每群自己的**节奏推群记忆摘要。
 
-        **一轮最多"尝试"破冰一次**（`tried_ice` 那道闸）。理由：破冰是"她主动开口"，
-        而她是一个**人**不是一个群发器 —— 五个群同时静了 30 分钟时，她该一个接一个地
-        看过来（每 tick 一个，默认一分钟一个），而不是同一秒往五个群各丢一句。这条也挡
-        住了"插件重载后所有冷群一起被破冰"的启动爆发：重载时每个群的 `last_message_at`
-        都还是旧的，判据会同时成立。
-
-        ⚠️ 闸门数的是**尝试**不是**成功**（真机 2026-09-29 16:42 的教训）：一开始写成
-        `broke_ice = await self._maybe_break_ice(...)`，而 `_maybe_break_ice` 返回的是
-        "她真的说出去了吗"。那会儿 QQ 连接断着，破冰投递失败 → 返回 False → 闸门以为
-        这一轮还没破过冰，于是**同一个 tick 里接着把下一个冷群也破了**（16:42:23 群
-        1048307485、16:42:30 群 985066274）。投递失败或模型决定不开口都是常态，不能
-        让它们把闸门旁路掉。
+        （2026-09-29 之前这里还做第二件事：给静默够久的群"主动破冰"。破冰整套已删除 ——
+        墓碑见 `attention_service` 末尾那段 + `docs/SESSION-HANDOFF.md` §42。）
         """
         attention = self.plugin.attention_service
         if not attention:
             return
         now = int(attention._current_time())
-        tried_ice = False
         for group_id in self._maintenance_groups(attention):
-            if not tried_ice and self._participates_in_attention(group_id):
-                tried_ice = await self._maybe_break_ice(group_id, now)
             await self._maybe_push_digest(group_id, now)
 
     def _maintenance_groups(self, attention: Any) -> list[str]:
@@ -172,8 +162,8 @@ class QQAttentionGateService:
     def _maintenance_interval(self) -> float:
         """按群维护循环的 tick 间隔（秒，`attention_maintenance_interval_seconds`，默认 60）。
 
-        破冰判据是"静了多久"，分钟级粒度就够；间隔越小只是判定越及时，代价是每个
-        tick 都要把所有群过一遍（读内存态，不落盘）。
+        群记忆摘要的及时性用分钟级粒度就够；间隔越小只是推得越勤，代价是每个 tick
+        都要把所有群过一遍（读内存态，不落盘）。
         """
         raw = (self.plugin._qq_settings or {}).get(
             "attention_maintenance_interval_seconds", 60,
@@ -182,21 +172,6 @@ class QQAttentionGateService:
             return max(5.0, float(raw))
         except (TypeError, ValueError):
             return 60.0
-
-    def _icebreaker_idle_seconds(self) -> int:
-        """这个群**自己**静多少秒之后，她才值得主动开口（默认 1800，0 = 关掉主动破冰）。
-
-        显式取值而不用 `... or 1800`：0 是"关掉这个行为"的合法值，被 `or` 吞掉就再也
-        关不掉了（同 `icebreaker_hold_seconds` 的坑）。
-
-        为什么是**每群自己的静默时长**而不是"焦点切换了几次"：跨群取舍删掉后没有切换
-        事件可数，而"这个群没人说话了"本来就是每群自己的事实。
-        """
-        raw = (self.plugin._qq_settings or {}).get("icebreaker_idle_seconds", 1800)
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            return 1800
 
     def _digest_interval_seconds(self) -> int:
         """群记忆摘要的推送间隔（秒，`group_memory_digest_interval_seconds`，默认 300）。"""
@@ -207,55 +182,6 @@ class QQAttentionGateService:
             return max(0, int(raw))
         except (TypeError, ValueError):
             return 300
-
-    async def _maybe_break_ice(self, group_id: str, now: int) -> bool:
-        """这个群静得够久 → 主动破冰一次。返回**这一轮的这个名额用掉了吗**。
-
-        返回值说的是"尝试过了"，不是"她真的说出去了"：投递失败、模型决定不开口都是
-        常态，而 `run_maintenance_tick` 用这个返回值当"一轮最多一次"的闸门 —— 把失败
-        算成"没用名额"就会让同一个 tick 接着破下一个冷群（真机 2026-09-29 16:42 就是
-        这么发生的，见 `run_maintenance_tick` 的 docstring）。
-
-        跳过条件（全部是**这个群自己**的状态，不看别的群）：
-
-        - 还在休眠（破冰没人接的群本来就该安静，等 @ 唤醒）；
-        - 有人点名叫她、锁还没到期（她正该回应人，不该另起话题）；
-        - 静默时长还没到 `icebreaker_idle_seconds`（0 = 关掉主动破冰）；
-        - 上一轮破冰离现在还不够久 —— 否则每 tick 都去问一次 LLM，
-          "破冰"会变成刷屏。
-        """
-        idle_seconds = self._icebreaker_idle_seconds()
-        if idle_seconds <= 0:
-            return False
-        attention = self.plugin.attention_service
-        if not attention:
-            return False
-        try:
-            state = attention.get_state(group_id)
-        except Exception:
-            return False
-        if bool(getattr(state, "dormant_forever", False)) or int(getattr(state, "dormant_until", 0) or 0) > now:
-            return False
-        if int(getattr(state, "lock_until", 0) or 0) > now:
-            return False
-        last_message_at = int(getattr(state, "last_message_at", 0) or 0)
-        if last_message_at <= 0:
-            return False
-        if now - last_message_at < idle_seconds:
-            return False
-        if now - int(self._last_icebreaker_at.get(group_id, 0)) < idle_seconds:
-            return False
-        self._last_icebreaker_at[group_id] = now
-        self._logger.info(
-            f"[Icebreaker] 群 {group_id} 已静默 {now - last_message_at}s（阈值 {idle_seconds}s），尝试破冰"
-        )
-        try:
-            await self._try_icebreaker(group_id)
-        except Exception:
-            # 投递/生成失败不该把"名额"还回去（那是同一轮里再破一个群的理由），
-            # 也不该把整轮维护打断 —— 后面的群还要推记忆摘要。
-            self._logger.warning("[Icebreaker] 破冰尝试异常（名单仍算用掉）", exc_info=True)
-        return True
 
     async def _maybe_push_digest(self, group_id: str, now: int) -> bool:
         """群记忆摘要按**每群自己的**节奏推送（`group_memory_digest_interval_seconds`）。
@@ -511,131 +437,12 @@ class QQAttentionGateService:
         base = 17 if value is None else max(1, int(value))
         return max(1, min(10, base - 1))
 
-    # ── 冷场破冰：焦点反复落到同一群但无人发言时触发 ──
-
-    _DEFAULT_PROACTIVE_TOPICS = [
-        "群聊已经安静了一段时间，你可以主动在群里说点什么来活跃气氛。分享一个想法、提一个有趣的问题、或者聊聊你最近经历的事。注意保持自然，不要像系统消息一样说话。",
-        "群里好像冷场了，你可以随便聊点轻松的——比如最近看到的有趣的事、一个冷知识、或者问问大家最近都在忙什么。",
-        "你是这个群的活跃分子，看到没人说话，可以抛出一个话题暖暖场。不用很正式，像朋友闲聊一样自然开头就好。",
-    ]
-
-    def _pick_proactive_topic(self) -> str:
-        """从用户配置的 proactive_topics 中随机选一个，避免连续重复。"""
-        import random as _random
-        topics = list((self.plugin._qq_settings or {}).get("proactive_topics") or [])
-        if not topics:
-            topics = list(self._DEFAULT_PROACTIVE_TOPICS)
-        if not topics:
-            return ""
-        topic = _random.choice(topics)
-        if len(topics) > 1:
-            last = getattr(self, "_last_proactive_topic_idx", -1)
-            tries = 0
-            while topics.index(topic) == last and tries < 10:
-                topic = _random.choice(topics)
-                tries += 1
-        self._last_proactive_topic_idx = topics.index(topic)
-        return topic
-
-    def _icebreaker_hold_seconds(self) -> int:
-        """破冰后按住焦点的秒数（`icebreaker_hold_seconds`，默认 120，0 = 不按）。
-
-        显式取值而不用 `... or 120`：0 是有意义的值（关掉这个行为），
-        被 `or` 吞掉就再也关不掉了。
-        """
-        raw = (self.plugin._qq_settings or {}).get("icebreaker_hold_seconds", 120)
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            return 120
-
-    async def _try_icebreaker(self, group_id: str) -> bool:
-        """焦点反复切到此群但无人发言 → 用主动话题破冰。"""
-        # 有缓冲回复待交付时跳过
-        if getattr(self.plugin, "reply_buffer_service", None):
-            gkey = self.plugin._build_session_key(sender_id=group_id, is_group=True, group_id=group_id)
-            if self.plugin.reply_buffer_service.has_pending(gkey):
-                self._logger.info("[Icebreaker] 群有缓冲回复待交付，跳过")
-                return False
-        topic = self._pick_proactive_topic()
-        if not topic:
-            return False
-        self._logger.info(f"[Icebreaker] 群 {group_id} 尝试破冰话题: {topic[:40]}")
-        try:
-            from .pipeline_models import QQReplyRequest
-            request = QQReplyRequest(
-                message_text=f"[系统] {topic}",
-                sender_id=self.plugin._admin_qq or "0",
-                is_group=True,
-                group_id=group_id,
-                is_at_bot=True,
-                source_kind="proactive_speech",
-                group_scene_mode="group_collective",
-                fallback_to_text_on_voice_failure=True,
-                use_memory_context=False,
-                ephemeral_session=False,
-            )
-            async def _run_icebreaker():
-                svc = self.plugin.session_memory_service
-                before = svc.session_history_len(f"group:{group_id}")
-                try:
-                    return await self.plugin.reply_pipeline.run(request)
-                finally:
-                    svc.record_synthetic_prompt_rows(f"group:{group_id}", before)
-            outcome = await self.plugin._run_with_session_lock(
-                f"group:{group_id}", _run_icebreaker,
-            )
-            if outcome.action == "reply" and outcome.reply_text:
-                self._logger.info(f"[Icebreaker] 破冰消息已发送: {outcome.reply_text[:50]}...")
-                self.plugin.runtime_service.record_pipeline_outcome(
-                    source="proactive_speech", request=request, outcome=outcome,
-                )
-                # 破冰之后必须把焦点**按住**，否则等于白破。
-                #
-                # 真机 bug（2026-09-27 14:28，群 985066274）：14:28:25 破冰发出 →
-                # 14:28:39 有人接了话，她也答了（24 字）→ **14:28:41 焦点就被
-                # 更热闹的 1048307485 抢走**，接着她在那边连做 6 轮，破冰的这个群
-                # 直到 14:29:42 才拿回焦点，接她话的人被 `non_focus` 丢掉。
-                # （`non_focus` 这道跨群闸门 2026-09-29 已删除；按住焦点的语义换成
-                #  对该群自己的分数与保持线作用，见 attention_service.is_in_conversation。）
-                # 原因就是这里只写了 `last_reply_at`：既不锁（`_choose_focus_state`
-                # 的优先级 1 就是锁），也不重置接话反馈周期、不记频率环。
-                #
-                # 破冰的语义是「我主动开口了，等人接」——她需要的是那**几拍**的独占，
-                # 而 @ 的 `attention_lock_seconds`（叫一次就有）与破冰不是同一种来由，
-                # 所以用独立配置 `icebreaker_hold_seconds`（0 = 不按，退回旧行为）。
-                attn = getattr(self.plugin, "attention_service", None)
-                if attn:
-                    # 记账包在**独立**的 try 里：破冰消息已经送出去了，后面任何
-                    # 一步出错都不许把这次成功改写成 `False`（那会让上层以为没发、
-                    # 记成失败）。空文本那次事故就是"发出去的东西被报成没发"。
-                    try:
-                        hold = self._icebreaker_hold_seconds()
-                        if hold > 0:
-                            attn.lock_group(group_id, seconds=hold, reason="icebreaker")
-                        attn.note_proactive_speech(group_id)
-                        self._logger.info(
-                            f"[Icebreaker] 群 {group_id} 破冰后按住焦点 {hold}s，等待群里接话"
-                        )
-                    except Exception:
-                        self._logger.warning(
-                            "[Icebreaker] 破冰已送出，但焦点按住/记账失败（本次发言仍然算成功）",
-                            exc_info=True,
-                        )
-                return True
-            else:
-                self._logger.info("[Icebreaker] AI 决定不回应破冰话题")
-        except Exception:
-            self._logger.warning("[Icebreaker] 破冰话题发送失败", exc_info=True)
-        return False
-
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._retroactive_lock = asyncio.Lock()
         #: 按群维护（冷场破冰 / 群记忆摘要）的状态。跨群取舍删掉后这两件事不再挂
         #: 焦点切换，而是各自读"这个群自己"的时钟（见 `_maintenance_loop`）。
         self._maintenance_task: asyncio.Task | None = None
-        self._last_icebreaker_at: dict[str, int] = {}   # 群 → 上次尝试破冰的时刻
         self._last_digest_at: dict[str, int] = {}       # 群 → 上次推记忆摘要的时刻
         self._last_retro_at: dict[str, int] = {}        # 群 → 上次回溯补回的时刻
         self._in_conversation: dict[str, bool] = {}     # 群 → 上一轮判定"在聊吗"
@@ -1274,7 +1081,6 @@ class QQAttentionGateService:
         if retro_tasks:
             await asyncio.gather(*retro_tasks, return_exceptions=True)
         self._retro_tasks.clear()
-        self._last_icebreaker_at.clear()
         self._last_digest_at.clear()
         self._last_retro_at.clear()
         self._in_conversation.clear()

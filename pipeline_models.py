@@ -25,8 +25,11 @@ KIND_INCOMING_GROUP = "incoming_group"
 KIND_RAPID_FIRE = "rapid_fire_flush"
 
 #: 该轮的 sender 只是**名义发言人**，prompt 文本不是这个人说的话。
-#: 主动搭话的控制指令、缓冲合并、回溯补回、入群通知、破冰都属此类。
-KIND_PROACTIVE_SPEECH = "proactive_speech"
+#: 主动搭话的控制指令、缓冲合并、回溯补回、入群通知都属此类。
+#:
+#: 原来还有一个 `KIND_PROACTIVE_SPEECH = "proactive_speech"`（**冷场破冰**那一轮）。
+#: 主动破冰整套已于 2026-09-29 删除（使用者口径「干脆不要这个先」），它随之成为
+#: **零生产者**的死常量；看门狗 `test_no_declared_kind_is_dead` 会当场报出来，故一并删除。
 KIND_PROACTIVE_PRIVATE = "proactive_private"
 KIND_PROACTIVE_GROUP = "proactive_group"
 KIND_RETROACTIVE_REVIEW = "retroactive_review"
@@ -47,7 +50,6 @@ KIND_PLUGIN_TOOL_RESULT = "plugin_tool_result"
 #: `buffer_delayed`。两类漂移（漏真实生产者 / 留死常量）都是靠人工同步集合与
 #: 赋值点造成的，现在由 `tests/test_qq_source_kind_sets.py` 的看门狗盯着。
 SYNTHETIC_SOURCE_KINDS = frozenset({
-    KIND_PROACTIVE_SPEECH,
     KIND_PROACTIVE_PRIVATE,
     KIND_PROACTIVE_GROUP,
     KIND_RAPID_FIRE,
@@ -62,7 +64,6 @@ SYNTHETIC_SOURCE_KINDS = frozenset({
 #: 曾经这里是 `reply_pipeline` 里内联的第三个元组，于是同样漏了 proactive_group。
 BUFFER_INTERNAL_SOURCE_KINDS = frozenset({
     KIND_RAPID_FIRE,
-    KIND_PROACTIVE_SPEECH,
     KIND_PROACTIVE_PRIVATE,
     KIND_PROACTIVE_GROUP,
     # 结果回投是一条**到点就该发**的通知：它已经在后台等过一轮了，再进缓冲

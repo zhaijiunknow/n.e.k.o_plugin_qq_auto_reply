@@ -34,36 +34,9 @@ TARGET_FILES = [
 CONTROL_FILE = str(TESTS / "test_qq_permission_levels.py")
 
 MUTATIONS: list[tuple[str, str, str, str]] = [
-    (
-        "attention_gate_service.py",
-        "休眠的群照样被破冰叫起来（她主动开口没人接，白说）",
-        '        if bool(getattr(state, "dormant_forever", False)) or int(getattr(state, "dormant_until", 0) or 0) > now:',
-        "        if False:",
-    ),
-    (
-        "attention_gate_service.py",
-        "有人点名叫她、锁还没到期也去破冰（该回应人的时候另起话题）",
-        '        if int(getattr(state, "lock_until", 0) or 0) > now:',
-        "        if False:",
-    ),
-    (
-        "attention_gate_service.py",
-        "不看这个群静了多久（刚有人说话的群也被破冰打断）",
-        "        if now - last_message_at < idle_seconds:",
-        "        if False:",
-    ),
-    (
-        "attention_gate_service.py",
-        "破冰没有冷却（每个 tick 都问一次 LLM，破冰变成刷屏）",
-        "        if now - int(self._last_icebreaker_at.get(group_id, 0)) < idle_seconds:",
-        "        if False:",
-    ),
-    (
-        "attention_gate_service.py",
-        "`icebreaker_idle_seconds=0` 关不掉主动破冰（0 被当成「随便破」）",
-        "        if idle_seconds <= 0:",
-        "        if False:",
-    ),
+    # 主动破冰那六个变异（静默阈值 / 锁 / 冷却 / 名额）在 2026-09-29 随功能一起删除 ——
+    # 墓碑见 docs/SESSION-HANDOFF.md §42。剩下的是"按群触发"这条口径真正还在的接线：
+    # 群记忆摘要的间隔与 opt-in、单飞闸、维护循环的存活、回溯补回的两道闸与它的按群判据。
     (
         "attention_gate_service.py",
         "群记忆摘要不看间隔（每个 tick 都推一次）",
@@ -99,26 +72,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_gate_service.py",
-        "一轮里给每个冷群都破一次冰（她变成群发器；重载后所有冷群同时被打扰）",
-        "            if not tried_ice and self._participates_in_attention(group_id):\n"
-        "                tried_ice = await self._maybe_break_ice(group_id, now)",
-        "            if self._participates_in_attention(group_id):\n"
-        "                tried_ice = await self._maybe_break_ice(group_id, now)",
-    ),
-    (
-        "attention_gate_service.py",
-        "把「破冰失败」当成没用名额（真机 16:42：断连那一轮同一个 tick 破了两个群）",
-        "        try:\n"
-        "            await self._try_icebreaker(group_id)\n"
-        "        except Exception:",
-        "        try:\n"
-        "            if not await self._try_icebreaker(group_id):\n"
-        "                return False\n"
-        "        except Exception:",
-    ),
-    (
-        "attention_gate_service.py",
-        "维护循环被一轮异常杀死（她从此再也不主动说话，且日志里查不到）",
+        "维护循环被一轮异常杀死（群记忆再也不推了，且日志里查不到）",
         "            except Exception as e:\n"
         '                self._logger.warning(f"[Gate] 按群维护轮次异常，已跳过本轮: {e}")',
         "            except Exception:\n                raise",

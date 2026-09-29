@@ -59,18 +59,6 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_service.py",
-        "休眠不再优先（刚有人说话的休眠群被当成热聊）",
-        "        if bool(state.dormant_forever) or int(state.dormant_until or 0) > now:\n            return \"dormant\"",
-        "        if False:\n            return \"dormant\"",
-    ),
-    (
-        "attention_service.py",
-        "休眠群分数照掉（她主动开口没人接的群悄悄归零）",
-        "        if state.heat == \"dormant\":\n            return",
-        "        if False:\n            return",
-    ),
-    (
-        "attention_service.py",
         "冷却档不回落（凉下来的群分数冻住）",
         "        if state.heat == \"cooling\":",
         "        if False:",

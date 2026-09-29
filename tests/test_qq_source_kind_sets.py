@@ -37,7 +37,6 @@ DECLARED: dict[str, dict[str, bool]] = {
     pipeline_models.KIND_INCOMING_PRIVATE:  {"synthetic": False, "buffer_internal": False},
     pipeline_models.KIND_INCOMING_GROUP:    {"synthetic": False, "buffer_internal": False},
     pipeline_models.KIND_RAPID_FIRE:        {"synthetic": True,  "buffer_internal": True},
-    pipeline_models.KIND_PROACTIVE_SPEECH:  {"synthetic": True,  "buffer_internal": True},
     pipeline_models.KIND_PROACTIVE_PRIVATE: {"synthetic": True,  "buffer_internal": True},
     pipeline_models.KIND_PROACTIVE_GROUP:   {"synthetic": True,  "buffer_internal": True},
     pipeline_models.KIND_RETROACTIVE_REVIEW: {"synthetic": True, "buffer_internal": False},
@@ -188,8 +187,7 @@ def test_proactive_kinds_are_synthetic():
     公开发到群里。
     """
     for kind in (pipeline_models.KIND_PROACTIVE_PRIVATE,
-                 pipeline_models.KIND_PROACTIVE_GROUP,
-                 pipeline_models.KIND_PROACTIVE_SPEECH):
+                 pipeline_models.KIND_PROACTIVE_GROUP):
         assert pipeline_models.is_synthetic_source(kind), (
             f"{kind} 未被判为合成轮 —— 名义 sender（admin）的成员域画像会被注入"
         )
@@ -198,8 +196,7 @@ def test_proactive_kinds_are_synthetic():
 def test_proactive_kinds_skip_the_reply_buffer():
     """主动发言不得被投回 reply_buffer（否则自我延迟/自我合并）。"""
     for kind in (pipeline_models.KIND_PROACTIVE_PRIVATE,
-                 pipeline_models.KIND_PROACTIVE_GROUP,
-                 pipeline_models.KIND_PROACTIVE_SPEECH):
+                 pipeline_models.KIND_PROACTIVE_GROUP):
         assert kind in pipeline_models.BUFFER_INTERNAL_SOURCE_KINDS
 
 

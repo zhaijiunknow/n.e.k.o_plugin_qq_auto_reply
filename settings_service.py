@@ -1087,11 +1087,9 @@ class QQSettingsService:
         attention_lock_seconds = kwargs.get("attention_lock_seconds")
         if attention_lock_seconds is not None:
             self.plugin._qq_settings["attention_lock_seconds"] = max(0, int(attention_lock_seconds))
-        # 群静默多久后主动破冰（0=禁用）。原来是 `icebreaker_cold_threshold`（数
-        # 焦点切换次数）—— 跨群取舍删掉后没有切换事件，判据换成每群自己的静默时长。
-        icebreaker_idle_seconds = kwargs.get("icebreaker_idle_seconds")
-        if icebreaker_idle_seconds is not None:
-            self.plugin._qq_settings["icebreaker_idle_seconds"] = max(0, int(icebreaker_idle_seconds))
+        # 主动破冰 + 休眠的四个键（icebreaker_idle_seconds / icebreaker_hold_seconds /
+        # icebreaker_dormant_enabled / icebreaker_dormant_seconds）随功能一起删除，
+        # 见 docs/SESSION-HANDOFF.md §42。
         attention_maintenance_interval_seconds = kwargs.get("attention_maintenance_interval_seconds")
         if attention_maintenance_interval_seconds is not None:
             self.plugin._qq_settings["attention_maintenance_interval_seconds"] = max(
@@ -1113,16 +1111,6 @@ class QQSettingsService:
                 0, int(retroactive_review_cooldown_seconds),
             )
         # 破冰后按住焦点的秒数（0=不按）。
-        icebreaker_hold_seconds = kwargs.get("icebreaker_hold_seconds")
-        if icebreaker_hold_seconds is not None:
-            self.plugin._qq_settings["icebreaker_hold_seconds"] = max(0, int(icebreaker_hold_seconds))
-        # 破冰没人接 → 群休眠（开关 + 自动醒秒数，0=一直休直到被 @）。
-        icebreaker_dormant_enabled = kwargs.get("icebreaker_dormant_enabled")
-        if icebreaker_dormant_enabled is not None:
-            self.plugin._qq_settings["icebreaker_dormant_enabled"] = bool(icebreaker_dormant_enabled)
-        icebreaker_dormant_seconds = kwargs.get("icebreaker_dormant_seconds")
-        if icebreaker_dormant_seconds is not None:
-            self.plugin._qq_settings["icebreaker_dormant_seconds"] = max(0, int(icebreaker_dormant_seconds))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))

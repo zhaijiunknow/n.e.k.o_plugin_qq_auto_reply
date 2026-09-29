@@ -62,17 +62,19 @@ class QQGroupAttentionState:
       - ``warm``（热聊中）：本群在 ``attention_heat_warm_gap_seconds`` 之内有人说过话 →
         随时间增长（消息/@ 加速；情绪调制速率）
       - ``cooling``（凉下来了）：静默超过那个窗口 → 随时间回落
-      - ``dormant``（休眠）：破冰没人接 → 不涨也不掉，等 @ 唤醒
 
     2026-09-29 之前这里是 rise/fall **相位** + 蜜月 + 让位。那套东西的前提是"同一时刻
     只有一个群能说话"（跨群焦点竞争）：rise = 攒分夺冠、蜜月 = 夺冠后的纯积累期、
     fall = "让位给别的群"。跨群取舍删除后没有对手可让、没有冠军可加冕，于是换成
     "**这个群自己热不热**"—— 判据只有本群最后一条消息的时刻与接话反馈，不看任何别的群。
+
+    原来的第三档 ``dormant``（休眠）与**主动破冰**是同一天一起删除的：休眠的唯一触发源
+    就是"她主动开口没人接"。墓碑见文件末尾 `## 已删除：主动破冰 + 休眠`。
     """
 
     group_id: str
     attention_score: float = 0.0      # 唯一标量 0~10
-    heat: str = "warm"                # warm | cooling | dormant（每次推进按本群时间戳重算）
+    heat: str = "warm"                # warm | cooling（每次推进按本群时间戳重算）
     # ── 时间戳 ──
     last_decay_at: int = 0            # 上次相位推进时刻（幂等推进用）
     last_message_at: int = 0
@@ -100,23 +102,6 @@ class QQGroupAttentionState:
     feedback_settled_at: int = 0      # 上次结算时刻
     feedback_tier: str = ""           # 上次结算结论："" | silent | quiet | warm
     feedback_msgs: int = 0            # 上次结算时计入的条数
-    # ── 休眠（破冰没人接 → 让位给其他群）──
-    # 使用者 2026-09-27 的口径：「如果破冰一次还是没有人接话，可以直接把这个群拖入
-    # 休眠状态，用其他群竞态。休眠的群可以用 @ 唤醒。」以及「**没 @ 一直休**」。
-    #
-    # 与「锁」是**相反**的两个信号，别合并：锁 = 有人叫我，我独占焦点；休眠 = 我主动
-    # 开口也没人理，我把位置让出去。分数仍然照常积累（醒来时不用从零开始），只是
-    # 休眠期间不参与焦点竞争。
-    #
-    # 「一直休」用**独立的布尔量**表示，不用"一个很大的时间戳"或 `-1` 哨兵：
-    # 一个 int 同时兼三种含义（0=没睡 / >now=到点醒 / 别的=永远）迟早会被某处
-    # `or` 或比较写错，而这是使用者明确要的行为，值得用两个字段说明白。
-    dormant_until: int = 0            # 自动醒的时刻；0 = 不自动醒（此时看下面那个 bool）
-    dormant_forever: bool = False     # True = 一直休，只有 @ 能唤醒
-    #: 当前这一轮反馈周期是不是**主动开口**（冷场破冰）开的。
-    #: 只有它命中"没人接"才进入休眠 —— 普通回复没人接是常态（她在热闹群里插一句
-    #: 本就未必有人应），不该因此把群睡掉。结算或她再次发言后清零。
-    proactive_pending: bool = False
 
     def dimension_dict(self) -> dict[str, float]:
         """展示用：标量 + 热度 + 情绪是否活跃。"""
@@ -151,9 +136,6 @@ class QQGroupAttentionState:
             "feedback_settled_at": int(self.feedback_settled_at),
             "feedback_tier": str(self.feedback_tier or ""),
             "feedback_msgs": int(self.feedback_msgs),
-            "dormant_until": int(self.dormant_until),
-            "dormant_forever": bool(self.dormant_forever),
-            "proactive_pending": bool(self.proactive_pending),
         }
 
     @classmethod
@@ -182,11 +164,9 @@ class QQGroupAttentionState:
             feedback_settled_at=int(data.get("feedback_settled_at") or 0),
             feedback_tier=str(data.get("feedback_tier") or ""),
             feedback_msgs=int(data.get("feedback_msgs") or 0),
-            # 旧存档没有这几个键 → 0/False：等价于「从没休眠过」。**不能**回落到
-            # "从现在开始睡"：升级后重启不该把好端端的群睡掉。
-            dormant_until=int(data.get("dormant_until") or 0),
-            dormant_forever=bool(data.get("dormant_forever") or False),
-            proactive_pending=bool(data.get("proactive_pending") or False),
+            # 旧存档里的 `dormant_until` / `dormant_forever` / `proactive_pending` **不再读**：
+            # 休眠随主动破冰一起删除。这是有意的 —— 不清掉的话，那些群会被一个永远没有
+            # 触发源的标记冻住（`_advance_heat` 曾对 dormant 档直接 return，分数再也不会动）。
         )
         # 旧维度模型（四维加权分）与相位时代（rise/fall + 蜜月）的存档都能读：
         # 分数保留，热度不读旧值 —— 它由 `_advance_heat` 按本群时间戳重算。
@@ -203,7 +183,7 @@ class QQAttentionService:
         #: 当年刻意不复用它的理由（"硬闸的计数口径一改就会连带改提示词行为，两者绑在
         #: 一起以后没人敢动"）随硬闸一同失效 —— 现在 `pacing_hint` 就是频率的唯一机制，
         #: 口径由它自己定，不需要再与别人对齐。
-        #: 两个写入点：`update_on_reply`（普通回复）与 `note_proactive_speech`（破冰）。
+        #: 唯一的写入点是 `update_on_reply`（她说话）。主动破冰已删除，不再有第二个。
         self._reply_times: dict[str, list[int]] = {}
 
     async def load_cached_state(self) -> None:
@@ -422,132 +402,6 @@ class QQAttentionService:
         """她发言后多少条回应算「聊起来了」。"""
         return max(1, int(self._setting("attention_feedback_warm_count", 3)))
 
-    # ── 休眠（破冰没人接 → 让位给其他群）──
-
-    def _dormant_enabled(self) -> bool:
-        """破冰没人接要不要把群休眠（总开关）。"""
-        return bool(self._setting("icebreaker_dormant_enabled", True))
-
-    def _dormant_seconds(self) -> int:
-        """休眠多久自动醒（秒）。**0 = 一直休**（只有 @ 能唤醒）—— 这是默认口径。
-
-        使用者 2026-09-27 的两句：「如果破冰一次还是没有人接话，可以直接把这个群拖入
-        休眠状态，用其他群竞态。休眠的群可以用 @ 唤醒」，以及追问后的
-        「**没 @ 一直休**」。所以默认 0 = 不自动醒，>0 才给一个到期时间。
-
-        群里自己热起来**不会**提前结束休眠（那是另一个产品选择，没实现）；分数照常
-        积累，所以一旦被 @ 唤醒，她不必从零开始。
-        """
-        return max(0, int(self._setting("icebreaker_dormant_seconds", 0)))
-
-    def is_dormant(self, group_id: str, *, now: int | None = None) -> bool:
-        """这个群现在是否处于休眠（不参与焦点竞争）。
-
-        走 `_is_asleep`（含总开关）：开关关掉时对外也必须报"没睡"，
-        否则这个查询与 `_choose_focus_state` 的实际行为会各说各话。
-        """
-        st = self._load_state(str(group_id or "").strip())
-        return self._is_asleep(st, int(now if now is not None else self._current_time()))
-
-    @staticmethod
-    def _state_is_dormant(state: QQGroupAttentionState, now: int) -> bool:
-        if bool(getattr(state, "dormant_forever", False)):
-            return True
-        return int(state.dormant_until or 0) > int(now or 0)
-
-    def _is_asleep(self, state: QQGroupAttentionState, now: int) -> bool:
-        """焦点竞争里真正生效的判定：**总开关关掉时谁都不算睡**。
-
-        为什么要在这里再问一次开关：关掉开关的直觉是"让它们都回来"，而休眠标记是
-        已经写在状态里的（还落过盘）。只在"新入睡"那一侧问开关的话，用户关掉之后
-        会发现没有任何变化 —— 一个关不掉的开关比没有开关更糟。
-        """
-        if not self._dormant_enabled():
-            return False
-        return self._state_is_dormant(state, now)
-
-    def _apply_dormancy(self, state: QQGroupAttentionState, now: int, *, reason: str) -> bool:
-        """把"该睡了"写进 state（**不写盘、不打日志** —— 两条调用路径共用一份判据）。
-
-        `enter_dormancy`（公开入口）与 `_settle_feedback`（破冰结算）都要做这件事，
-        而这里最容易出的错是**两处判据漂移**（一处看零、一处看负）。所以只留一份：
-
-        · 开关关掉 → 不睡；
-        · `icebreaker_dormant_seconds > 0` → 到点自动醒；
-        · `== 0` → 一直休（使用者的默认口径）。
-
-        顺带把破冰那把锁也放掉：锁是"给她几拍时间等人接"，既然已经判定没人接，
-        再锁着就是**跟休眠打架** —— `_choose_focus_state` 的锁判定在休眠过滤之前，
-        留着锁会让"让位给别的群"再迟几十秒才生效。
-        """
-        if not self._dormant_enabled() or self._state_is_dormant(state, now):
-            return False
-        seconds = self._dormant_seconds()
-        state.dormant_until = now + seconds if seconds > 0 else 0
-        state.dormant_forever = seconds <= 0
-        state.lock_until = 0
-        state.last_focus_reason = f"dormant:{reason}"
-        return True
-
-    def _dormancy_phrase(self, state: QQGroupAttentionState) -> str:
-        return "一直休（只有 @ 能唤醒）" if state.dormant_forever else f"{self._dormant_seconds()}s 后自动醒"
-
-    def enter_dormancy(self, group_id: str, *, reason: str = "no_reply", now: int | None = None) -> bool:
-        """把群拖入休眠：休眠期内它不参与焦点竞争，其他群自由竞态。
-
-        返回 True 表示真的睡了（被关掉 / 已在睡 / 群号为空时返回 False）。
-
-        **不动分数、不动焦点字段**：
-        · 分数照常积累 —— 醒来时不必从零熬，这与「看一眼新群、没兴趣就回旧群」一致；
-        · `last_focus_at` 留着 —— 回溯审核（RetroReview）拿它当"上次看到哪"的游标，
-          清零会让它把很久以前的消息重新补一遍。
-
-        **会顺手放掉破冰那把锁**（见 `_apply_dormancy`）。@ 之后的锁不受影响 ——
-        那是"有人叫我"，不该被休眠吃掉。
-        """
-        key = str(group_id or "").strip()
-        if not key:
-            return False
-        ts = int(now if now is not None else self._current_time())
-        state = self._load_state(key)
-        if not self._apply_dormancy(state, ts, reason=reason):
-            return False
-        where = self._dormancy_phrase(state)
-        self._write_state(state)
-        self.plugin._emit_log(
-            "INFO",
-            f"[Attention] 群{key} 进入休眠（{reason}，{where}），期内不参与焦点竞争",
-        )
-        if self.plugin.logger:
-            self.plugin.logger.info(
-                f"[Attention] 群 {key} 进入休眠（{reason}，{where}）：破冰没人接，"
-                f"先让位给别的群；@ 即醒"
-            )
-        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
-        return True
-
-    def wake_from_dormancy(self, group_id: str, *, reason: str = "at") -> bool:
-        """唤醒休眠中的群（点名类路径都会经过这里）。返回 True 表示刚从休眠里醒过来。
-
-        实际上只有 **@** 走得到：其余点名路径（关键词唤醒 / 引用她）在门控的焦点群
-        分支里，而休眠群不是焦点。`lock_group` 里为了少写一次盘而内联了同样的清理。
-        """
-        key = str(group_id or "").strip()
-        if not key:
-            return False
-        state = self._load_state(key)
-        if not (int(state.dormant_until or 0) or bool(state.dormant_forever)):
-            return False
-        state.dormant_until = 0
-        state.dormant_forever = False
-        state.last_focus_reason = f"wake:{reason}"
-        self._write_state(state)
-        self.plugin._emit_log("INFO", f"[Attention] 群{key} 被唤醒（{reason}），重新参与焦点竞争")
-        if self.plugin.logger:
-            self.plugin.logger.info(f"[Attention] 群 {key} 从休眠中唤醒（{reason}），重新参与焦点竞争")
-        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
-        return True
-
     def _frequency_target_gap(self) -> float:
         """发言频率的目标间隔（秒）：恰好这个节奏时增速为基准 1.0×。"""
         return max(1.0, float(self._setting("attention_frequency_target_gap", 30.0)))
@@ -624,9 +478,7 @@ class QQAttentionService:
         两个档，判据只有本群的时间戳：
 
         - ``warm``：最近 ``attention_heat_warm_gap_seconds`` 之内有人说过话 → 增长；
-        - ``cooling``：静默超过那个窗口 → 回落（正向情绪跌得慢）；
-        - ``dormant``：休眠期间**不涨也不掉** —— 她主动开口没人接的群，分数该冻在
-          原处等被叫醒，而不是自己悄悄掉到 0。
+        - ``cooling``：静默超过那个窗口 → 回落（正向情绪跌得慢）。
 
         ⚠️ 这里**不再有** rise/fall 相位、蜜月、让位、以及"到线就转回落"的切换：
         那套东西的前提是"同一时刻只有一个群能说话"。跨群取舍删除后（2026-09-29）：
@@ -638,8 +490,6 @@ class QQAttentionService:
             return
         state.last_decay_at = now
         state.heat = self._heat_tier(state, now)
-        if state.heat == "dormant":
-            return
         emo = self._emotion_multiplier(state.emotion)
 
         if state.heat == "cooling":
@@ -669,14 +519,11 @@ class QQAttentionService:
     def _heat_tier(self, state: QQGroupAttentionState, now: int) -> str:
         """这个群现在属于哪一档（纯函数式判据，全部来自本群自己的状态）。
 
-        - 休眠优先：`dormant_forever` 或 `dormant_until > now`；
-        - 然后是"最近有没有人说话"：窗口内 → warm，否则 cooling。
+        - 判据只有"最近有没有人说话"：窗口内 → warm，否则 cooling。
 
         **不看分数**：分数是热度的结果，不是判据 —— 否则会绕回"到线就转档"那套
         （那正是被删掉的相位机在做的事）。
         """
-        if bool(state.dormant_forever) or int(state.dormant_until or 0) > now:
-            return "dormant"
         gap = self._heat_warm_gap_seconds()
         if gap <= 0:
             return "warm"
@@ -801,14 +648,6 @@ class QQAttentionService:
             if int(state.lock_until or 0) > now:
                 return state
         # ── 优先级 1.5：休眠群不参与竞争（破冰没人接 → 让位给其他群）──────
-        # 放在锁**之后**：锁是「有人点名叫我」，必须优先于「我自己睡一会儿」；
-        # `lock_group` 同时会清休眠，这里的顺序只是第二道保险。
-        #
-        # 全都在睡时保持原样（不筛）：否则焦点变成 None，所有群的消息都会被判
-        # non_focus —— 那就不是"让位给别的群"，而是"她彻底不说话了"。
-        awake = [state for state in states if not self._is_asleep(state, now)]
-        if awake:
-            states = awake
         # ── 优先级 2：分数仲裁（无锁时的连续归属）──────────────────────
         # 归属每 tick 重算 ⇒ 「看一眼新群，没兴趣就回旧群」是免费的：旧群只要
         # 还是最有意思的，下一个 tick 自动回去，不需要等相位走完一轮。
@@ -965,9 +804,6 @@ class QQAttentionService:
         # 新的回复周期从这里开始：把「她上次发言之后的回应数」清零，
         # 于是上一次周期的计数（已结算或已作废）不会漏进这一轮。
         state.msgs_after_reply = 0
-        # 她**回了话**就说明上一个破冰周期已经有人接（否则她不会在此发言）——
-        # 撤掉休眠旗，免得这一轮没人接时把一个正常群睡掉。
-        state.proactive_pending = False
         # 频率软提示用的回复时刻环（见 pacing_hint）。
         times = self._reply_times.setdefault(normalized_group_id, [])
         times.append(now)
@@ -1031,29 +867,6 @@ class QQAttentionService:
         state.feedback_msgs = count
         if delta:
             state.last_focus_reason = f"feedback:{tier}"
-        # 破冰没人接 → 这个群先睡一会儿，把焦点让给别的群（使用者 2026-09-27 的口径）。
-        #
-        # 只有**主动开口**那一轮算数：普通回复没人接是常态（她在热闹群里插一句本就
-        # 未必有人应），拿它当休眠理由会把好群一个个睡掉。`proactive_pending` 由
-        # `note_proactive_speech` 立、在这里清 —— 无论睡不睡都清，一次破冰只判一次。
-        if state.proactive_pending:
-            state.proactive_pending = False
-            if tier == "silent" and self._apply_dormancy(
-                state, now, reason="icebreaker_no_reply",
-            ):
-                # 直接改状态而不调 `enter_dormancy`（后者会自己 `_write_state`）：
-                # 这里还有上面刚算出的分数/结算字段要一起落盘，分两次写会让中间态
-                # 被前端读到（分数已扣、休眠还没生效）。
-                where = self._dormancy_phrase(state)
-                self.plugin._emit_log(
-                    "INFO",
-                    f"[Attention] 群{state.group_id} 破冰后无人接话 → 休眠（{where}），"
-                    f"焦点让给其他群（@ 可唤醒）",
-                )
-                if self.plugin.logger:
-                    self.plugin.logger.info(
-                        f"[Attention] 群 {state.group_id} 破冰后无人接话 → 休眠（{where}，@ 即醒）"
-                    )
         return tier
 
     def feedback_line(self, group_id: str, *, now: int | None = None) -> str:
@@ -1097,7 +910,7 @@ class QQAttentionService:
         最该接的情况，反而被标注劝退。
 
         判据直接用现成的反馈闭环状态，不另存字段：`msgs_after_reply` 在
-        `note_proactive_speech` / `update_on_reply` 里清零，别人每说一条 +1 ——
+        `update_on_reply` 里清零，别人每说一条 +1 ——
         而门控在**建提示词之前**已经为当前这条 +1 过，所以它 `== 1` 恰好就是
         "她说完之后的第一条"。再加一个时间窗（复用反馈窗口，默认 90s），
         免得十分钟后冒出来的一句也被算成"接她的话"。
@@ -1267,7 +1080,6 @@ class QQAttentionService:
             heat_label = {
                 "warm": "热聊中（刚还有人说话）",
                 "cooling": "凉下来了（这个群安静有一会儿了）",
-                "dormant": "休眠中（她主动开口没人接，等被叫）",
             }.get(str(this_state.get("heat") or ""), "未知")
             parts.append(
                 f"这个群当前的注意力 {float(this_state.get('attention_score', 0)):.1f}，"
@@ -1370,26 +1182,6 @@ class QQAttentionService:
         state = self._load_state(normalized_group_id)
         now = self._current_time()
         current_id = self._current_focus_group_id([self._load_state(gid) for gid in self._normalized_groups()])
-        # 被点名 = 唤醒。**唤醒口 = 所有"点名叫她"的路**：@（gate 第 2 步）、关键词
-        # 与"引用她"（第 4 步）。这三条 2026-09-29 起全部排在注意力闸**之前**，所以
-        # 休眠群里被点到就能走到这里；普通闲聊则卡在注意力闸上（本群分数低于保持线
-        # → 不搭话），休眠自然保持。
-        #
-        # 跨群取舍删除前不是这样：关键词与"引用她"在**焦点群分支**里，休眠群不是焦点
-        # → 走不到那两步，于是当时的口径是"唤醒口只有 @"。看门狗
-        # `test_only_named_paths_can_wake_a_sleeping_group` 钉住现在的顺序。
-        # `mark_focus` 顺手清休眠是为了让这几条路径一旦走到就自洽，不是宣称它们能
-        # 唤醒 —— 唤醒是 @/点名带来的，不是 mark_focus 自己发明的。
-        if int(state.dormant_until or 0) or bool(state.dormant_forever):
-            state.dormant_until = 0
-            state.dormant_forever = False
-            self.plugin._emit_log(
-                "INFO", f"[Attention] 群{normalized_group_id} 从休眠中唤醒（点名）",
-            )
-            if self.plugin.logger:
-                self.plugin.logger.info(
-                    f"[Attention] 群 {normalized_group_id} 从休眠中唤醒（点名），重新参与焦点竞争"
-                )
         state.last_focus_at = now
         if current_id != normalized_group_id or int(state.focus_acquired_at or 0) <= 0:
             state.focus_acquired_at = now
@@ -1425,19 +1217,18 @@ class QQAttentionService:
     # 「没人叫我，我自己按兴趣看哪」。两者是不同信号，不该合成一个数。
 
     def lock_group(self, group_id: str, *, seconds: int | None = None, reason: str = "at") -> None:
-        """把注意力锁在某个群一段时间（`@猫娘` / 唤醒词 / **主动破冰**）。
+        """把注意力锁在某个群一段时间（`@猫娘` / 唤醒词）。
 
         锁内 `get_focus_group()` 直接返回该群，其余群不参与竞争；到期自动解除。
         重复锁会**重置**计时（再叫一次就重新锁满）—— 这与人对重复召唤的直觉一致。
 
-        ``seconds``：不传就用 `attention_lock_seconds`（@ 的既有行为）；
-        主动破冰传 `icebreaker_hold_seconds` —— 它要的是"**我刚开口，别马上把我拽走**"，
-        与"有人点名叫我"是两种来由，所以时长可分开配、原因也写进 `last_focus_reason`
-        以便事后分辨（真机 2026-09-27 14:28 的 bug：破冰后下一拍焦点就被最热闹的群抢走，
-        回她话的人被 `non_focus` 丢掉）。
+        ``seconds`` 不传就用 `attention_lock_seconds`（@ 的既有行为）。
 
-        **被锁 = 也叫醒了**：@ 一个正在休眠的群必须先把它唤醒，否则锁与休眠会互相
-        打架（锁要独占焦点，休眠要把这个群从竞争里剔除）。
+        ⚠️ 跨群取舍删除（2026-09-29）之后，"锁"**已经不影响任何群能不能说话**了：
+        门控、必要度、复读三处都按本群自己的分数判定。它现在只剩两个作用：
+        ① 决定 UI 快照里显示哪个群（`_choose_focus_state` 的优先级 1）；
+        ② 让按群维护循环读到的 `lock_until` 参与"这个群有人点名，别另起话题"的判断。
+        那句"期内独占焦点"的日志因此是不准确的 —— 属于 §40.5 待清理的那一批。
         """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
@@ -1447,18 +1238,6 @@ class QQAttentionService:
         state = self._load_state(normalized_group_id)
         if hold <= 0:
             return
-        if int(state.dormant_until or 0) or bool(state.dormant_forever):
-            # 就地清、不调 `wake_from_dormancy`：下面要写同一个 state，分两次写盘
-            # 会让前端读到"已醒但还没上锁"的中间态。
-            state.dormant_until = 0
-            state.dormant_forever = False
-            self.plugin._emit_log(
-                "INFO", f"[Attention] 群{normalized_group_id} 从休眠中唤醒（{reason}）",
-            )
-            if self.plugin.logger:
-                self.plugin.logger.info(
-                    f"[Attention] 群 {normalized_group_id} 从休眠中唤醒（{reason}），重新参与焦点竞争"
-                )
         state.lock_until = now + hold
         state.last_focus_reason = "lock" if reason == "at" else f"lock:{reason}"
         self._write_state(state)
@@ -1472,33 +1251,6 @@ class QQAttentionService:
                 f"[Attention] 群 {normalized_group_id} 上锁 {hold}s（reason={reason}），期内独占焦点"
             )
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
-
-    def note_proactive_speech(self, group_id: str, *, now: int | None = None) -> None:
-        """她**主动开口**之后的记账（冷场破冰 / 主动话题）。
-
-        与 `update_on_reply` 的差别是刻意的：发言消耗的语义是"我说完了，该让位了"，
-        而主动开口要的恰恰相反（把这个群按住）。但另外两件事必须照做，否则会留下
-        两个静默的窟窿：
-
-        · `msgs_after_reply` 清零 → 接话反馈闭环（"有人接我的破冰吗"）才有起点；
-          不清的话，上一个回复周期的计数会漏进这一轮，反馈永远算在别人头上；
-        · 频率环记一笔 → 主动发言也是她说了话，`[Pacing]` 软提示与硬闸的口径才一致。
-        """
-        key = str(group_id or "").strip()
-        if not key:
-            return
-        ts = int(now if now is not None else self._current_time())
-        state = self._load_state(key)
-        state.last_reply_at = ts
-        state.msgs_after_reply = 0
-        # 这一轮反馈周期是**主动开口**开的 → 立旗。只有它命中"没人接"才休眠
-        # （见 `_settle_feedback`）；普通回复没人接是常态，不该把群睡掉。
-        state.proactive_pending = True
-        self._write_state(self._normalize_state(state))
-        times = self._reply_times.setdefault(key, [])
-        times.append(ts)
-        window = self._pacing_window_seconds()
-        times[:] = [t for t in times if ts - t < window][-20:]
 
     def release_lock(self, group_id: str) -> None:
         """提前解除锁（如锁群被移除信任）。"""
@@ -1705,15 +1457,6 @@ class QQAttentionService:
             # emotion_display 到期 → 重置为 calm
             if now > state.emotion_display_until and state.emotion_display != "calm":
                 state.emotion_display = "calm"
-            # 总开关被关掉 → 把休眠标记**清干净**（不只是"判定上不生效"）。
-            # 不清的话，用户把开关关掉又打开，那些旧标记会立刻让群重新睡下 ——
-            # 看上去就像"开关没记住我刚才关过"。
-            if (int(state.dormant_until or 0) or bool(state.dormant_forever)) and not self._dormant_enabled():
-                state.dormant_until = 0
-                state.dormant_forever = False
-                self.plugin._emit_log(
-                    "INFO", f"[Attention] 群{group_id} 休眠已解除（破冰休眠总开关关闭）",
-                )
             state = self._apply_decay(state, now)
             self._decay_emotion(state, now)
             # 接话反馈：**由时间触发**的结算点（没有新消息的群也要能结算出「没人接」）。
