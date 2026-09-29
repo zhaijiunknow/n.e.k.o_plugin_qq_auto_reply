@@ -30,7 +30,6 @@ from plugin.plugins.qq_auto_reply.pipeline_models import QQReplyRequest
 from plugin.plugins.qq_auto_reply.prompt_builder import QQPromptBuilder
 from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
 from plugin.plugins.qq_auto_reply.reply_necessity import (
-    NAMED_BOT_SCORE,
     NecessitySignals,
     score_necessity,
 )
@@ -308,13 +307,19 @@ def test_penalty_is_configurable_and_zero_disables_it():
     assert score_necessity(signals, addressee_penalty=50.0).breakdown.addressee == -50
 
 
-def test_named_bot_adds_content_score():
+def test_named_bot_no_longer_scores_in_necessity():
+    """叫她的名字**不再**在必要性打分里加分：它现在是门控层的等同 @ 旁路。
+
+    使用者口径（2026-09-29）：「叫猫娘名字也等于@她」—— 门控第 2 步就返回了，
+    打分这一关根本走不到，原 `NAMED_BOT_SCORE = 40` 已删。这里钉住"不加分"，
+    免得有人看到 `named_bot` 又往打分里塞一次（那就成了两套口径）。
+    """
     v = score_necessity(_signals(
         message_text="今天天气不错", focus_active=False,
         addressee_kind=addressing.KIND_NAMED_BOT,
     ))
-    assert v.breakdown.addressee == NAMED_BOT_SCORE
-    assert any("叫名字" in r for r in v.breakdown.reasons)
+    assert v.breakdown.addressee == 0
+    assert not any("叫名字" in r for r in v.breakdown.reasons)
 
 
 def test_no_verdict_means_no_change():

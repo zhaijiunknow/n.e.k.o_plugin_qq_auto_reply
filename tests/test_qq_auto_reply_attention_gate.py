@@ -3,7 +3,9 @@
 Pins the gating order of `attention_gate_service.evaluate()` (2026-09-29, after the
 cross-group focus selection was removed -- user's words: 「每个群自己管自己的注意力」):
 
-1. @bot direct mention -> the only bypass, force-replies in any group
+1. @bot direct mention -- or **her name in the text** (`named_bot`, 2026-09-29
+   user's words: 「叫猫娘名字也等于@她」) -- the only bypass, force-replies
+   in any group
 2. blacklist -> ignored everywhere
 3. groups outside the attention competition -> pass through to the downstream permission layer
 4. keyword / reply-to-bot -> force reply **before** the attention floor, so being
@@ -118,6 +120,61 @@ async def _evaluate(plugin, **kwargs) -> tuple:
     default.update(kwargs)
     decision = await gate.evaluate(**default)
     return decision, gate
+
+
+# ── 叫她的名字 = @她（2026-09-29 使用者口径）────────────────────────
+
+
+def test_named_bot_is_as_good_as_an_at():
+    """凉群里叫她的名字 → 一样强制回复（从"打分里 +40"升级成门控层的等同 @）。
+
+    判据来自 `addressing` 的 `named_bot` 档：没人被 @、也没引用谁，只是文本里有她的
+    名字/别名。它会走 @ 那条一模一样的旁路（锁群 + 抬分 + 清退避），只是 reason
+    分开写，日志里能分辨这一轮是怎么被叫起来的。
+    """
+    attention = _FakeAttention(scores={"g1": 0.2})       # 凉群：普通消息会被拦
+    plugin = _plugin(attention)
+    plugin._qq_settings = {"addressee_names": ["猫娘"], "backlog_labels": []}
+
+    decision, _ = asyncio.run(_evaluate(plugin, group_id="g1", message_text="猫娘今天怎么样"))
+
+    assert decision.action == "reply"
+    assert decision.reason == "named_bot", decision.reason
+    assert decision.force_reply is True
+    assert "lock_group:g1" in attention.calls, "@ 与叫名字该走同一条锁群路径"
+    assert "mark_focus:g1" in attention.calls
+    assert "wake_boost:g1" in attention.calls
+
+
+def test_a_plain_message_without_her_name_is_still_blocked_in_a_cold_group():
+    """反面：没叫她的名字就还是走注意力闸（别把这一档放宽成"什么都能过"）。"""
+    attention = _FakeAttention(scores={"g1": 0.2})
+    plugin = _plugin(attention)
+    plugin._qq_settings = {"addressee_names": ["猫娘"], "backlog_labels": []}
+
+    decision, _ = asyncio.run(_evaluate(plugin, group_id="g1", message_text="今天天气不错"))
+
+    assert decision.action == "ignore"
+    assert decision.reason.startswith("low_attention")
+
+
+def test_a_message_atting_someone_else_is_not_saved_by_her_name():
+    """既 @ 了别人、又提她名字 → 仍然算"冲着别人说的"，名字救不回来。
+
+    判据顺序没变：`named_bot` 是第 6 档，排在 `at_other` 之后。这一条防的是"把名字
+    判据提到 @别人 之前"，那会让"@张三 猫娘你看呢"这种插话式的消息也变成点名她。
+    """
+    attention = _FakeAttention(scores={"g1": 0.2})
+    plugin = _plugin(attention)
+    plugin._qq_settings = {"addressee_names": ["猫娘"], "backlog_labels": []}
+
+    decision, _ = asyncio.run(_evaluate(
+        plugin, group_id="g1", message_text="猫娘你看呢",
+        mentioned_user_ids=["someone-else"],
+    ))
+
+    assert decision.action == "ignore", decision.reason
+    assert decision.reason.startswith("low_attention")
 
 
 # ── 注意力闸：只看本群 ─────────────────────────────────────────────

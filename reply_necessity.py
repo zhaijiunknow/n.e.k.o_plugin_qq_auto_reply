@@ -81,15 +81,6 @@ SELF_PENALTY_MAX = 15.0         # 存在感惩罚上限（2026-09-29 由 25 降�
 #: 「她要靠内容分或积压压力把这一条捞回来」——一条"@了别人但顺手问她"的消息仍然接得住。
 ADDRESSED_ELSEWHERE_PENALTY_DEFAULT = 30.0
 
-#: 文本里出现她的名字/别名（没 @ 她）时的**内容分**加成。
-#:
-#: 刻意不进"相关分"阶梯（那 5 个常数是 MaiBot 的、注释标了出处，动它会同时改变
-#: 阈值 40 的标定）：它加在内容分里，于是"叫了她的名字"这件事**恰好压在阈值线上**
-#: （40 × 频率因子 0.5~1.0 = 20~40）—— 群够活跃（factor 拉满）时她独自过线，
-#: 否则要靠提问/请求/积压把它推过去。群里提到她名字未必是在叫她，这个量级就是
-#: 那个判断的体现；觉得太敏感就在 `addressee_names` 里少放几个别名。
-NAMED_BOT_SCORE = 40
-
 #: 判定阈值默认值。
 #:
 #: ⚠️ 这个数是**行为旋钮**，不是照抄来的：MaiBot 用 80（它这一关同时承担「攒够几条
@@ -355,17 +346,16 @@ def score_necessity(
 def _addressee(signals: NecessitySignals, penalty: float) -> tuple[int, str]:
     """「谁在跟谁说话」的净增减（与它的可读原因）。
 
-    两件事共用一个组件，因为它们是同一个判断的两面：
-
-    - 明确在跟别人说话（``@别人`` / ``引用别人``）→ 减 ``penalty``；
-    - 文本里叫了她的名字（没 @）→ 加 ``NAMED_BOT_SCORE``。
+    这里只处理"明确在跟别人说话"（``@别人`` / ``引用别人``）→ 减 ``penalty``。
+    文本里叫了她的名字**不在这里**：使用者口径（2026-09-29）「叫猫娘名字也等于@她」，
+    所以 `named_bot` 走的是门控第 2 步的等同 @ 旁路（`attention_gate_service`），
+    在到这一关之前就已经返回了 —— 打分层里再给它加一次分只会是走不到的死分支
+    （原 `NAMED_BOT_SCORE = 40` 已删）。
 
     **只减到"能减"为止，不把分数压成硬零**：真正的"这条根本不该接"由门控层的
     可选硬门控负责（`addressee_ignore_first_at_other`），打分器只表达倾向。
     """
     kind = str(getattr(signals, "addressee_kind", "") or "").strip()
-    if kind == addressing.KIND_NAMED_BOT:
-        return NAMED_BOT_SCORE, "叫名字"
     if kind in addressing.POINTED_ELSEWHERE:
         target = str(getattr(signals, "addressee_target", "") or "").strip()
         reason = "指向别人" if not target else f"指向别人({target})"

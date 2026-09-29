@@ -6575,3 +6575,68 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
           ② 不成立 → DEBUG「他不是正在和她对话的人 → 不反应」，到此为止（不开生成）
           三道都过 → 合成系统消息（_synthetic_source=group_ban_notice）
 生成      绕过门控跑一轮；**说不说由她决定**
+
+---
+
+## 49. 叫她的名字 = @她（2026-09-29）
+
+使用者口径：
+
+> 叫猫娘名字也等于@她
+
+### 49.1 改之前：名字只值"打分里 +40"
+
+`addressing` 早就有 `named_bot` 这一档（没人被 @、也没引用谁，只是文本里出现了她的名字/
+别名，判据阶梯第 6 档，排在 `at_other` 之后）。但它的**唯一作用**是必要性打分里的
+`NAMED_BOT_SCORE = 40` 内容分 —— 那个值刻意压在阈值线上（40 × 频率因子 0.5~1.0 = 20~40），
+群够活跃时独自过线，否则要靠提问/请求/积压把它推过去。当初的注释写着理由：
+「群里提到她名字未必是在叫她，这个量级就是那个判断的体现」。
+
+使用者现在把这个判断推翻了，于是：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 门控第 2 步 | 条件从「@bot 且非引用她」扩成「@bot **或** `named_bot`」—— 走**同一条**旁路（锁群 + `mark_focus` + `wake_boost` + 清空闲退避 + 记进「正在和她对话的人」+ `force_reply`），只把 `reason` 分开写（`named_bot` / `at_bot`），日志里能分辨这一轮是被 @ 叫起来的还是被名字叫起来的 |
+| 2 | `reply_necessity` | `NAMED_BOT_SCORE` 与它的加分支**删掉** —— 门控在更前面就返回了，打分里那一支在生产里永远走不到（留着就是"看起来有效、其实没人走"的死旋钮）。判据本身（`matched_name` / `configured_names`）一个字没动 |
+
+**判据顺序没变**：名字仍是第 6 档，排在 `at_other` 之后 —— 一条既 @ 了别人、又提了她名字的
+消息仍然算「冲着别人说的」，不会被名字救回来（`test_a_message_atting_someone_else_is_not_saved_by_her_name` 钉住）。
+
+### 49.2 名单才是真正的开关（真机现状）
+
+名字清单 = **本体人设里的名字** + 用户在 `addressee_names` 里补的别名
+（`addressing.configured_names`）。真机上：
+
+- 人设名 = 角色数据的 `data[1]`，当前是 **「宅久皖萱」**（`addressing.host_names`）；
+- `addressee_names` 原本是 **空的**；
+
+也就是说：**使用者平时叫的「猫娘」根本不算她的名字** —— 这一档永远不会因为这两个字命中。
+所以这一轮把 `addressee_names` 改成了 `["猫娘"]`（真机 `business_config.json`），
+reload 后生效。
+
+⚠️ 这个键**不在面板上**（`SettingSpec("addressee_names", "list", [])` 既没有 `saveable`
+也没有 `ui`），只能改配置文件。要放到面板上得动面板契约（`test_qq_attention_panel_surface`
+的 `PANEL_CONTROLS`）与 i18n —— 需要的话说一声。
+
+另外提醒：**匹配是子串匹配**且要求名字至少 2 个字（`NAME_MIN_CHARS`）。所以
+「宅久皖萱」要整串出现才算；想让她对「皖萱」「喵喵」也有反应，就得往 `addressee_names`
+里加。加了就等于把那个词升级成 @ 级触发，所以这个清单要**保持短**。
+
+### 49.3 证据
+
+- 插件全量 **1581 passed**；两道 ruff 门全过。
+- 门控侧新增三条：`test_named_bot_is_as_good_as_an_at`（凉群里叫她的名字 → `reply` /
+  `reason=named_bot` / `force_reply` / 锁群与抬分都发生）、
+  `test_a_plain_message_without_her_name_is_still_blocked_in_a_cold_group`（没叫名字照旧被
+  注意力闸拦）、`test_a_message_atting_someone_else_is_not_saved_by_her_name`（判据顺序）。
+- `test_qq_addressee` 里那条 `named_bot` 加分的用例改成 `test_named_bot_no_longer_scores_in_necessity`
+  （钉住"不再在打分里加分"，免得有人又往那边塞一次）。
+- 变异 `tests/verify_named_bot_fail_to_pass.py` **4/4**：名字不再等同 @ → 红；名字路径不强制
+  回复 → 红；用户配的别名清单被忽略 → 红；对照绿。
+
+### 49.4 边界
+
+- 名字档一升级成 @ 级，**误判的代价跟着变大**：群里聊到「猫娘」这两个字（比如在聊别的
+  二次元猫娘）也会让她被叫起来、锁群 90 秒并强制回复。真机上发现这种噪音，处理顺序是
+  **先把别名清单收短**（删掉容易撞词的别名），而不是改判据。
+- 「@ 别人 + 提她名字」不受影响（仍是"冲着别人"）；「引用她」也不受影响（走第 4 步）。

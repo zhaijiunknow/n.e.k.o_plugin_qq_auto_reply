@@ -617,9 +617,16 @@ class QQAttentionGateService:
                 addressed_to_bot=bool(is_at_bot or is_reply_to_bot),
             )
 
-        # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
+        # 2. @bot **或叫她的名字** → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
         #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。
-        if is_at_bot and not is_reply_to_bot:
+        #
+        #    「叫名字」= `addressing` 的 `named_bot` 档（第 6 档：没人被 @、也没引用谁，
+        #    但文本里有她的名字/别名）。使用者口径（2026-09-29）：「叫猫娘名字也等于@她」
+        #    —— 于是它从"必要性打分里 +40（恰好压在阈值线上）"升级成**门控层的等同 @**：
+        #    凉群里叫她的名字也要回头。判据顺序没变（仍在 `at_other` 之后）：既 @ 了别人、
+        #    又提她名字的消息仍然算"冲着别人说的"。
+        named_me = addressee is not None and addressee.kind == addressing.KIND_NAMED_BOT
+        if named_me or (is_at_bot and not is_reply_to_bot):
             # 他找她 → 记进「正在和她对话的人」（与"她回他"合起来才算一来一回）。
             # 放在 `if participates` **之前**：不参与注意力竞争的群也要记 —— 反不反应
             # 是派发层的事（它另按 trusted 与冷却判断），这里只负责事实。
@@ -634,7 +641,11 @@ class QQAttentionGateService:
                 attention.mark_focus(normalized_group_id)
                 attention.wake_boost(normalized_group_id)
                 self._backoff.reset(normalized_group_id)   # 被点名 = 她必须回来，退避作废
-            return GateDecision("reply", reason="at_bot", force_reply=True)
+            return GateDecision(
+                "reply",
+                reason=("named_bot" if named_me else "at_bot"),
+                force_reply=True,
+            )
 
         # 3. 黑名单 → 不处理（对**所有**群生效，含不参与竞争的群：这是全局过滤）
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
