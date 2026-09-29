@@ -248,6 +248,25 @@ def test_maintenance_tick_breaks_ice_in_at_most_one_group():
     assert gate.icebreakers == [GROUP_A, GROUP_B]
 
 
+def test_a_failed_icebreaker_still_uses_the_turns_slot():
+    """**投递失败/模型不开口也算用掉名额**。
+
+    真机 2026-09-29 16:42 的教训：那一轮 QQ 连接断着，破冰投递失败 → `_try_icebreaker`
+    返回 False → 闸门以为这一轮还没破过冰，于是**同一个 tick 里接着破了下一个群**
+    （16:42:23 群 1048307485、16:42:30 群 985066274，相隔 7 秒）。
+    """
+    states = {
+        GROUP_A: _state(last_message_at=NOW - 7200),
+        GROUP_B: _state(last_message_at=NOW - 7200),
+    }
+    gate = _gate(states)
+    gate.icebreaker_result = False          # 她没能说出去（断连 / 模型决定不开口）
+
+    asyncio.run(gate.run_maintenance_tick())
+
+    assert gate.icebreakers == [GROUP_A], "失败的破冰把名额还回去了，同一轮又破了下一个群"
+
+
 def test_maintenance_tick_survives_a_broken_group():
     """某个群的状态坏掉不许让整轮停摆（否则后面的群永远轮不到）。"""
     class _Exploding(_FakeAttention):

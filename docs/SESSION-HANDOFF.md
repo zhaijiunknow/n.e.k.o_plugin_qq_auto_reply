@@ -5746,20 +5746,52 @@ docstring 本次一并改对（保留原文作为"错在哪"的记录）。
   `[Icebreaker] 群 1048307485 已静默 3568s（阈值 1800s），尝试破冰` /
   `[Icebreaker] 群 985066274 已静默 4422s（阈值 1800s），尝试破冰`。
 
-**发现 1：宿主会把插件的初始化跑不止一遍 → 两条维护循环。** 启动标记在同一秒出现两次
-（16:32:08、16:36:08、16:41:23 各两次），而且 16:37:08 与 16:37:13、16:42:23 与 16:42:30
-**两个群相差 5~7 秒各破了一次冰** —— "一轮最多破一次"是按一条循环算的，两条循环就是两次。
-加了进程级单飞闸（`start_proactive_loop` 里的 `_maintenance_owner()`），标记**挂在 `sys` 上
-而不是模块全局**：插件重载会重新导入本模块，模块全局跟着重置，闸门等于不存在。
-挂上之后**真机仍然看到两条启动标记**（同一个 PID 96612 拥有 6199 端口，进程列表里也只有
-一个插件进程），推断另一条来自宿主的插件进程之外那一层（父进程 104920 也会 import 插件拿
-入口/上下文）；**这条还没坐实**，留作下一步：要么让插件侧的进程身份可见（启动日志带 pid），
-要么把"谁在跑"收口到宿主那层。
+**发现 1（已被证伪，留着当教训）：一度以为"宿主跑了两次初始化 → 两条维护循环"。**
+起因是启动标记在同一秒出现两次（16:32:08、16:36:08、16:41:23、16:52:12、16:55:34 各两次），
+而且 16:42:23 与 16:42:30 **两个群相差 7 秒各破了一次冰** —— 看起来像两条循环各破一个。
+**真正的根因是我自己的判据写错了**：`run_maintenance_tick` 里那道"一轮最多一次"的闸门
+写成了
+
+```python
+broke_ice = await self._maybe_break_ice(group_id, now)   # ← 返回的是"她真的说出去了吗"
+```
+
+而那会儿 QQ 连接断着（见发现 2），破冰投递失败 → 返回 `False` → 闸门以为这一轮还没破过冰，
+**同一个 tick 里接着把下一个冷群也破了**。改成"名额算**尝试**不算成功"之后，两条相隔 7 秒
+的破冰不会再出现（投递失败/模型不开口都是常态，不能让它把闸门旁路掉），看门狗
+`test_a_failed_icebreaker_still_uses_the_turns_slot` + 变异钉住。
+启动标记两次则是宿主的 start/stop 各跑一遍（第二次 start 前 owner 已被 stop 清掉，所以
+闸门放行）—— 这一层没有"两条循环同时在跑"的证据，真要坐实得让启动日志带上 pid。
+
+（进程级单飞闸 `_maintenance_owner()` 保留：它防的是**真的**启动两次，代价只有一行代码；
+标记挂 `sys` 而不是模块全局，因为重载会重新导入本模块。）
 
 **发现 2：`reload` 会掐断 NapCat 的反向 WS，而 NapCat 不会自己重连。**
 16:31:25 `OneBot client disconnected` 之后到 16:43 都没有再 `connected`，期间她每次要说话
 都是 `[Reply] … 未投递（中断：RuntimeError: No OneBot client connected）`（§39 那行漏斗
 日志正是靠这个一眼看出来的）。NapCat 进程一直活着（`NapCatWinBootMain`，15:21:59 启动），
 但它的 ws-reverse 客户端不再重试。**恢复办法：在插件界面点「启动 / 一键部署」**
-（`deploy action=ensure/one_click`）。结论写在这里，以后**每次 reload 之后都要确认一次
+（`deploy action=ensure/one_click`）—— 使用者 16:48 点过一次就连上了，此后再 reload
+（16:52:12）2 秒内也自己接回来了。结论写在这里：**每次 reload 之后都要确认一次
 `OneBot client connected`**，别把"她没说话"当成"她不想说"。
+
+### 40.7 前端：这一轮改了哪些字、哪些控件
+
+面板（`static/napcat.html` + `i18n/zh-CN.json` + `i18n/en.json`）：
+
+| 位置 | 改动 |
+|---|---|
+| 破冰输入框（原「冷场破冰阈值 (次)」） | 改成**秒**：标签「群静默多久后主动破冰 (秒, 0=禁用)」、`min/max/step` 0/86400/60、回显与提交换成 `icebreaker_idle_seconds`（默认 1800） |
+| 「焦点发送门控」 | 改名「**本群在聊的线**」+ hint 重写（读本群自己的分数，跨群取舍已删除） |
+| 「焦点切换阈值」 | 改名「**焦点线（分数档位）**」+ hint 重写（不再是"夺冠资格线"） |
+| 引导文案两处 | 「焦点群获得优先回复权」→「每个群自己管自己…」；「焦点切换到新群时回溯补回」→「某个群凉了很久又重新热起来时…」 |
+| 新增 4 个控件（原本只能改配置文件） | 回溯补回的两道闸：`retroactive_review_min_unreviewed`（`cfg-retro-min-unreviewed`）、`retroactive_review_cooldown_seconds`（`cfg-retro-cooldown`）；维护循环两个间隔：`attention_maintenance_interval_seconds`（`cfg-att-maintenance-interval`）、`group_memory_digest_interval_seconds`（`cfg-gm-digest-interval`）——markup + 回显 + 提交 + schema `ui=` 四处齐了，否则「能存能显示但改了不生效」那类假旋钮会重新长出来 |
+
+`test_qq_attention_panel_surface.py` 的契约从 7 个旋钮改成 8 个（多出来的是维护间隔，
+理由写在常量注释里：破冰是"一轮最多一次"，所以这个间隔同时决定她主动开口的最密节奏）。
+
+**还没动的**：注意力面板里仍显示「焦点群: xxx (score)」并按它高亮一行
+（`loadAttention()` + `ui.shared.attention.focus_prefix/focus_tag`）。跨群取舍删掉后这个显示
+**不再有任何行为后果**，纯展示 —— 留着容易让人以为还有优先级，但删它属于 §40.5 第 1 条
+（删焦点状态机）那一批，跟 `attention_*` 那批 hint 文案（`lock_seconds` / `min_threshold` /
+`wake_ratio` / `freq_max_multiplier` 里还写着"独占焦点""参与焦点竞争"）一起做。

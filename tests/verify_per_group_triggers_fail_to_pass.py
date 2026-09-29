@@ -100,10 +100,21 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_gate_service.py",
         "一轮里给每个冷群都破一次冰（她变成群发器；重载后所有冷群同时被打扰）",
-        "            if not broke_ice and self._participates_in_attention(group_id):\n"
-        "                broke_ice = await self._maybe_break_ice(group_id, now)",
+        "            if not tried_ice and self._participates_in_attention(group_id):\n"
+        "                tried_ice = await self._maybe_break_ice(group_id, now)",
         "            if self._participates_in_attention(group_id):\n"
-        "                broke_ice = await self._maybe_break_ice(group_id, now)",
+        "                tried_ice = await self._maybe_break_ice(group_id, now)",
+    ),
+    (
+        "attention_gate_service.py",
+        "把「破冰失败」当成没用名额（真机 16:42：断连那一轮同一个 tick 破了两个群）",
+        "        try:\n"
+        "            await self._try_icebreaker(group_id)\n"
+        "        except Exception:",
+        "        try:\n"
+        "            if not await self._try_icebreaker(group_id):\n"
+        "                return False\n"
+        "        except Exception:",
     ),
     (
         "attention_gate_service.py",

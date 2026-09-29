@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""D 档契约：面板只留 7 个行为旋钮，被冻结的 15 个键仍在、仍可改配置文件。"""
+"""D 档契约：面板只留少数几个「用户能自己推理」的行为旋钮，被冻结的 15 个键仍在、仍可改配置文件。"""
 from __future__ import annotations
 
 import pathlib
@@ -7,15 +7,19 @@ import re
 
 PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 
-#: 面板保留的 7 个「用户能自己推理」的行为旋钮（前端控件 id）。
+#: 面板保留的行为旋钮（前端控件 id）。
+#: 加一个进来必须是有意的：这条测试就是那道"你确定要把它搬回界面吗"的关卡。
 PANEL_CONTROLS = {
-    "cfg-att-focus-threshold",         # 夺冠资格线
-    "cfg-att-focus-send",              # 焦点保持线
+    "cfg-att-focus-threshold",         # 焦点线（跨群取舍删除后 = 分数档位线）
+    "cfg-att-focus-send",              # 本群在聊的线（原「焦点保持线」）
     "cfg-att-lock-seconds",            # @ 锁时长
     "cfg-att-freq-target-gap",         # 目标消息间隔（频率自适应的参照）
     "cfg-att-freq-min-mult",           # 频率倍率下限
     "cfg-att-freq-max-mult",           # 频率倍率上限
     "cfg-att-emotion-multipliers",     # 情绪倍率表
+    # 2026-09-29 加：按群维护循环的 tick 间隔。它不只是"多久算一次"——破冰是
+    # **一轮最多一次**，所以这个值同时决定了她主动开口的最密节奏，用户能推理出来。
+    "cfg-att-maintenance-interval",
 }
 
 #: 被冻结（撤下面板）的键：仍在 schema 与 defaults 里，仍从配置文件读取。
@@ -43,8 +47,8 @@ def _panel_ids() -> set[str]:
     return set(re.findall(r"""["'](cfg-att-[a-z0-9-]+)["']""", html))
 
 
-def test_panel_exposes_exactly_the_seven_behavior_knobs():
-    """面板可调面 = 7 个。多一个就说明有人把内部量又搬回界面了。"""
+def test_panel_exposes_exactly_the_agreed_behavior_knobs():
+    """面板可调面 = `PANEL_CONTROLS` 那几个。多一个就说明有人把内部量又搬回界面了。"""
     assert _panel_ids() == PANEL_CONTROLS, (
         f"面板控件与契约不符：多了 {sorted(_panel_ids() - PANEL_CONTROLS)}，"
         f"少了 {sorted(PANEL_CONTROLS - _panel_ids())}"
@@ -68,7 +72,7 @@ def test_frozen_keys_have_no_panel_control_but_stay_readable():
         spec = settings_schema.BY_KEY[key]
         assert spec.ui is None, f"{key} 又被挂上面板控件了"
         assert spec.default is not None, f"{key} 的默认值丢了"
-    # 保留的 7 个反过来必须有控件
+    # 保留的旋钮反过来必须有控件
     for key in ("attention_focus_threshold", "attention_lock_seconds", "attention_emotion_multipliers"):
         assert settings_schema.BY_KEY[key].ui is not None, f"{key} 的控件丢了"
 

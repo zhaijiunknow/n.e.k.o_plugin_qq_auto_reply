@@ -138,20 +138,27 @@ class QQAttentionGateService:
     async def run_maintenance_tick(self) -> None:
         """走一遍所有参与竞争的群，每群各自判断要不要破冰 / 推记忆摘要。
 
-        **一轮最多破冰一次**（`broke_ice` 那道闸）。理由：破冰是"她主动开口"，而她是
-        一个**人**不是一个群发器 —— 五个群同时静了 30 分钟时，她该一个接一个地看过来
-        （每 tick 一个，默认一分钟一个），而不是同一秒往五个群各丢一句。这条也顺手挡住
-        了"插件重载后所有冷群一起被破冰"的启动爆发：重载时每个群的 `last_message_at`
+        **一轮最多"尝试"破冰一次**（`tried_ice` 那道闸）。理由：破冰是"她主动开口"，
+        而她是一个**人**不是一个群发器 —— 五个群同时静了 30 分钟时，她该一个接一个地
+        看过来（每 tick 一个，默认一分钟一个），而不是同一秒往五个群各丢一句。这条也挡
+        住了"插件重载后所有冷群一起被破冰"的启动爆发：重载时每个群的 `last_message_at`
         都还是旧的，判据会同时成立。
+
+        ⚠️ 闸门数的是**尝试**不是**成功**（真机 2026-09-29 16:42 的教训）：一开始写成
+        `broke_ice = await self._maybe_break_ice(...)`，而 `_maybe_break_ice` 返回的是
+        "她真的说出去了吗"。那会儿 QQ 连接断着，破冰投递失败 → 返回 False → 闸门以为
+        这一轮还没破过冰，于是**同一个 tick 里接着把下一个冷群也破了**（16:42:23 群
+        1048307485、16:42:30 群 985066274）。投递失败或模型决定不开口都是常态，不能
+        让它们把闸门旁路掉。
         """
         attention = self.plugin.attention_service
         if not attention:
             return
         now = int(attention._current_time())
-        broke_ice = False
+        tried_ice = False
         for group_id in self._maintenance_groups(attention):
-            if not broke_ice and self._participates_in_attention(group_id):
-                broke_ice = await self._maybe_break_ice(group_id, now)
+            if not tried_ice and self._participates_in_attention(group_id):
+                tried_ice = await self._maybe_break_ice(group_id, now)
             await self._maybe_push_digest(group_id, now)
 
     def _maintenance_groups(self, attention: Any) -> list[str]:
@@ -202,7 +209,12 @@ class QQAttentionGateService:
             return 300
 
     async def _maybe_break_ice(self, group_id: str, now: int) -> bool:
-        """这个群静得够久 → 主动破冰一次。返回是否真的尝试了。
+        """这个群静得够久 → 主动破冰一次。返回**这一轮的这个名额用掉了吗**。
+
+        返回值说的是"尝试过了"，不是"她真的说出去了"：投递失败、模型决定不开口都是
+        常态，而 `run_maintenance_tick` 用这个返回值当"一轮最多一次"的闸门 —— 把失败
+        算成"没用名额"就会让同一个 tick 接着破下一个冷群（真机 2026-09-29 16:42 就是
+        这么发生的，见 `run_maintenance_tick` 的 docstring）。
 
         跳过条件（全部是**这个群自己**的状态，不看别的群）：
 
@@ -237,7 +249,13 @@ class QQAttentionGateService:
         self._logger.info(
             f"[Icebreaker] 群 {group_id} 已静默 {now - last_message_at}s（阈值 {idle_seconds}s），尝试破冰"
         )
-        return await self._try_icebreaker(group_id)
+        try:
+            await self._try_icebreaker(group_id)
+        except Exception:
+            # 投递/生成失败不该把"名额"还回去（那是同一轮里再破一个群的理由），
+            # 也不该把整轮维护打断 —— 后面的群还要推记忆摘要。
+            self._logger.warning("[Icebreaker] 破冰尝试异常（名单仍算用掉）", exc_info=True)
+        return True
 
     async def _maybe_push_digest(self, group_id: str, now: int) -> bool:
         """群记忆摘要按**每群自己的**节奏推送（`group_memory_digest_interval_seconds`）。
