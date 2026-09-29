@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextvars import ContextVar
 from typing import Any
 
 from . import addressing
@@ -20,6 +21,22 @@ from .pipeline_models import (
     delivered_blocks_text,
 )
 from .reply_buffer_service import QQReplyBufferService
+
+#: 这一轮"结局是什么、为什么没投递"——`run()` 最后那行 `[Reply] … 结局: …` 从这里取。
+#:
+#: 为什么用 ContextVar 而不是 `self._note`：同一个 pipeline 实例**并发**处理多个会话
+#: （群与私聊同时在跑、缓冲汇总还会再进一次），挂在实例上会串台。
+#:
+#: 为什么要有它：这一层以前只在**成功**那条路上有日志（`[Buffer] 排定投递`），
+#: "生成了却没发出去"的几条出口（空回复、缓冲忽略、没有可投递的块）**一行都不打** ——
+#: 真机 2026-09-29 15:28 就是这样：她对一句提问生成了 24 字回复，然后既没投递、也没日志，
+#: 事后无法定性（见 docs/SESSION-HANDOFF.md §39）。
+_OUTCOME_NOTE: ContextVar[str] = ContextVar("qq_reply_outcome_note", default="")
+
+
+def _note_outcome(note: str) -> None:
+    """记下这一轮的结局说明（唯一出口日志会打出来）。"""
+    _OUTCOME_NOTE.set(note)
 
 
 class QQReplyPipelineRunner:
@@ -48,6 +65,46 @@ class QQReplyPipelineRunner:
             )
 
     async def run(self, request: QQReplyRequest) -> QQReplyOutcome:
+        """**唯一出口**：这一轮不管什么结局，最后都打一行 `[Reply] … 结局: …`。
+
+        以前只有成功那条路有日志（`[Buffer] 排定投递` / `[Send]`），而"生成了却没发出去"
+        的出口一行都不打 —— 事后看到的是"她没有后续"，查不出是没接、答了没发、还是发了
+        没收到。现在每一轮都有一行，`_note_outcome()` 记的原因跟着它出来。
+        """
+        token = _OUTCOME_NOTE.set("")
+        try:
+            outcome = await self._run_pipeline(request)
+        except Exception as exc:
+            # 异常也是结局：先记一行再往上抛（栈照旧由调用方/上层记录）。
+            self._log_outcome(request, delivered=False, note=f"中断：{type(exc).__name__}: {exc}")
+            raise
+        else:
+            delivered = bool(
+                getattr(getattr(outcome, "delivery_result", None), "delivered", False)
+            )
+            note = _OUTCOME_NOTE.get()
+            if not note:
+                note = "已投递" if delivered else "未投递（这一条出口没标注原因，见上面的日志）"
+            self._log_outcome(request, delivered=delivered, note=note)
+            return outcome
+        finally:
+            _OUTCOME_NOTE.reset(token)
+
+    def _log_outcome(self, request: QQReplyRequest, *, delivered: bool, note: str) -> None:
+        """这一轮的结局，一行说完（群与私聊都打，目标 id 一眼可辨）。"""
+        try:
+            label = self.plugin._build_session_key(
+                sender_id=request.sender_id,
+                is_group=request.is_group,
+                group_id=request.group_id if request.is_group else None,
+            )
+        except Exception:
+            label = f"group:{getattr(request, 'group_id', '')}" if request.is_group else f"private:{request.sender_id}"
+        self.plugin.logger.info(
+            f"[Reply] {label} 结局: {'已投递' if delivered else '未投递'}（{note}）"
+        )
+
+    async def _run_pipeline(self, request: QQReplyRequest) -> QQReplyOutcome:
         decision = self._run_decision(request)
         decision_trace = QQPipelineStageTrace(
             stage="decision",
@@ -69,10 +126,12 @@ class QQReplyPipelineRunner:
             },
         )
         if decision.action == "ignore":
+            _note_outcome(f"决策=ignore（不接这条：{decision.attention_gate_reason or '未给原因'}）")
             self._abandon_placeholder(request, decision.action)
             return QQReplyOutcome(action="ignore", traces=[decision_trace])
         if decision.action == "relay":
             outcome = await self._run_relay(request, decision, decision_trace)
+            _note_outcome("决策=relay（转交给转发链，不走本会话回复）")
             self._abandon_placeholder(request, decision.action)
             return outcome
 
@@ -664,6 +723,7 @@ class QQReplyPipelineRunner:
             clean_stripped = re.sub(r"<[^>]+>", "", clean).strip() if clean else ""
             if not has_content and not clean_stripped:
                 # LLM 决定不回复（<msg></msg>），跳过缓冲
+                _note_outcome("模型没有给出可发的内容（这一轮是空回复）")
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
             session_key = self.plugin._build_session_key(
@@ -727,6 +787,10 @@ class QQReplyPipelineRunner:
                 ),
             )
             from .pipeline_models import QQDeliveryResult
+            _note_outcome(
+                f"已交给缓冲：等 {wait_sec:.1f}s，{len(delivery_plan.blocks)} 块"
+                "（真正的投递在缓冲那一侧，成败看后面的 [Send]）"
+            )
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
 
         direct_session_key = None
@@ -772,6 +836,7 @@ class QQReplyPipelineRunner:
                     outcome.history_ai_row,
                 )
             from .pipeline_models import QQDeliveryResult
+            _note_outcome("发送前记忆授权已撤销，取消本轮投递")
             return QQDeliveryResult(
                 delivered=False, target_type=delivery_plan.target_type,
                 target_id=delivery_plan.target_id, reply_text=None,
@@ -865,6 +930,11 @@ class QQReplyPipelineRunner:
             await self.plugin.reply_generation_service.record_scoped_mentions_on_delivery(
                 context, delivered_text,
             )
+        if getattr(result, "delivered", False):
+            _note_outcome(f"直接投递（无缓冲，{len(delivery_plan.blocks or [])} 块）")
+        else:
+            # 走到这里说明连接器没给回执（NapCat echo 超时 / 开放平台吞异常返回 None）
+            _note_outcome("投递未确认：连接器没有回执（消息可能没发出去）")
         return result
 
     @staticmethod
