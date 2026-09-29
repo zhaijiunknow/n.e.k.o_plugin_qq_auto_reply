@@ -266,21 +266,50 @@ def resolve_addressee(
     return AddresseeVerdict(kind=KIND_GROUP_CHATTER, first_at=first_at, evidence="none")
 
 
+def _nickname_from(data: list[Any], full: str) -> str:
+    """人设里的「昵称」= 名字的简称。`data[3]` 是 `{她的名字: {属性…}}`。
+
+    全名对不上时（人设刚改过名、或键的写法不同）退一步：人设里只有一个角色就用它 ——
+    这份数据的用途是"她叫什么"，不是"校验配置一致性"。宿主自己的配置页也把「昵称」
+    当一等字段（`characters_router/crud.py` 的 `fields_to_translate=['昵称']`）。
+    """
+    if len(data) < 4 or not isinstance(data[3], dict):
+        return ""
+    basic = data[3]
+    bucket = basic.get(full) if full else None
+    if not isinstance(bucket, dict):
+        candidates = [value for value in basic.values() if isinstance(value, dict)]
+        bucket = candidates[0] if len(candidates) == 1 else None
+    if not isinstance(bucket, dict):
+        return ""
+    return str(bucket.get("昵称") or "").strip()
+
+
 def host_names(plugin: Any) -> tuple[str, ...]:
-    """从本体取她的名字（取不到就给空元组，绝不因为取不到而拦住判据）。
+    """从本体取她的名字**与名字的简称**（取不到就给空元组，绝不因为取不到而拦住判据）。
 
     与 `__init__._free_route_system_prompt` 同源同口径（那份人设文本的 index 约定是
-    本体定的：`data[0]` 主人名、`data[1]` 她的名字）。取不到时只剩用户配的别名 ——
-    是**降级**，不是失败：判据 6 档里少一档，其余六档照常工作。
+    本体定的：`data[0]` 主人名、`data[1]` 她的名字、`data[3]` 她的档案）。
+
+    简称必须**自动**带上：使用者平时就是这么叫她的（2026-09-29 口径：「不需要猫娘，
+    就是她自己的名字以及名字的简称」），而它本来就在人设里 —— 让用户再去
+    `addressee_names` 里抄一遍，就是本仓库一贯反对的"抄一遍就会随本体漂移"。
+    `addressee_names` 只补人设不可能知道的叫法（群里起的外号）。
+
+    取不到时只剩用户配的别名 —— 是**降级**，不是失败：判据 6 档里少一档，其余六档照常工作。
     """
     try:
         from utils.config_manager import get_config_manager
 
-        data = get_config_manager().get_character_data()
-        name = str(data[1] or "").strip()
-        return (name,) if name else ()
+        data = list(get_config_manager().get_character_data() or [])
     except Exception:
         return ()
+    full = str(data[1] or "").strip() if len(data) > 1 else ""
+    names: list[str] = [full] if full else []
+    nickname = _nickname_from(data, full)
+    if nickname and nickname not in names:
+        names.append(nickname)
+    return tuple(names)
 
 
 def segments_of(message: Any, enricher: Any = None) -> Any:

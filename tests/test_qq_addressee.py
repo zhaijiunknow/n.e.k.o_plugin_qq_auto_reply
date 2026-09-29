@@ -218,6 +218,65 @@ def test_host_names_returns_strings_or_nothing(monkeypatch):
     assert addressing.host_names(object()) == ()
 
 
+def test_host_names_includes_the_nickname_from_the_persona(monkeypatch):
+    """人设里的「昵称」要**自动**进名单 —— 使用者就是这么叫她的，不该让用户再抄一遍。
+
+    真机数据形如：
+        data[1] = "宅久皖萱"
+        data[3] = {"宅久皖萱": {"昵称": "皖萱", "性别": "女", …}}
+    """
+    import utils.config_manager as cm
+
+    class _Manager:
+        def get_character_data(self):
+            return [
+                "宅久", "宅久皖萱", {"档案名": "宅久"},
+                {"宅久皖萱": {"昵称": "皖萱", "性别": "女"}},
+                {}, "", "", "", "",
+            ]
+
+    monkeypatch.setattr(cm, "get_config_manager", lambda: _Manager())
+    assert addressing.host_names(object()) == ("宅久皖萱", "皖萱")
+
+
+def test_host_names_falls_back_to_the_only_profile_when_the_key_differs(monkeypatch):
+    """人设刚改过名（`data[1]` 与档案的键对不上）时，只有一个档案就用它。"""
+    import utils.config_manager as cm
+
+    class _Manager:
+        def get_character_data(self):
+            return [
+                "主人", "新名字", {},
+                {"旧名字": {"昵称": "小旧"}},
+            ]
+
+    monkeypatch.setattr(cm, "get_config_manager", lambda: _Manager())
+    assert addressing.host_names(object()) == ("新名字", "小旧")
+
+
+def test_host_names_without_a_profile_still_returns_the_full_name(monkeypatch):
+    """拿不到档案（老版本/残缺配置）时至少还有全名 —— 少一档不是失败。"""
+    import utils.config_manager as cm
+
+    class _Manager:
+        def get_character_data(self):
+            return ["主人", "兰兰"]
+
+    monkeypatch.setattr(cm, "get_config_manager", lambda: _Manager())
+    assert addressing.host_names(object()) == ("兰兰",)
+
+
+def test_host_names_ignores_a_blank_nickname(monkeypatch):
+    import utils.config_manager as cm
+
+    class _Manager:
+        def get_character_data(self):
+            return ["主人", "兰兰", {}, {"兰兰": {"昵称": "   "}}]
+
+    monkeypatch.setattr(cm, "get_config_manager", lambda: _Manager())
+    assert addressing.host_names(object()) == ("兰兰",)
+
+
 def test_segments_of_survives_a_missing_enricher():
     assert addressing.segments_of({"raw": {"message": []}}, None) is None
     assert addressing.segments_of({"raw": {"message": []}}, object()) is None

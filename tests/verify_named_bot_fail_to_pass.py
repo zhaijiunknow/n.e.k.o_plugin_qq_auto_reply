@@ -46,6 +46,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "addressing.py",
+        "名字的简称不再从人设里取（只剩全名，平时怎么叫都不算）",
+        '    return str(bucket.get("昵称") or "").strip()',
+        '    return ""',
+    ),
+    (
+        "addressing.py",
         "用户配的别名清单被忽略（名字根本匹配不上）",
         "        names.extend(str(item).strip() for item in raw if str(item).strip())",
         "        pass",

@@ -6610,17 +6610,28 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
 - 人设名 = 角色数据的 `data[1]`，当前是 **「宅久皖萱」**（`addressing.host_names`）；
 - `addressee_names` 原本是 **空的**；
 
-也就是说：**使用者平时叫的「猫娘」根本不算她的名字** —— 这一档永远不会因为这两个字命中。
-所以这一轮把 `addressee_names` 改成了 `["猫娘"]`（真机 `business_config.json`），
-reload 后生效。
+也就是说「宅久皖萱」要整串出现才算 —— 而使用者平时叫的是**简称**，不是全名。
 
-⚠️ 这个键**不在面板上**（`SettingSpec("addressee_names", "list", [])` 既没有 `saveable`
-也没有 `ui`），只能改配置文件。要放到面板上得动面板契约（`test_qq_attention_panel_surface`
-的 `PANEL_CONTROLS`）与 i18n —— 需要的话说一声。
+**修正（同一天稍后）**：使用者口径是「不需要猫娘，就是她自己的名字以及名字的简称，
+我平时和你说猫娘单纯因为好打」。于是改成从**人设**里自动取简称 —— 人设本来就写着它
+（`data[3]` 是 `{她的名字: {…, '昵称': '皖萱', …}}`，宿主自己的配置页也把「昵称」当一等
+字段：`characters_router/crud.py` 的 `fields_to_translate=['昵称']`）：
 
-另外提醒：**匹配是子串匹配**且要求名字至少 2 个字（`NAME_MIN_CHARS`）。所以
-「宅久皖萱」要整串出现才算；想让她对「皖萱」「喵喵」也有反应，就得往 `addressee_names`
-里加。加了就等于把那个词升级成 @ 级触发，所以这个清单要**保持短**。
+```python
+def _nickname_from(data, full) -> str:      # addressing.py
+    ...  # data[3][全名]["昵称"]；全名对不上且只有一个档案时退一步用它
+```
+
+真机实测：`addressing.host_names()` → **`('宅久皖萱', '皖萱')`**。于是
+
+- 全名与**简称**都在名单里，改人设的名字/简称会自动跟上（这正是"不要抄一遍"的理由：
+  抄进配置就会随本体漂移）；
+- `addressee_names` 回到**空**：它只补人设不可能知道的叫法（群里起的外号）。「猫娘」
+  不加 —— 那只是使用者跟我打字时的简称，不是群里怎么叫她。
+
+⚠️ 两点仍然成立：**匹配是子串匹配**、且要求名字至少 2 个字（`NAME_MIN_CHARS`）；
+`addressee_names` **不在面板上**（`SettingSpec(..., "list", [])` 既没有 `saveable` 也没有
+`ui`），要加外号得改配置文件，要搬上面板得动面板契约与 i18n —— 需要就说一声。
 
 ### 49.3 证据
 
