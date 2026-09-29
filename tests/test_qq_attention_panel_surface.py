@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shutil
+import subprocess
+import tempfile
+
+import pytest
 
 PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 
@@ -76,6 +81,36 @@ def test_frozen_keys_have_no_panel_control_but_stay_readable():
     # 保留的旋钮反过来必须有控件
     for key in ("attention_focus_threshold", "attention_lock_seconds", "attention_emotion_multipliers"):
         assert settings_schema.BY_KEY[key].ui is not None, f"{key} 的控件丢了"
+
+
+def test_panel_javascript_parses():
+    """面板里的 JS 必须能被 JS 引擎解析。
+
+    为什么值得一条测试：`loadAttention()` 那种压缩成一行的渲染代码里，删掉一个条件渲染
+    （比如这次删掉的「焦点」标识）极容易**把字符串字面量的引号配错** —— 引号一错，整段
+    脚本静默失效：面板点开是空白、只有控制台报错，而服务端测试全绿。本仓库没有 JS 工具链，
+    所以直接借 node 的 `--check`；环境里没有 node 就跳过（市场 CI 不一定装 node，
+    跳过比误报好）。
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("环境里没有 node，跳过 JS 语法检查")
+
+    html = (PLUGIN_DIR / "static" / "napcat.html").read_text(encoding="utf-8")
+    blocks = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+    assert blocks, "面板里一段 <script> 都没有？"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for index, body in enumerate(blocks):
+            path = pathlib.Path(tmp) / f"block{index}.js"
+            path.write_text(body, encoding="utf-8")
+            proc = subprocess.run(
+                [node, "--check", str(path)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
+            assert proc.returncode == 0, (
+                f"面板第 {index} 段 <script> 语法错误：\n{proc.stderr.strip()[:800]}"
+            )
 
 
 def test_frozen_defaults_keep_their_values():

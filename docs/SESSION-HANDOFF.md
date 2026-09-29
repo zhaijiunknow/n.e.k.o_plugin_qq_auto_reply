@@ -6379,3 +6379,57 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 净效果：**她比以前能说得多**；真正决定"什么时候停"的，已经几乎只剩必要性那一侧
 （存在感 / 指向别人 / 零余量）。如果哪天觉得"又太能说了"，先动这里的比例（再往上调），
 再动 §45 的免费区 —— 两个都是单点旋钮，改完记得同步各自的契约测试。
+
+---
+
+## 47. 前端删掉「焦点」标识（2026-09-29）
+
+使用者口径：
+
+> 前端的注意力状态还是显示了焦点的标识啊，需要删除一下
+
+### 47.1 删了什么
+
+注意力卡片的渲染器（`static/napcat.html` 的 `loadAttention()`，压缩成一行的那个）里有四处
+焦点痕迹，一起删掉：
+
+| 位置 | 原来 |
+|---|---|
+| 卡片顶部 | 「焦点群: {group_id} ({focus_score}) **活跃**」整行（`ui.shared.attention.focus_prefix` + `.active`） |
+| 群行变量 | `isFocus = g.group_id === d.focus_group_id` |
+| 群行底色 | 焦点行加 `background:var(--primary-tint)` |
+| 群行尾部 | 「焦点」小标签（`ui.shared.attention.focus_tag`） |
+
+三个 i18n 键（中英各一份）随之删除 —— 删完 `napcat.html` 里 0 引用，留着就是死文案。
+
+**为什么可以删**：「焦点」在跨群取舍删除（§40）之后已经没有对应概念 —— 它只是
+"当前分数最高的群"这个**派生标签**，没有任何行为挂在上面（唤醒、让位、蜜月、独占
+都不存在了）。宿主那边也不用它：在 N.E.K.O 仓库里 grep `focus_group_id` / 「焦点群」
+是 0 命中（插件自己的面板是唯一消费者）。
+
+### 47.2 顺手补的守卫：面板 JS 必须能被解析
+
+这次踩了一个坑，值得记下来：删「行底色」那段时，压缩 JS 里 `"...;"+">` 被我写成了
+`"...;">`（**提前闭合了字符串字面量**） —— 语法错误，整段脚本静默失效：面板点开是空白、
+只有浏览器控制台报错，而**服务端 1541 条测试全绿**。
+
+所以新增 `tests/test_qq_attention_panel_surface.py::test_panel_javascript_parses`：
+把 `<script>` 逐段抽出来，用 `node --check` 解析（环境里没有 node 就 skip，市场 CI 不一定装）。
+fail-to-pass 证据（`python .dsh-artifacts/verify-panel-js-check.py`）：
+干净副本 exit=0；把那一行改回 `"...;">`（引号配错）→ exit=1；恢复后逐字节一致。
+
+### 47.3 还没做的（§40.5 剩余部分）
+
+删掉前端标识之后，`get_snapshot()` 里的 `focus_group_id` / `focus_score` 变成**零消费方**，
+这条数据链路上的死重量还剩：
+
+- `update_on_message` / `update_on_message_count` / `update_on_reply` 三个入口**每条消息**
+  都调一次 `get_focus_group_id()` —— 它内部走整份 `get_snapshot()`（对所有群 `_sort_states`），
+  算出来的 `focus_group_id` 只用于一个**没人读**的 `is_focus` 参数
+  （`_apply_decay(..., is_focus=...)` 现在根本不看它）。纯粹是白算，量还不小；
+- `get_focus_group_id()` / `get_focus_score()` / `_sort_states(focus_group_id=...)` /
+  `should_focus_group()` / `_current_focus_group_id()` 这一串访问器；
+- `focus_acquired_at` / `last_focus_at` 的"焦点"语义（现在只当作"最近被点名/参与"的游标用）；
+- `lock_group()` 的日志仍写着「期内独占焦点」。
+
+这些都不影响行为（除了那三次白算的快照），属于"名字与数据模型还没跟上口径"的收尾。
