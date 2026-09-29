@@ -6,6 +6,7 @@ from typing import Any, Optional
 from plugin.sdk.plugin import Err, Ok, SdkError
 
 from . import settings_schema
+from .group_permission import DEFAULT_GROUP_LEVEL
 
 
 class QQDashboardService:
@@ -758,7 +759,7 @@ class QQDashboardService:
         self,
         *,
         group_id: str,
-        level: str = "normal",
+        level: str = DEFAULT_GROUP_LEVEL,
         normal_relay_probability: Optional[float] = None,
     ):
         if not self.plugin.group_permission_mgr:

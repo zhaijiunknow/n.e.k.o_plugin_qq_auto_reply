@@ -6651,3 +6651,57 @@ def _nickname_from(data, full) -> str:      # addressing.py
   二次元猫娘）也会让她被叫起来、锁群 90 秒并强制回复。真机上发现这种噪音，处理顺序是
   **先把别名清单收短**（删掉容易撞词的别名），而不是改判据。
 - 「@ 别人 + 提她名字」不受影响（仍是"冲着别人"）；「引用她」也不受影响（走第 4 步）。
+
+---
+
+## 50. 群名单默认档 = 信任群（2026-09-30）
+
+PR #1（外部贡献者 `addsas222`）按「先合他的修复、我们在他后面改」落地：权限管理器容错
+非 dict 条目（`[123456]` 字符串数组炸 startup 的真机事故）**原样保留、作者身份保留**
+（合并提交 `d21741f`）；那之后的第一处调整就是这一节。
+
+### 50.1 改之前：同一个默认值散在九处
+
+`normal` 的语义是「没被 @ 时按 `normal_relay_probability`（默认 0.1）转发给主人」——
+几乎等于不说话。它却是新增群聊的默认档，于是用户「加了群」却看不到她开口，而且降级是
+**静默**的（不报错、也没日志）。
+
+| # | 位置 | 改前 | 改后 |
+|---|---|---|---|
+| 1 | `group_permission.py` 裸条目 `group.get("level", …)` | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 2 | 同上 `_normalize_level` 空值/写错 | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 3 | 同上字符串条目（PR #1 的容错分支） | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 4 | 同上 `add_group(level=…)` 默认参数 | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 5 | 同上 `list_groups()` 显示兜底 | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 6 | `dashboard_service.add_trusted_group(level=…)` | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 7 | `__init__._trust_group_add`（入口省略 level） | `"normal"` | `DEFAULT_GROUP_LEVEL` |
+| 8 | `static/napcat.html` 新增群聊弹窗 + 选中回退 | `normal` | `trusted` |
+| 9 | `static/open_platform.html` 群档 select 的 `selected` | 普通群 | 信任群 |
+
+`status.html` 与 `script.js` 本来就是 trusted 打头（浏览器取第一项、代码取 `options[0][0]`），
+这次加看门狗钉住，免得以后被"顺手改回来"。
+
+规则一句话：**名单里的群 = 信任群；漏写、写空、写错都按信任群收录**。想降级必须显式写
+`"level": "normal"` —— 那条语义一个字没动，仍是「只在被 @ 时按概率转发」的唯一入口。
+
+### 50.2 证据
+
+- 插件全量 **1593 passed**（改动前 1589 + 新增 4 条）；两道 ruff 门全过。
+- 后端 `test_group_level_defaults_to_trusted`：裸条目 / 空串 / 写错 / 字符串条目全部 →
+  trusted；显式 `normal` 与 `NORMAL` 仍是 normal；`add_group()` 默认 trusted、
+  `add_group(gid, "normal")` 仍 normal；`list_groups()` 写回的是实际档位。
+- 前端看门狗三条：napcat 弹窗默认参数与选中回退、开放平台 `mg-level` 的 `selected`
+  必须落在信任群上、`status.html`/`script.js` 仍 trusted 打头。
+- 变异 `tests/verify_group_default_level_fail_to_pass.py` **9/9**：九处默认档逐个拆掉都是
+  红的，对照组绿。
+- 真机配置（只读）：`985066274` / `1048307485` 本来就是 `trusted` —— 这次对现网
+  **0 行为变化**，修的是"以后新加的群"。
+
+### 50.3 边界
+
+- 写错的级别（例如 `"trused"`）现在会被"升"成信任群。这是有意的：名字进了名单＝想让她
+  参与，而原来的降级是静默的（加完群看不到她说话、也查不出原因）。真要她少说话，请写
+  `normal` 或把她移出名单。
+- 不带 level 的老配置（`{"group_id": "123"}`）会在**下一次保存**时以 `trusted` 落盘：
+  `list_groups()` 写回的是实际档位，等于配置被就地升级一次。
+- 面板默认档与后端默认档现在同源于一个常量；前端拿不到 Python 常量，只能靠看门狗钉住。

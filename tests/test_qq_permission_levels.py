@@ -130,6 +130,39 @@ def test_managers_survive_string_entries():
     groups = GroupPermissionManager(
         trusted_groups=["1048307485", {"group_id": "1", "level": "trusted"}, None, ""]
     )
-    assert groups.get_group_level("1048307485") == "normal"
+    # 群的默认档现在是 trusted（见下一条测试），字符串条目也按默认档收录。
+    assert groups.get_group_level("1048307485") == "trusted"
     assert groups.get_group_level("1") == "trusted"
     assert groups.get_group_level("2") == "none"
+
+
+def test_group_level_defaults_to_trusted():
+    """群名单「没写级别」＝ 信任群，只有显式写 normal 才是仅转发。
+
+    `normal` 的语义是「没被 @ 就只按低概率转发给主人」，接近不说话；把它当默认档，
+    用户加了群却看不到她开口（真机踩过这个静默默认）。漏写 / 写空 / 写错级别都不该
+    把群降级成普通群 —— 想降级请显式写 ``"level": "normal"``。
+    """
+    from plugin.plugins.qq_auto_reply.group_permission import DEFAULT_GROUP_LEVEL
+
+    assert DEFAULT_GROUP_LEVEL == "trusted"
+    assert GroupPermissionManager([{"group_id": "1"}]).get_group_level("1") == "trusted"
+    assert GroupPermissionManager([{"group_id": "1", "level": ""}]).get_group_level("1") == "trusted"
+    assert GroupPermissionManager([{"group_id": "1", "level": "trused"}]).get_group_level("1") == "trusted"
+    assert GroupPermissionManager(["1"]).get_group_level("1") == "trusted"
+    assert GroupPermissionManager._normalize_level(None) == "trusted"
+    assert GroupPermissionManager._normalize_level("") == "trusted"
+
+    # 显式 normal 必须留着：它是「只在被 @ 时按概率转发」这条语义的唯一入口。
+    assert GroupPermissionManager([{"group_id": "1", "level": "normal"}]).get_group_level("1") == "normal"
+    assert GroupPermissionManager([{"group_id": "1", "level": "NORMAL"}]).get_group_level("1") == "normal"
+
+    mgr = GroupPermissionManager()
+    mgr.add_group("2")
+    assert mgr.get_group_level("2") == "trusted"
+    mgr.add_group("3", "normal")
+    assert mgr.get_group_level("3") == "normal"
+    assert mgr.list_groups() == [
+        {"group_id": "2", "level": "trusted"},
+        {"group_id": "3", "level": "normal"},
+    ]

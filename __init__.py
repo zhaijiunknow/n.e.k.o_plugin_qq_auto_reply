@@ -51,7 +51,7 @@ from .deploy_service import QQDeployService
 from .display_name_service import QQDisplayNameService
 from .enrichment import QQMessageEnricher
 from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
-from .group_permission import GroupPermissionManager
+from .group_permission import DEFAULT_GROUP_LEVEL, GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
 from .memory_bridge import QQMemoryBridge
 from .memory_tool_service import QQMemoryToolService
@@ -1137,7 +1137,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                        "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
             "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
-            "level": {"type": "string", "description": "user_add / group_add：权限等级（用户：admin / trusted / normal / blacklist，blacklist＝不处理这个人的消息；群：trusted / normal）"},
+            "level": {"type": "string", "description": "user_add / group_add：权限等级（用户：admin / trusted / normal / blacklist，blacklist＝不处理这个人的消息；群：trusted / normal，群省略 level 时默认 trusted＝正常参与，只有显式 normal 才是仅转发）"},
             "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
             "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
             "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
@@ -1205,7 +1205,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError("INVALID_INPUT: group_add 需要 group_id"))
         return await self.dashboard_service.add_trusted_group(
             group_id=group_id,
-            level=str(kw.get("level") or "normal"),
+            level=str(kw.get("level") or DEFAULT_GROUP_LEVEL),
             normal_relay_probability=kw.get("normal_relay_probability"),
         )
 

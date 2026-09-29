@@ -32,6 +32,11 @@ uv run neko-plugin build qq_auto_reply
 
 运行时配置（注意力阈值、回溯参数、群信任列表等）由 `business_config.json` 提供，位于 N.E.K.O 数据根目录 `data/plugins/qq_auto_reply/` 下。
 
+- 群名单 `trusted_groups` 里的群**默认就是信任群**（走注意力门控正常参与）：条目漏写
+  `level`、写空、写错级别都按信任群收录。想让她只在被 @ 时按
+  `normal_relay_probability`（默认 0.1）低概率转发给主人，必须**显式**写
+  `"level": "normal"`。
+
 ### SnowLuma 用户注意（真机实测，v1.14.20）
 
 - 正向 WebSocket 请连**根路径**（如 `ws://127.0.0.1:3002/`）：收事件 + 调动作。
