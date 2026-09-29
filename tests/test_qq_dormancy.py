@@ -5,7 +5,8 @@
 - 触发判据只有本群自己的 `last_message_at`（默认 `dormancy_idle_seconds = 1800`）；
 - 睡下的效果（跨群取舍删除后重新定义）：**只答点名** —— @ / 引用她 / 关键词照旧必回，
   其余消息在门控里被忽略，**也不计分**；
-- 唤醒：点名即醒（`mark_focus`）；`dormancy_auto_wake_seconds > 0` 时到点自动醒；
+- 唤醒只有两条：点名即醒（`mark_focus`）或群里又热闹到 `dormancy_wake_score`；
+  **没有到点自动醒**（2026-09-29 使用者：「到点自动醒也不要」）；
 - 睡着期间分数**冻住**（已经凉了，再掉只是把"醒来从零熬"做一遍）。
 """
 from __future__ import annotations
@@ -34,7 +35,7 @@ SETTINGS = {
     "attention_consume_ratio": 0.1,
     "dormancy_enabled": True,
     "dormancy_idle_seconds": 1800,
-    "dormancy_auto_wake_seconds": 0,
+    "dormancy_wake_score": 2.0,
     "attention_emotion_multipliers": {"calm": 0.0},
     "backlog_labels": [],
 }
@@ -71,8 +72,7 @@ def test_a_group_quiet_for_half_an_hour_falls_asleep():
     assert asyncio.run(svc.decay_all()) is None
 
     st = svc._load_state(GROUP)
-    assert st.dormant_forever is True, "静默半小时却还醒着"
-    assert st.dormant_until == 0, "默认口径是「一直睡，只有点名能唤醒」"
+    assert st.dormant is True, "静默半小时却还醒着"
     assert st.heat == "dormant"
     assert svc.is_dormant(GROUP) is True
 
@@ -127,7 +127,7 @@ def test_the_master_switch_disables_it():
     # 关掉时**连标记都不许立**：否则用户把开关再打开，那些旧标记会立刻让群重新睡下
     # —— 看上去就像"开关没记住我刚才关过"。
     st = svc._load_state(GROUP)
-    assert st.dormant_forever is False and st.dormant_until == 0
+    assert st.dormant is False
 
 
 def test_sleeping_is_idempotent():
@@ -144,7 +144,7 @@ def test_a_dormant_group_keeps_its_score():
     svc, now = _service()
     st = QQGroupAttentionState(group_id=GROUP, attention_score=3.5, last_message_at=now[0] - 1800)
     st.last_decay_at = now[0]
-    st.dormant_forever = True
+    st.dormant = True
 
     after = svc._apply_decay(st, now[0] + 100_000)
 
@@ -156,7 +156,7 @@ def test_waking_keeps_the_accumulated_score():
     svc, now = _service()
     st = QQGroupAttentionState(group_id=GROUP, attention_score=3.5, last_message_at=now[0] - 1800)
     st.last_decay_at = now[0]
-    st.dormant_forever = True
+    st.dormant = True
     svc._write_state(st)
 
     assert svc.wake_from_dormancy(GROUP, reason="at") is True
@@ -190,19 +190,23 @@ def test_waking_moves_the_retro_cursor_forward():
     assert svc.get_last_focus_at(GROUP) == now[0]
 
 
-def test_auto_wake_when_configured():
-    svc, now = _service(dormancy_auto_wake_seconds=600)
+def test_there_is_no_auto_wake():
+    """**「到点自动醒」这件事不存在**（2026-09-29 使用者：「到点自动醒也不要」）。
+
+    睡下的群不因为「时间过去了」而醒：这套模型里连一个「到点醒的时刻」字段都没有
+    （`dormant` 就是个布尔量）。只有点名、或群里又热闹起来能叫醒它。
+    """
+    svc, now = _service()
     _seed(svc, last_message_at=now[0] - 1800)
-
     asyncio.run(svc.decay_all())
-
-    st = svc._load_state(GROUP)
-    assert st.dormant_forever is False
-    assert st.dormant_until == now[0] + 600
     assert svc.is_dormant(GROUP) is True
 
-    now[0] += 601
-    assert svc.is_dormant(GROUP) is False, "到点了却没醒"
+    now[0] += 30 * 24 * 3600          # 睡一个月
+    asyncio.run(svc.decay_all())
+
+    assert svc.is_dormant(GROUP) is True, "时间过去了就自己醒了"
+    assert not hasattr(svc._load_state(GROUP), "dormant_until"), "又冒出「到点醒」的时间戳字段"
+    assert not hasattr(svc, "_dormancy_auto_wake_seconds"), "自动醒的读取口又被加回来了"
 
 
 def test_wake_reports_first_time_only():
@@ -215,9 +219,9 @@ def test_wake_reports_first_time_only():
 
 
 def test_an_old_archive_cannot_sleep_a_group():
-    """启动时清一次旧标记：旧破冰时代留下的 `dormant_forever` 不该把群叫睡。
+    """启动时清一次旧标记：旧存档里睡下的群不该在升级后继续睡着。
 
-    `from_dict` **会**读这两个字段（`_load_state` 每次都经它重建，不读就等于
+    `from_dict` **会**读 `dormant`（`_load_state` 每次都经它重建，不读就等于
     「睡下 → 下一次读状态又醒了」），所以清理放在 `load_cached_state`（插件启动时
     一次性清空）—— 那样既不破坏本次运行内的往返，也不回放陈年标记。
     """
@@ -238,7 +242,7 @@ def test_an_old_archive_cannot_sleep_a_group():
     legacy = {
         GROUP: {
             "group_id": GROUP, "attention_score": 5.0,
-            "dormant_forever": True, "dormant_until": 0,
+            "dormant": True,
             "last_message_at": NOW - 60,
         },
     }
@@ -268,7 +272,7 @@ def test_dormancy_state_survives_a_restart():
 
     raw = svc._load_state(GROUP).to_dict()
     restored = QQGroupAttentionState.from_dict(raw, group_id=GROUP)
-    assert restored.dormant_forever is True
+    assert restored.dormant is True
 
 
 # ── 苏醒：群里又热闹起来了（建模到注意力上）────────────────────────
@@ -513,6 +517,13 @@ def test_an_awake_group_is_not_affected():
 def test_the_three_keys_are_declared_with_the_agreed_defaults():
     assert settings_schema.BY_KEY["dormancy_enabled"].default is True
     assert settings_schema.BY_KEY["dormancy_idle_seconds"].default == 1800
-    assert settings_schema.BY_KEY["dormancy_auto_wake_seconds"].default == 0
-    for key in ("dormancy_enabled", "dormancy_idle_seconds", "dormancy_auto_wake_seconds"):
+    assert settings_schema.BY_KEY["dormancy_wake_score"].default == pytest.approx(2.0)
+    for key in ("dormancy_enabled", "dormancy_idle_seconds", "dormancy_wake_score"):
         assert key in settings_schema.SAVEABLE_KEYS
+
+
+def test_there_is_no_auto_wake_key():
+    """「到点自动醒」连配置键都不该存在（2026-09-29 使用者否掉）。"""
+    assert "dormancy_auto_wake_seconds" not in settings_schema.BY_KEY
+    assert "dormancy_auto_wake_seconds" not in settings_schema.SAVEABLE_KEYS
+    assert "dormancy_auto_wake_seconds" not in settings_schema.defaults()

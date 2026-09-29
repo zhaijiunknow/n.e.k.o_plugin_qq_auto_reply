@@ -446,6 +446,23 @@ def test_icebreaker_family_is_gone():
         )
 
 
+def test_auto_wake_key_is_gone():
+    """「到点自动醒」删除契约（2026-09-29）。
+
+    使用者口径：「到点自动醒也不要。注意，这个逻辑只在脚本内处理」。
+    删掉的是**整条唤醒路径**：脚本里不该再有"睡够多久就醒"的判据，
+    休眠状态也不该再有「到点醒的时刻」这种字段（`dormant` 就是个布尔量）。
+    """
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
+
+    key = "dormancy_auto_wake_seconds"
+    assert key not in settings_schema.BY_KEY, "被加回真源表了"
+    assert key not in settings_schema.defaults(), "又写进默认值了"
+    assert key in QQAutoReplyConfigStore._LEGACY_ZOMBIE_KEYS, (
+        "不在僵尸键名单里 —— 老配置文件里的残留值会被原样传下去"
+    )
+
+
 def test_legacy_strategy_key_is_dropped_on_load(tmp_path):
     """老配置里残留的 `strategy_mode` 必须被当僵尸键清掉，而不是原样传下去。
 

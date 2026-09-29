@@ -96,21 +96,20 @@ def test_zero_gap_means_never_cools():
     assert svc._heat_tier(st, 10_000_000) == "warm"
 
 
-def test_a_phase_era_archive_cannot_freeze_a_group_forever():
-    """旧破冰时代的 `dormant_forever` 在**启动时**被清掉，不会把群冻住。
+def test_an_old_archive_cannot_freeze_a_group_forever():
+    """旧存档里的休眠标记在**启动时**被清掉，不会把群冻住。
 
-    `from_dict` 会读这两个字段（`_load_state` 每次都经它重建），所以清理放在
-    `load_cached_state` —— 那是插件启动时的一次性迁移。这里直接验"清完之后不冻"。
+    `from_dict` 只读 `dormant` 这一个布尔量（`_load_state` 每次都经它重建），所以
+    清理放在 `load_cached_state` —— 那是插件启动时的一次性迁移。这里直接验清完之后不冻。
     """
     svc = _service()
     st = QQGroupAttentionState(
-        group_id="g1", attention_score=5.0, last_message_at=1000 - 600, dormant_forever=True,
+        group_id="g1", attention_score=5.0, last_message_at=1000 - 600, dormant=True,
     )
     st.last_decay_at = 1000
 
     # 启动迁移做的事（见 load_cached_state）
-    st.dormant_forever = False
-    st.dormant_until = 0
+    st.dormant = False
 
     after = svc._apply_decay(st, 1010)
     assert after.heat == "cooling", "旧存档把群冻住了"

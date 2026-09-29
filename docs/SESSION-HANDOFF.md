@@ -6019,7 +6019,7 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 | 判定位置 | `attention_service._maybe_fall_asleep`，由 `decay_all()`（每 5 秒一轮）驱动 | **后台判定，不花任何 LLM 调用** —— 这与破冰那条（要真发一句话）本质不同 |
 | 从没说过话的群 | 不睡 | 那是"还没认识"，不是"冷漠了" |
 | 总开关 | `dormancy_enabled`（默认 True） | 关掉时**连标记都不立**（旧实现里"关了又开，旧标记立刻让群重新睡下"的坑） |
-| 自动醒 | `dormancy_auto_wake_seconds`（默认 **0 = 一直睡**） | 正数则到时自动醒；群里闲聊**不会**提前叫醒她 |
+| 自动醒 | ~~`dormancy_auto_wake_seconds`（默认 0 = 一直睡）~~ **当天即删，见 §44** | 那一版是"正数则到时自动醒"；使用者随后明确「到点自动醒也不要」 |
 
 ### 43.2 睡下的效果：**只答点名**
 
@@ -6042,6 +6042,9 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 新增（都进设置真源与面板）：`dormancy_enabled`（开关）/ `dormancy_idle_seconds`（1800）/
 `dormancy_auto_wake_seconds`（0）。面板在「按群维护间隔」那一行旁边，中英文案齐。
 热度那一列现在会显示「休眠」。
+
+（**注**：`dormancy_auto_wake_seconds` 当天就被删掉了，见 §44）—— 现在是三个键：
+开关 / 静默阈值 / 苏醒线。
 
 ### 43.4 证据
 
@@ -6080,6 +6083,9 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 于是休眠的完整生命周期是：**群里静默 30 分钟 → 睡下（只答点名）→ 有人点名 或 群里又聊热
 （注意力顶回 2.0）→ 苏醒**。三条路径（点名 / 热闹 / 到点自动醒）互相独立，都能单独关。
 
+（**注**：第三条"到点自动醒"随后被使用者否掉并**整条删除**，见 §44 —— 脚本内不再有任何
+"睡够多久就醒"的判据。现在只剩两条，且都必须由这个群里**实际发生的事**触发。）
+
 ### 43.6 证据（续）
 
 - 全量 **1534 passed**；两道 ruff 门全过。
@@ -6092,8 +6098,108 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 
 ### 43.7 边界
 
-- 一个群睡下之后，**如果没人点名叫她、也没人把群聊热**，它会一直睡（默认口径）。想让它在
-  早高峰自己醒，把 `dormancy_auto_wake_seconds` 配成正数（例如 3600 = 一小时后重试）。
+- 一个群睡下之后，**如果没人点名叫她、也没人把群聊热**，它会一直睡 —— 这现在是唯一口径。
+  曾经可以配 `dormancy_auto_wake_seconds` 让它到点自己醒，那条路已在 §44 整条删除。
 - 它与热度档是两层：静默 2 分钟 → `cooling`（分数开始回落）；静默 30 分钟 → `dormant`
   （睡下、只答点名）。三个阈值（`attention_heat_warm_gap_seconds` / `dormancy_idle_seconds` /
   `dormancy_wake_score`）都在设置里，互不影响。
+
+---
+
+## 44. 「到点自动醒」删除：休眠收敛成一个布尔量
+
+使用者口径（2026-09-29，紧接着 §43 的苏醒建模）：
+
+> 到点自动醒也不要。注意，这个逻辑只在脚本内处理。
+
+于是 §43 里那三条唤醒路径（点名 / 群里热起来 / 到点自动醒）**去掉第三条** —— 而且不是
+"把默认值改成 0"，是**把整条路径连同状态字段一起删掉**：留着那个键就等于留着一条
+"睡够多久就自己醒"的判据，而那正是被否掉的东西。
+
+### 44.1 删掉了什么
+
+| 面 | 删掉的东西 |
+|---|---|
+| 设置真源 `settings_schema.py` | `dormancy_auto_wake_seconds` 那个 `SettingSpec`（含 UI 声明）。休眠键从 4 个变回 3 个 |
+| 僵尸键名单 `config_store._LEGACY_ZOMBIE_KEYS` | 新收 `dormancy_auto_wake_seconds`：老配置文件里的残留值不再随文件传递 |
+| 落盘 `settings_service.py` | 那个键的写入口 |
+| 面板透传 `dashboard_service.py` | 保存形参与转发各一处 |
+| 面板 `static/napcat.html` | 输入框 `#cfg-dormancy-auto-wake` + 回填 + 保存，三处 |
+| i18n | `ui.attention.dormancy_auto_wake` / `.hint`（中英各两条） |
+| 运行时 `attention_service.py` | `_dormancy_auto_wake_seconds()`、字段 `dormant_until` / `dormant_forever`、以及所有读写它们的分支 |
+| 验证脚本 | `tests/verify_icebreaker_dormant_fail_to_pass.py` 整份删除（它整篇在写已被删掉的 `_dormant_enabled()` 与 `dormant_until`） |
+
+**状态字段收敛成一个布尔量** `dormant: bool`：
+
+- 老写法用一个 int 兼两种含义（`0` = 没睡 / `> now` = 到点醒）外加一个 `dormant_forever`
+  布尔量。当年那段注释自己就写着「一个 int 兼两种含义迟早会被某处 `or` 或比较写错」——
+  现在"到点醒"没了，两种含义只剩一种，那个 int 也就没有存在理由了；
+- 老存档里的 `dormant_until` / `dormant_forever` **不再读**（`from_dict` 只读 `dormant`）；
+- `load_cached_state` 仍在插件启动时清一次标记，理由与 §43 相同（不回放陈年标记）。
+
+现在的唤醒只有两条，且都必须由**这个群里实际发生的事**触发：
+
+```
+点名（@ / 引用她 / 关键词）→ mark_focus 清 dormant          ← 人叫她
+群里又热闹到 dormancy_wake_score（默认 2.0）→ _maybe_wake_up 清 dormant   ← 群自己热起来
+```
+
+### 44.2 「这个逻辑只在脚本内处理」= 没有观测期、没有迁移器、没有兜底任务
+
+使用者这句话落在实现上是三条：
+
+1. 不为它留任何"以后再决定"的开关（不留一个恒为 0 的死键）；
+2. 不为老存档写迁移脚本 —— `from_dict` 直接不认那两个键（值留在 JSON 里，下次写盘自然消失）；
+3. 不加"兜底唤醒"的定时任务 —— 衰减循环（每 5 秒）里唯一与休眠相关的动作是
+   `_maybe_fall_asleep`（睡下），**没有**任何"看看该不该醒"的轮询。
+
+### 44.3 现状：时间回落与自然增长的实测口径（2026-09-29 真机配置）
+
+这一节按**当前代码 + 真机配置里的数值**把两个方向算清楚（不是新功能，是现状口径）。
+三者都不花任何 LLM 调用：自然增长/回落由 5 秒一轮的 `decay_all()` 与消息路径驱动，
+睡着则两者都不发生。
+
+| 动作 | 公式 | 真机数值 | 实测速率 |
+|---|---|---|---|
+| 自然增长（`warm`：本群 120s 内有人说过话） | `base_rise_rate × clamp(目标间隔 / 实际间隔, 0.15, 1.8) × (1 + 情绪倍率)` | 0.08 × … | 间隔 ≤16.7s：**+8.64 分/分**（顶格 ×1.8）；间隔 30s：**+4.8 分/分**（×1.0）；间隔 120s（正要转凉）：**+1.2 分/分**（×0.25） |
+| 时间回落（`cooling`：静默超过 `heat_warm_gap` 120s） | `fall_rate × max(0.05, 1 − 情绪倍率)` | 0.015 × … | calm：**−0.9 分/分**；playful −0.63；annoyed −0.45；sulking −1.71（最快）；arguing（1.2）时地板生效：**−0.045 分/分** |
+| 睡着（`dormant`） | **两个方向都没有** | — | 分数完全冻结，只有"有人说话"的消息加成能推动它 |
+
+配套数字（同一份配置）：
+
+- 满格 10.0 掉到"在聊线"2.0：**533 秒 ≈ 8.9 分钟**（calm）；掉到焦点线 4.0 约 6.7 分钟；
+  2.0 掉到 0 约 2.2 分钟。她说一句话固定花 **1.0 分**（`max_score × consume_ratio` = 10 × 0.1，
+  绝对量、与当前分数无关）。
+- 单条消息的加成：普通 **+0.15**、问题 ×1.5、@ 她 ×3、命中分类/关键词 ×1.8（@ + 关键词可叠到
+  +0.81）；批量计数那条路径是 +0.25/条。上限 `attention_max_score` = 10。
+- 增长是按**秒**连续推进的（不是每条消息一跳）：`dt = now − last_decay_at`，每个 5 秒 tick 用
+  当时的间隔算一次倍率，于是群越静涨得越慢，静默超过 120 秒才转为回落 —— 中间没有跳变。
+- **停机不算账**：启动时 `last_decay_at` 重置为"此刻"，停机那段时间既不涨也不掉。
+- **睡着期间连回落都不走**（`_advance_heat` 对 dormant 直接 return），所以醒来时拿到的是与睡下
+  时**一模一样的分数** —— 不必从零熬。
+- 门控那条"在聊线"（`attention_focus_hold_threshold` 2.0）与唤醒线（`dormancy_wake_score` 2.0）
+  是两个键、同一个值：改一个不影响另一个。
+
+### 44.4 证据
+
+- 全量 **1536 passed**；两道 ruff 门（repo 门 + CI 门）全过。
+- `test_qq_dormancy.py`：`test_auto_wake_when_configured` 换成 **`test_there_is_no_auto_wake`**
+  —— 睡下之后把时钟推 **30 天**，标记与分数都不许变，并断言 `dormant_until` 字段与
+  `_dormancy_auto_wake_seconds` 读取口都不存在（谁加回来就直接红）；新增
+  `test_there_is_no_auto_wake_key`（键不在真源 / 不在默认值 / 不在 saveable）。
+- `test_qq_settings_schema.py` 新增 `test_auto_wake_key_is_gone`：键不在真源、不在默认值，
+  但**在**僵尸键名单里（三样缺一就红）。
+- 变异 `verify_dormancy_fail_to_pass.py` **15/15**（锚点全部跟上新实现：新增"热起来也不清休眠
+  标记 → 红"，"睡下时标记写不出来 → 红"替换掉原两条围绕 `dormant_until` 的变异）。
+- 另外三份变异证据同时复跑通过：热度档 9/9、按群触发 10/10、注意力范围 10/10。
+- 真机（18:52:05 reload，18:52:12 日志）：新文案
+  「群 985066274 冷漠了 → 休眠（被点名或群里又聊热就醒（没有到点自动醒））」，
+  证明跑的是新代码；`backlog_state.json` 里那个群的 `dormant` 是 `true`、`heat` 是 `dormant`，
+  而 `dormant_until` / `dormant_forever` 两个键已经不再写出来。
+
+### 44.5 边界
+
+- 一个群睡下之后，**只有**「有人点名叫她」或「这个群自己又聊热」能叫醒它。一个彻底安静、
+  也没人叫她的群会一直睡 —— 这是现在的口径，不是缺陷。
+- 「到点自动醒」原本要解决的场景（例如想在早高峰自己醒）现在**没有**对应机制。真要做，
+  应该回到事件驱动（"群里出现了新话题"之类），而不是把时间判据加回来。

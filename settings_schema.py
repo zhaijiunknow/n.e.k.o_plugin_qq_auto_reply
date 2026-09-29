@@ -511,11 +511,9 @@ MISC = (
                 ui=UIInput("cfg-dormancy-wake-score", min=0, max=10, step=0.5,
                            label="ui.attention.dormancy_wake_score",
                            hint="ui.attention.dormancy_wake_score.hint")),
-    SettingSpec("dormancy_auto_wake_seconds", "int", 0, saveable=True,
-                floor=0, description="save：休眠后多少秒自动醒（0=一直睡，只有点名能唤醒）",
-                ui=UIInput("cfg-dormancy-auto-wake", min=0, max=86400, step=60,
-                           label="ui.attention.dormancy_auto_wake",
-                           hint="ui.attention.dormancy_auto_wake.hint")),
+    # 这里曾有一个 `dormancy_auto_wake_seconds`（到点自动醒）。2026-09-29 使用者否掉
+    # （「到点自动醒也不要」）：脚本内不再有任何「睡够多久就醒」的判据，键进僵尸名单。
+    # 唤醒只剩两条 —— 点名，或群里又热闹到 `dormancy_wake_score`。
     # ── 主动破冰：整套删除（2026-09-29 使用者口径「干脆不要这个先」）──
     # 原触发判据是"这个群静默 1800 秒"（`icebreaker_idle_seconds`）—— 使用者明确不要
     # 用时间判断；给他的四个事件驱动备选（她说完没人接 / 有人喊冷场 / 群在聊但不带她 /

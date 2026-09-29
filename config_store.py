@@ -184,6 +184,10 @@ class QQAutoReplyConfigStore:
         "icebreaker_dormant_enabled",
         "icebreaker_dormant_seconds",
         "proactive_topics",
+        # 「到点自动醒」删除后的遗留键（2026-09-29 使用者口径：「到点自动醒也不要」）。
+        # 它的唯一作用是给 `dormant_until` 写一个未来时刻，那套模型已随键一起删除：
+        # 现在休眠就是一个布尔量，醒来只有点名 / 群里热起来两条路。
+        "dormancy_auto_wake_seconds",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现

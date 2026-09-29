@@ -6,7 +6,7 @@
 - 触发：静默够久 → 睡下；不够久 / 从没说过话 / 开关关掉 / 阈值配 0 → 都不睡
 - 睡着时分数冻住；醒来时分数保留（不必从零熬）
 - 唤醒：点名即醒，且把回溯补回游标推到此刻（睡着那段的账不补）
-- 自动醒（`dormancy_auto_wake_seconds > 0`）
+- **没有到点自动醒**：睡多久都不会因为"时间过去了"而醒（`dormant` 是布尔量）
 - 门控：睡着的群**只答点名**（普通消息 ignore，@ / 引用 / 关键词照旧必回）
 - 存档往返与"启动时清掉旧破冰时代的标记"
 
@@ -43,8 +43,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "阈值配 0 还照样睡（0=关掉自动休眠 被写反）",
-        "        if idle <= 0 or self._state_is_dormant(state, now):",
-        "        if self._state_is_dormant(state, now):",
+        "        if idle <= 0 or self._state_is_dormant(state):",
+        "        if self._state_is_dormant(state):",
     ),
     (
         "attention_service.py",
@@ -54,15 +54,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_service.py",
-        "「一直睡」写不出来（永远不设 dormant_forever，睡一觉立刻醒）",
-        "        state.dormant_forever = auto_wake <= 0",
-        "        state.dormant_forever = False",
+        "睡下时标记写不出来（静默够久却还醒着）",
+        "        state.dormant = True\n        state.heat = \"dormant\"",
+        "        state.dormant = False\n        state.heat = \"dormant\"",
     ),
     (
         "attention_service.py",
-        "自动醒的秒数不算进 dormant_until（点了自动醒却一直睡）",
-        "        state.dormant_until = now + auto_wake if auto_wake > 0 else 0",
-        "        state.dormant_until = 0",
+        "热起来也不清休眠标记（群里聊到唤醒线却还睡着）",
+        "        state.dormant = False\n        # 睡着那段时间的账不补",
+        "        state.dormant = True\n        # 睡着那段时间的账不补",
     ),
     (
         "attention_service.py",
@@ -73,19 +73,19 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "热度档不再认休眠（面板与提示词都说它在聊）",
-        "        if bool(state.dormant_forever) or int(state.dormant_until or 0) > now:\n            return \"dormant\"",
+        "        if self._state_is_dormant(state):\n            return \"dormant\"",
         "        if False:\n            return \"dormant\"",
     ),
     (
         "attention_service.py",
         "存档不读休眠标记（睡下 → 下一次读状态又醒了）",
-        "            dormant_until=int(data.get(\"dormant_until\") or 0),\n            dormant_forever=bool(data.get(\"dormant_forever\") or False),",
-        "            dormant_until=0,\n            dormant_forever=False,",
+        "            dormant=bool(data.get(\"dormant\") or False),",
+        "            dormant=False,",
     ),
     (
         "attention_service.py",
         "启动时不清旧标记（旧破冰时代睡过的群升级后立刻睡下且不醒）",
-        "                payload[\"dormant_until\"] = 0\n                payload[\"dormant_forever\"] = False",
+        "                payload[\"dormant\"] = False",
         "                pass",
     ),
     (
@@ -97,8 +97,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "群里热起来也不苏醒（把\"聊得热火朝天就醒\"这条接线摘掉）",
-        "        if not self._dormancy_enabled() or not self._state_is_dormant(state, now):\n            return False\n        if float(state.attention_score) < self._dormancy_wake_score():\n            return False",
-        "        if not self._dormancy_enabled() or not self._state_is_dormant(state, now):\n            return False\n        if True:\n            return False",
+        "        if not self._dormancy_enabled() or not self._state_is_dormant(state):\n            return False\n        if float(state.attention_score) < self._dormancy_wake_score():\n            return False",
+        "        if not self._dormancy_enabled() or not self._state_is_dormant(state):\n            return False\n        if True:\n            return False",
     ),
     (
         "attention_service.py",

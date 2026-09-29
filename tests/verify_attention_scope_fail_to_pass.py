@@ -95,8 +95,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_service.py",
         "提示词里又把跨群话术装回来（「你不是焦点」会让模型以为自己不该开口）",
-        'f"这个群当前的注意力 {float(this_state.get(\'attention_score\', 0)):.1f}"',
-        'f"这不是你当前关注的焦点群（本群注意力 {float(this_state.get(\'attention_score\', 0)):.1f}"',
+        'f"这个群当前的注意力 {float(this_state.get(\'attention_score\', 0)):.1f}，',
+        'f"这不是你当前关注的焦点群（本群注意力 {float(this_state.get(\'attention_score\', 0)):.1f}，',
     ),
 ]
 
