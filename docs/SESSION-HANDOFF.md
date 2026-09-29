@@ -6474,7 +6474,7 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
      注意：不必 @ 他，也别评论管理员怎么管群。
      message_type=group / user_id=被禁言者 / _synthetic_source=group_ban_notice
         ↓
-  走正常 pipeline，且**绕过门控、必定生成一句**（`FORCED_SYNTHETIC_SOURCES`，见 48.6）
+  走正常 pipeline，且**绕过门控**（不再让注意力闸 / 必要性闸重审）；**说不说由她决定**（见 48.6）
   （会话锁登记进 CONVERTED_NOTICE_TYPES，否则这一轮全程无锁）
 ```
 
@@ -6531,36 +6531,47 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
 - 反应口径可以再收紧：现在只说"不必 @ 他、别评论管理员"，如果发现她语气不合适，
   调的是那条合成提示的措辞（`message_dispatcher._maybe_react_to_ban`），不是机制。
 
-### 48.6 「先判断，再生成」：判过了就必定说一句（2026-09-29，紧随 48.5）
+### 48.6 最终口径：派发层判断 → 生成一轮 → **说不说由她决定**
 
-使用者口径：
+两轮口径连在一起才是完整的（第一轮实现得过头了，第二轮收回来）：
 
 > 先用「群… … 他不是正在和她对话的人 → 不反应」判断，再生成
+> 派发层通过再让猫娘决定说不说
 
-也就是：**判断在脚本里做完**（`_maybe_react_to_ban` 的三道闸），做完了就**生成** ——
-不要再让注意力闸 / 必要性闸把同一件事重审一遍，也不要让模型自己选说还是不说。否则
-"她到底有没有反应"取决于哪道闸先拦下，而这个功能要的是一个确定的行为。
+也就是：**脚本侧只做一道判断** —— 「这个人是不是正在和她对话」（外加 trusted 与冷却）；
+判断通过 → 开一轮生成，**说不说由模型自己决定**（她可以什么都不发，走 `llm_skip`）。
+第一轮把"判过了"实现成了"必定说一句"，那是替她做决定，收回。
 
-改动四处：
+于是代码里把两件事**拆成两个集合**（原先挤在同一个分支里，一个布尔量兼两种含义）：
 
-| # | 位置 | 改动 |
+| 集合 | 含义 | 成员 |
 |---|---|---|
-| 1 | `pipeline_models.py` | 新增 `KIND_GROUP_BAN_NOTICE = "group_ban_notice"` 并登记进 `SYNTHETIC_SOURCE_KINDS`（它的 sender 是**名义发言人** = 被禁言的人，不是他这一轮说的话；漏登记会让读侧/写侧把它当真实发言）。**不**进 `BUFFER_INTERNAL_SOURCE_KINDS` —— 与入群欢迎一样走正常投递 |
-| 2 | `message_dispatcher.py` | "绕过门控、必定回复"的来源从写死的 `== "group_join_notice"` 收成 `FORCED_SYNTHETIC_SOURCES`，禁言反应加进去（`_is_forced_synthetic()` 判据） |
-| 3 | 合成提示词 | 去掉"想接一句就说、不想说就不说"这种让模型自决的措辞 → 「你说一句自然的话接一下。注意：不必 @ 他，也别评论管理员怎么管群。」 |
-| 4 | `tests/test_qq_source_kind_sets.py` | 新来源登记进 `DECLARED`（synthetic=True / buffer_internal=False），并加一条"由 `message['_synthetic_source']` 变量注入"的豁免；豁免上限 3 → 4，理由写在注释里（这一族每加一种通知就多一条，成因相同） |
+| `GATE_BYPASS_SYNTHETIC_SOURCES` | **绕过门控**：脚本已经判完"该不该开这一轮"，不必再让注意力闸 / 必要性闸重审 | 入群欢迎、禁言反应 |
+| `FORCED_SYNTHETIC_SOURCES` | **必定回复**：开了一轮就必须说一句 | 只有入群欢迎（那是她必须打的招呼，行为与改动前一致） |
 
-**新增的用例与证据**：`test_the_ban_reaction_is_a_forced_synthetic_turn`（合成源在集合里、
-登记成合成轮、不进缓冲）、`test_the_welcome_turn_still_bypasses_the_gate`（欢迎那条路没被
-弄丢）、`test_handle_group_message_uses_the_forced_set`（旁路还接着集合，不是又写死一种
-来源）；变异加到 **11/11**（把禁言源从"必定回复"集合里拿掉 → 红；把新来源从
-`SYNTHETIC_SOURCE_KINDS` 里拿掉 → 红）。
+其余三处仍然保留（它们是第一轮里对的部分）：新来源 `KIND_GROUP_BAN_NOTICE` 登记进
+`SYNTHETIC_SOURCE_KINDS`（sender 是名义发言人 = 被禁言的人，漏登记会让读侧/写侧把它当成
+他这一轮说的话）、不进 `BUFFER_INTERNAL_SOURCE_KINDS`、以及来源登记表的豁免。
 
-**留下的顺序**（这一节之后就是最终口径）：
+合成提示词回到"由她决定"的措辞，但保留两条约束：
 
 ```
-连接层 → 入队 + 归一化
-派发层 → ① trusted？ ② 正在和她对话？ ③ 冷却？
-         ② 不成立 → 记一行 DEBUG「他不是正在和她对话的人 → 不反应」，到此为止（不生成）
-         三道都过 → 合成系统消息 + 标记 forced → 绕过门控、必定生成一句
+[系统] 小张被管理员禁言了 10 分 0 秒。他刚才还在跟你说话。
+想接一句就自然地说一句（不必 @ 他，也别评论管理员怎么管群）；不想说就不说。
 ```
+
+**证据**：插件全量 **1578 passed**、两道 ruff 门全过；三条用例改成守新口径 ——
+`test_the_ban_reaction_bypasses_the_gate_but_is_not_forced`（在旁路集合里、**不在**强制集合里、
+登记成合成轮、不进缓冲）、`test_the_welcome_turn_is_still_bypassed_and_forced`（欢迎那条路
+两个集合都还在）、`test_handle_group_message_splits_bypass_from_force`（两个判据各自接着
+自己的集合，且不再出现写死的来源）；变异 **12/12** —— 除了连接层与四道闸，新增
+「禁言反应不再绕过门控 → 红」与「禁言反应又被塞进必定回复（替她决定）→ 红」。
+
+最终顺序：
+
+```
+连接层    第三方被禁言/解禁 → 入队 + 归一化
+派发层    ① trusted？ ② 正在和她对话？ ③ 冷却？
+          ② 不成立 → DEBUG「他不是正在和她对话的人 → 不反应」，到此为止（不开生成）
+          三道都过 → 合成系统消息（_synthetic_source=group_ban_notice）
+生成      绕过门控跑一轮；**说不说由她决定**

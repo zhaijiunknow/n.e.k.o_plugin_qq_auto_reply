@@ -44,11 +44,16 @@ class QQMessageDispatcher:
     #: 像机关枪，不像人。**戳她本人的回戳不受它限制**（那是对她的动作，该立刻回应）。
     POKE_FOLLOW_MIN_INTERVAL_SECONDS = 15.0
 
-    #: 合成轮里**绕过门控、必定回复**的那几种：它们的"该不该说"已经在脚本里判完了
+    #: 合成轮里**绕过门控**的那几种：它们"该不该开这一轮"已经在脚本里判完了
     #: （新人入群该欢迎；禁言反应的对象判断见 `_maybe_react_to_ban`），到这里再让
-    #: 注意力闸 / 必要性闸审一遍，等于同一件事被两套口径各判一次 —— 而"她到底说没说"
-    #: 就取决于哪道闸先拦下。使用者口径（2026-09-29）：「先…判断，再生成」。
-    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE, KIND_GROUP_BAN_NOTICE})
+    #: 注意力闸 / 必要性闸审一遍，等于同一件事被两套口径各判一次。
+    #: 使用者口径（2026-09-29）：「派发层通过再让猫娘决定说不说」。
+    GATE_BYPASS_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE, KIND_GROUP_BAN_NOTICE})
+
+    #: 上面那批里**还要必定回复**的：只有入群欢迎 —— 那是她必须打的招呼（改动前就是
+    #: 这个行为）。禁言反应**不在此列**：派发层判完"这是正在跟她对话的人"之后，
+    #: 说不说由模型自己决定（它可以什么都不发）。替她决定就等于把"反应"变成"必须开口"。
+    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE})
 
     #: 禁言/解禁反应的冷却（秒）：**每群一次**，且同一人同一事件只反应一次。
     #: 使用者口径（2026-09-29）：「每群冷却 600 秒 + 同一事件只反应一次」。
@@ -441,8 +446,12 @@ class QQMessageDispatcher:
                 return nick
         return f"QQ用户{uid}"
 
+    def _is_gate_bypassed_synthetic(self, source: str) -> bool:
+        """这一轮的合成来源是不是"脚本已判完、不必再过门控"的那几种。"""
+        return str(source or "") in self.GATE_BYPASS_SYNTHETIC_SOURCES
+
     def _is_forced_synthetic(self, source: str) -> bool:
-        """这一轮的合成来源是不是"脚本已判完、必定回复"的那几种。"""
+        """这一轮的合成来源是不是"必定回复"的那几种（只有入群欢迎）。"""
         return str(source or "") in self.FORCED_SYNTHETIC_SOURCES
 
     def _ban_reaction_allowed(
@@ -539,8 +548,8 @@ class QQMessageDispatcher:
         message["user_id"] = user_id
         message["is_at_bot"] = False
         message["content"] = (
-            f"[系统] {name}{what}。他刚才还在跟你说话，你说一句自然的话接一下。"
-            f"注意：不必 @ 他，也别评论管理员怎么管群。"
+            f"[系统] {name}{what}。他刚才还在跟你说话。"
+            f"想接一句就自然地说一句（不必 @ 他，也别评论管理员怎么管群）；不想说就不说。"
         )
         message["raw_message"] = message["content"]
         message["message_id"] = f"ban_{group_id}_{user_id}_{int(now)}"
@@ -1098,9 +1107,11 @@ class QQMessageDispatcher:
         # 合成轮、没有门控服务的轻量宿主）保持 None → 请求里三个字段留空 →
         # 提示词层退回改动前的 6 个标签。
         addressee: Any = None
-        # 新人入群 / 禁言反应：脚本已经判完了"该不该说"，这里绕过门控、必定生成一句。
-        if self._is_forced_synthetic(synthetic_source):
-            force_reply = True
+        # 新人入群 / 禁言反应：脚本已经判完"该不该开这一轮"，这里绕过门控。
+        # 其中只有入群欢迎必定回复；禁言反应**不强制** —— 使用者口径：
+        # 「派发层通过再让猫娘决定说不说」。
+        if self._is_gate_bypassed_synthetic(synthetic_source):
+            force_reply = self._is_forced_synthetic(synthetic_source)
         elif hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
                 group_id=group_id,

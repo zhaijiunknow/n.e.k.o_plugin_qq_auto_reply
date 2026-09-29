@@ -75,9 +75,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "message_dispatcher.py",
-        "禁言反应不再走「必定回复」旁路（判过了也要再被门控审一遍，可能一个字都不说）",
-        "    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE, KIND_GROUP_BAN_NOTICE})",
+        "禁言反应不再绕过门控（判过了还要被注意力/必要性再审一遍，可能一个字都不说）",
+        "    GATE_BYPASS_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE, KIND_GROUP_BAN_NOTICE})",
+        "    GATE_BYPASS_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE})",
+    ),
+    (
+        "message_dispatcher.py",
+        "禁言反应又被塞进「必定回复」（替猫娘决定必须开口）",
         "    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE})",
+        "    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE, KIND_GROUP_BAN_NOTICE})",
     ),
     (
         "pipeline_models.py",

@@ -115,9 +115,8 @@ def test_a_ban_on_her_partner_opens_a_turn():
     assert message["message_id"].startswith("ban_")
     assert "小张" in message["content"] and "10 分" in message["content"], message["content"]
     assert "别评论管理员" in message["content"], "口径里明确要求不评价管理员"
-    assert "你说一句" in message["content"], "没让她说一句（判断通过就该生成）"
-    assert "不想说就不说" not in message["content"], (
-        "又把说不说交回给模型了 —— 使用者口径是「先判断，再生成」"
+    assert "不想说就不说" in message["content"], (
+        "说不说又把模型排除在外了 —— 使用者口径是「派发层通过再让猫娘决定说不说」"
     )
     assert "小张" in _logs(plugin)
 
@@ -210,21 +209,26 @@ def test_ban_and_lift_are_separate_events():
     assert len(plugin.pipeline) == 1, "同一群冷却内不该既反应禁言又反应解禁"
 
 
-# ── 四、"先判断，再生成"：判过了就必定生成一句 ──────────────────────
+# ── 四、"派发层通过 → 让猫娘决定说不说" ──────────────────────────────
 
-def test_the_ban_reaction_is_a_forced_synthetic_turn():
-    """禁言反应走"绕过门控、必定回复"那条路（与入群欢迎同一机制）。
+def test_the_ban_reaction_bypasses_the_gate_but_is_not_forced():
+    """禁言反应：绕过门控（脚本判完了），但**不强制**她开口 —— 说不说由模型决定。
 
-    使用者口径：「先用『他不是正在和她对话的人 → 不反应』判断，再生成」——
-    判断在派发层做完之后，不该再让注意力闸 / 必要性闸把同一件事重审一遍，
-    也不该让模型自己选说不说。否则"她到底有没有反应"取决于哪道闸先拦下。
+    使用者口径（2026-09-29）：
+      上一轮「先用『他不是正在和她对话的人 → 不反应』判断，再生成」
+      → 本轮「派发层通过再让猫娘决定说不说」。
+    也就是脚本只负责"这一轮该不该开"（trusted + 正在对话 + 冷却），开了之后
+    由她决定说不说 —— 不替她决定，也不让注意力闸/必要性闸把同一件事再审一遍。
     """
     dispatcher, plugin = _dispatcher()
     message = _ban(dispatcher)
 
     source = str(message["_synthetic_source"])
     assert source == pipeline_models.KIND_GROUP_BAN_NOTICE
-    assert dispatcher._is_forced_synthetic(source) is True, "没走必定回复的旁路"
+    assert dispatcher._is_gate_bypassed_synthetic(source) is True, "没过门控旁路"
+    assert dispatcher._is_forced_synthetic(source) is False, (
+        "替她决定了「必须开口」 —— 这一轮的说不说该由模型决定"
+    )
     assert pipeline_models.is_synthetic_source(source) is True, (
         "没登记成合成轮 —— 它的 sender 是名义发言人（被禁言的人），"
         "读侧/写侧会把它当成他这一轮说的话"
@@ -234,29 +238,33 @@ def test_the_ban_reaction_is_a_forced_synthetic_turn():
     )
 
 
-def test_the_welcome_turn_still_bypasses_the_gate():
-    """原来写死的 `== "group_join_notice"` 收成了集合，别把欢迎那条路弄丢。"""
+def test_the_welcome_turn_is_still_bypassed_and_forced():
+    """原来写死的 `== "group_join_notice"` 拆成了两个集合，别把欢迎那条路弄丢。"""
     dispatcher, _plugin = _dispatcher()
 
+    assert dispatcher._is_gate_bypassed_synthetic(pipeline_models.KIND_GROUP_JOIN_NOTICE) is True
     assert dispatcher._is_forced_synthetic(pipeline_models.KIND_GROUP_JOIN_NOTICE) is True
-    assert dispatcher._is_forced_synthetic("incoming_group") is False
-    assert dispatcher._is_forced_synthetic("") is False
-    assert dispatcher._is_forced_synthetic(None) is False
+    for source in ("incoming_group", "", None):
+        assert dispatcher._is_gate_bypassed_synthetic(source) is False
+        assert dispatcher._is_forced_synthetic(source) is False
 
 
-def test_handle_group_message_uses_the_forced_set():
-    """接线检查：门控旁路必须读那个集合，而不是又写死一种来源。
+def test_handle_group_message_splits_bypass_from_force():
+    """接线检查：门控旁路读一个集合、强制回复读另一个（别又合并成一处）。
 
     （不驱动整条 `handle_group_message`：它要跑回复管线、权限、backlog 与运行时记账，
-    为这一行断言搭那么大一个桩不划算。这条扫描保证的是"旁路还接着集合"。）
+    为这两行断言搭那么大一个桩不划算。这条扫描保证的是"两个判据都还接着集合"。）
     """
     text = (PLUGIN_DIR / "message_dispatcher.py").read_text(encoding="utf-8")
 
-    assert "if self._is_forced_synthetic(synthetic_source):" in text, (
-        "handle_group_message 里的合成轮旁路没接到 FORCED_SYNTHETIC_SOURCES"
+    assert "if self._is_gate_bypassed_synthetic(synthetic_source):" in text, (
+        "handle_group_message 里的门控旁路没接到 GATE_BYPASS_SYNTHETIC_SOURCES"
+    )
+    assert "force_reply = self._is_forced_synthetic(synthetic_source)" in text, (
+        "强制回复没接到 FORCED_SYNTHETIC_SOURCES"
     )
     assert 'synthetic_source == "group_join_notice"' not in text, (
-        "又出现写死的来源判断了 —— 请用 FORCED_SYNTHETIC_SOURCES"
+        "又出现写死的来源判断了 —— 请用那两个集合"
     )
 
 
