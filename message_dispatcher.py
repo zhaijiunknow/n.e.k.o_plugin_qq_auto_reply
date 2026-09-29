@@ -40,8 +40,17 @@ class QQMessageDispatcher:
     #: 像机关枪，不像人。**戳她本人的回戳不受它限制**（那是对她的动作，该立刻回应）。
     POKE_FOLLOW_MIN_INTERVAL_SECONDS = 15.0
 
+    #: 禁言/解禁反应的冷却（秒）：**每群一次**，且同一人同一事件只反应一次。
+    #: 使用者口径（2026-09-29）：「每群冷却 600 秒 + 同一事件只反应一次」。
+    #: 需要它是因为每次反应 = 一次 LLM 调用，而活跃群里有人被管理处理并不罕见。
+    BAN_REACTION_COOLDOWN_SECONDS = 600.0
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        #: 禁言反应的节流：``{group:user:sub_type: 上次反应时刻}`` 与 ``{group: 上次反应时刻}``。
+        #: 内存态、重启即失（与戳一戳的三道闸同一性质）。
+        self._ban_reactions: dict[str, float] = {}
+        self._ban_group_last: dict[str, float] = {}
         self._open_platform_bootstrap_lock = asyncio.Lock()
         #: ``{group_id: {sender_id: {first_seen, last_seen, count, nickname}}}``
         #: 只进内存、不落盘：它是「现在还没认领的人」，重启后由新消息自然重
@@ -422,6 +431,111 @@ class QQMessageDispatcher:
                 return nick
         return f"QQ用户{uid}"
 
+    def _ban_reaction_allowed(
+        self, group_id: str, user_id: str, sub_type: str, now: float,
+    ) -> bool:
+        """禁言反应的节流：每群冷却 + 同一人同一事件只反应一次。
+
+        使用者口径（2026-09-29）：两者都要。批量禁言（管理在清刷屏的人）时，
+        没有这道闸她会在几分钟里连说好几句。
+        """
+        cooldown = self.BAN_REACTION_COOLDOWN_SECONDS
+        key = f"{group_id}:{user_id}:{sub_type}"
+        last_same = self._ban_reactions.get(key, 0.0)
+        last_group = self._ban_group_last.get(group_id, 0.0)
+        if now - last_same < cooldown:
+            self.plugin._emit_log(
+                "DEBUG",
+                f"[Ban] 群{group_id} {user_id} {sub_type} 同一事件刚反应过"
+                f"（还剩 {cooldown - (now - last_same):.0f}s）→ 不反应",
+            )
+            return False
+        if now - last_group < cooldown:
+            self.plugin._emit_log(
+                "DEBUG",
+                f"[Ban] 群{group_id} 距上次禁言反应不到 {cooldown:.0f}s"
+                f"（还剩 {cooldown - (now - last_group):.0f}s）→ 不反应",
+            )
+            return False
+        self._ban_reactions[key] = now
+        self._ban_group_last[group_id] = now
+        return True
+
+    def _maybe_react_to_ban(self, message: dict[str, Any]) -> bool:
+        """把「某人被禁言/解禁」改写成一条合成系统消息。返回 True = 该走 pipeline。
+
+        它**不是**任何人的发言：`content` 是我们写的事件描述，`user_id` 是事件主角
+        （沿用入群通知那条路的写法），`_synthetic_source` 标记它，供提示词与记忆排除。
+
+        三道闸，缺一不可：
+
+        1. 群必须是 **trusted**（她只在这种群里开口；normal 群是"按概率转达给主人"，
+           在那里说话等于把别人的禁言转达成她的话）；
+        2. 被禁言的人必须**正在和她对话**（一来一回，见 `dialogue_partner`）——
+           使用者选的就是这个口径：「正在和她对话的人」；
+        3. 节流（`_ban_reaction_allowed`）：每群 600 秒 + 同一事件一次。
+        """
+        group_id = str(message.get("group_id") or "").strip()
+        user_id = str(message.get("user_id") or "").strip()
+        sub_type = str(message.get("sub_type") or "ban").strip() or "ban"
+        if not group_id or not user_id:
+            return False
+
+        level = ""
+        permission_mgr = getattr(self.plugin, "group_permission_mgr", None)
+        if permission_mgr:
+            try:
+                level = str(permission_mgr.get_group_level(group_id) or "")
+            except Exception:
+                level = ""
+        if level != "trusted":
+            self.plugin._emit_log(
+                "DEBUG", f"[Ban] 群{group_id} 不是 trusted（{level or '未登记'}）→ 不反应",
+            )
+            return False
+
+        gate = getattr(self.plugin, "attention_gate_service", None)
+        if gate is None or not hasattr(gate, "is_in_dialogue_with"):
+            return False
+        if not gate.is_in_dialogue_with(group_id, user_id):
+            self.plugin._emit_log(
+                "DEBUG",
+                f"[Ban] 群{group_id} {user_id} 被{('禁言' if sub_type == 'ban' else '解禁')}"
+                f"，但他不是正在和她对话的人 → 不反应",
+            )
+            return False
+
+        now = float(__import__("time").time())
+        if not self._ban_reaction_allowed(group_id, user_id, sub_type, now):
+            return False
+
+        name = self._resolve_poke_nickname(user_id, message)
+        duration = int(message.get("duration") or 0)
+        if sub_type == "lift_ban":
+            what = "的禁言被解除了"
+        elif duration > 0:
+            minutes, seconds = divmod(duration, 60)
+            span = f"{minutes} 分 {seconds} 秒" if minutes else f"{seconds} 秒"
+            what = f"被管理员禁言了 {span}"
+        else:
+            what = "被管理员禁言了"
+
+        message["message_type"] = "group"
+        message["group_id"] = group_id
+        message["user_id"] = user_id
+        message["is_at_bot"] = False
+        message["content"] = (
+            f"[系统] {name}{what}。他刚才还在跟你说话。"
+            f"想接一句就自然地说一句（不必 @ 他，也别评论管理员怎么管群）；不想说就不说。"
+        )
+        message["raw_message"] = message["content"]
+        message["message_id"] = f"ban_{group_id}_{user_id}_{int(now)}"
+        message["_synthetic_source"] = "group_ban_notice"
+        self.plugin._emit_log(
+            "INFO", f"[Ban] 群{group_id} {name}{what} → 交给模型决定说不说",
+        )
+        return True
+
     def _poke_follow_allowed(self, group_id: str, now: float) -> bool:
         """「跟戳别人之间的戳」的群级限速（见 `POKE_FOLLOW_MIN_INTERVAL_SECONDS`）。"""
         last = self._last_poke_follow.get(group_id, 0.0)
@@ -665,6 +779,18 @@ class QQMessageDispatcher:
                 # bucket 排除、prompt 行进 digest 排除名单。
                 message["_synthetic_source"] = "group_join_notice"
             # 不 return，走正常 pipeline
+        # 群里有人被禁言 / 被解禁 → **只对"正在和她对话的人"**反应，方式是合成一条
+        # 系统消息交给正常 pipeline（与入群欢迎同一条路，见下面 `_maybe_react_to_ban`）。
+        #
+        # 连接层只把**第三方**被禁言/解禁送上来：自己或全员被禁言时不入队 ——
+        # 那种情况她根本发不出去（`is_group_muted` 会让整条消息处理直接跳过）。
+        if (
+            message.get("message_type") == "notice"
+            and message.get("notice_type") == "group_ban"
+        ):
+            if not self._maybe_react_to_ban(message):
+                return
+            # 反应得成就继续往下走：它已经变成一条合成的群消息。
         # 黑名单优先：命中负优先级标签 → 不记录、不处理
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
         raw_content = str(message.get("content") or "").strip()
@@ -1084,7 +1210,11 @@ class QQMessageDispatcher:
         if outcome.action == "reply" and outcome.reply_text:
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
                 if hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service:
-                    await self.plugin.attention_gate_service.on_reply_sent(group_id)
+                    # 带上"这条回复是对谁说的"：禁言反应要判断被禁言的人是不是此刻
+                    # 正在跟她对话的那一个（一来一回，见 dialogue_partner）。
+                    await self.plugin.attention_gate_service.on_reply_sent(
+                        group_id, user_id=sender_id,
+                    )
 
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 

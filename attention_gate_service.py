@@ -23,6 +23,7 @@ import time
 from typing import Any
 
 from . import addressing
+from .dialogue_partner import DialoguePartnerTracker
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import backlog_sender_label
 from .reply_necessity import (
@@ -228,6 +229,23 @@ class QQAttentionGateService:
         except Exception:
             pass
         self.plugin._emit_log("INFO", message)
+
+    def _event_now(self, timestamp: Any = None) -> float:
+        """事件时刻（秒）。有 timestamp 就用它，否则用墙上时钟。
+
+        对话对象的窗口按**事件时间**算：门控里的消息时间戳在回放/测试里是可控的，
+        用它才能让"十分钟内"这类断言稳定可测。
+        """
+        if timestamp:
+            try:
+                return float(timestamp)
+            except (TypeError, ValueError):
+                pass
+        return float(__import__("time").time())
+
+    def is_in_dialogue_with(self, group_id: str, user_id: str, *, now: float | None = None) -> bool:
+        """这个人现在算不算「正在和她对话」（见 `dialogue_partner`）。"""
+        return self._dialogue.is_in_dialogue(group_id, user_id, now=now)
 
     def _necessity_threshold(self) -> float:
         """阈值来自设置（``reply_necessity_threshold``）；0 = 关闭这一关。
@@ -453,6 +471,9 @@ class QQAttentionGateService:
         # 「这句该不该接」的两个状态机（内存态，重启即失）
         self._speech = GroupSpeechTracker()
         self._backoff = IdleBackoff()
+        # 「正在和她对话的人」（一来一回，见 `dialogue_partner`）：禁言反应用它判断
+        # 被禁言的人是不是此刻正在跟她聊天的那个人。
+        self._dialogue = DialoguePartnerTracker()
         self._logger = plugin.logger
 
     # ── 「回复过于频繁 → 强制静默」这道硬闸**已删除**（2026-09-27 使用者口径）──
@@ -599,6 +620,10 @@ class QQAttentionGateService:
         # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
         #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。
         if is_at_bot and not is_reply_to_bot:
+            # 他找她 → 记进「正在和她对话的人」（与"她回他"合起来才算一来一回）。
+            # 放在 `if participates` **之前**：不参与注意力竞争的群也要记 —— 反不反应
+            # 是派发层的事（它另按 trusted 与冷却判断），这里只负责事实。
+            self._dialogue.note_address(normalized_group_id, sender_id, now=self._event_now(timestamp))
             # 被 @ = **锁**：期内该群独占焦点，其余群不参与竞争。
             # mark_focus / wake_boost 仍保留（它们管分数与保持线），但独占语义由
             # lock 承担 —— 分数是「我多想聊这个群」，锁是「有人点名叫我」。
@@ -647,6 +672,7 @@ class QQAttentionGateService:
         if category == "mention" and not is_at_bot:
             category = "chat"
         if category and category != "chat":
+            self._dialogue.note_address(normalized_group_id, sender_id, now=self._event_now(timestamp))
             if participates:
                 attention.mark_focus(normalized_group_id)
                 attention.wake_boost(normalized_group_id)
@@ -654,6 +680,7 @@ class QQAttentionGateService:
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
         if is_reply_to_bot:
+            self._dialogue.note_address(normalized_group_id, sender_id, now=self._event_now(timestamp))
             if participates:
                 attention.mark_focus(normalized_group_id)
                 attention.wake_boost(normalized_group_id)
@@ -751,12 +778,18 @@ class QQAttentionGateService:
     # 回复后消耗 + 焦点切换检测
     # ==========================================
 
-    async def on_reply_sent(self, group_id: str) -> None:
-        """回复已发送 → 消耗注意力 + 记录活跃（频率交给软提示，见 pacing_hint）"""
+    async def on_reply_sent(self, group_id: str, *, user_id: str = "") -> None:
+        """回复已发送 → 消耗注意力 + 记录活跃（频率交给软提示，见 pacing_hint）。
+
+        ``user_id`` = **这条回复是对谁说的**（触发这一轮的那条消息的发送者）。
+        它喂给「正在和她对话的人」：他找过她、她也回过他，才算一来一回。
+        """
         attention = self.plugin.attention_service
         if attention:
             now = attention._current_time()
             await attention.update_on_reply(group_id)
+            if user_id:
+                self._dialogue.note_reply(group_id, user_id, now=now)
         else:
             now = int(__import__("time").time())
         self._mark_active(group_id)
