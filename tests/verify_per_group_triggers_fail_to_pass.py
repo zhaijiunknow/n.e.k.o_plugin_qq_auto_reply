@@ -78,6 +78,19 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_gate_service.py",
+        "允许第二条维护循环（宿主两次初始化 → 破冰与摘要各做两遍）",
+        "        owner = _MAINTENANCE_OWNER\n"
+        "        if owner is not None and owner._maintenance_task is not None and not owner._maintenance_task.done():",
+        "        owner = _MAINTENANCE_OWNER\n        if False:",
+    ),
+    (
+        "attention_gate_service.py",
+        "停掉循环不清归属者（本进程再想重载/重连时归错了队）",
+        '        if _MAINTENANCE_OWNER is self:\n            globals()["_MAINTENANCE_OWNER"] = None',
+        '        if False:\n            globals()["_MAINTENANCE_OWNER"] = None',
+    ),
+    (
+        "attention_gate_service.py",
         "一轮里给每个冷群都破一次冰（她变成群发器；重载后所有冷群同时被打扰）",
         "            if not broke_ice and self._participates_in_attention(group_id):\n"
         "                broke_ice = await self._maybe_break_ice(group_id, now)",

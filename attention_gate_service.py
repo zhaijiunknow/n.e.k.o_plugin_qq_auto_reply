@@ -42,6 +42,15 @@ class GateDecision:
         self.force_reply = force_reply
 
 
+#: 进程内那条按群维护循环的归属者（`start_proactive_loop` 的进程级单飞闸）。
+#:
+#: 为什么不能只靠服务实例上那把 `_maintenance_task`：宿主启动时会把插件的初始化跑
+#: **不止一遍**（收集入口 / 收集 UI 上下文 / 真正跑），每次都会调 `start_proactive_loop`。
+#: 真机 2026-09-29 16:32:08 的日志里同一行启动标记出现了两次 —— 也就是两条循环同时在跑：
+#: 破冰与群记忆摘要各做两遍（"她是一个人，不是两支队伍"）。
+_MAINTENANCE_OWNER: "QQAttentionGateService | None" = None
+
+
 class QQAttentionGateService:
     """基于注意力的多群门控 + 回溯补回（每群自己管自己）"""
 
@@ -53,7 +62,15 @@ class QQAttentionGateService:
         驱动。跨群取舍删掉后（2026-09-29 使用者口径：「每个群自己管自己的注意力」）
         没有"切换"这个事件可挂了，于是改成**每个群自己一个时钟**：谁静得够久谁破冰，
         谁的群记忆有增量谁推摘要。判据全部来自各群自己的状态，与别的群无关。
+
+        **进程内只允许一条**（`_MAINTENANCE_OWNER`，见模块级注释）：宿主在启动阶段会把
+        插件的初始化跑不止一遍（真机 2026-09-29 16:32:08 的日志里同一行出现了两次），
+        两条循环会各破一次冰、各推一次摘要 —— 她是一个人，不是两支队伍。
         """
+        owner = _MAINTENANCE_OWNER
+        if owner is not None and owner._maintenance_task is not None and not owner._maintenance_task.done():
+            self._logger.info("[Gate] 按群维护循环已由本进程的另一处启动，跳过重复启动")
+            return
         task = getattr(self, "_maintenance_task", None)
         if task is not None and not task.done():
             return
@@ -68,9 +85,12 @@ class QQAttentionGateService:
         self._maintenance_task = asyncio.create_task(
             self._maintenance_loop(interval),
         )
+        globals()["_MAINTENANCE_OWNER"] = self
 
     async def stop_proactive_loop(self) -> None:
         """停掉维护循环（插件停止/重载时调用）。"""
+        if _MAINTENANCE_OWNER is self:
+            globals()["_MAINTENANCE_OWNER"] = None
         task = getattr(self, "_maintenance_task", None)
         self._maintenance_task = None
         if task is None:

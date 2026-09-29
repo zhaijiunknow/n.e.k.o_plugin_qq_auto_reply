@@ -331,3 +331,65 @@ def test_starting_the_loop_leaves_a_log_line():
     asyncio.run(run())
 
     assert any("按群维护循环已启动" in line for line in lines), lines
+
+
+def test_the_loop_starts_once_per_process():
+    """宿主把插件初始化跑不止一遍 —— 第二条循环必须被挡住。
+
+    真机依据：2026-09-29 16:32:08 的插件日志里「按群维护循环已启动」出现了**两次**，
+    也就是两条循环同时在跑：破冰与群记忆摘要各做两遍。她是一个人，不是两支队伍。
+    """
+    from plugin.plugins.qq_auto_reply import attention_gate_service as gate_module
+
+    def _make(lines: list[str]) -> _Gate:
+        plugin = SimpleNamespace(
+            attention_service=_FakeAttention({GROUP_A: _state()}),
+            logger=SimpleNamespace(info=lambda msg, *a, **k: lines.append(str(msg)),
+                                   warning=lambda *a, **k: None),
+            _emit_log=lambda *a, **k: None,
+            _qq_settings={},
+        )
+        return _Gate(plugin)
+
+    first_lines: list[str] = []
+    second_lines: list[str] = []
+    first = _make(first_lines)
+    second = _make(second_lines)
+
+    async def run() -> None:
+        try:
+            await first.start_proactive_loop()
+            await second.start_proactive_loop()      # 第二个实例（宿主第二次初始化）
+            assert second._maintenance_task is None, "第二个实例也起了一条循环"
+        finally:
+            await second.stop_proactive_loop()
+            await first.stop_proactive_loop()
+
+    asyncio.run(run())
+
+    assert sum("按群维护循环已启动" in line for line in first_lines) == 1
+    assert not any("按群维护循环已启动" in line for line in second_lines), second_lines
+    assert gate_module._MAINTENANCE_OWNER is None, "停掉之后归属者要清掉，否则下次重载起不来"
+
+
+def test_a_stopped_loop_can_be_started_again():
+    """重载/重连都要能再起一条（归属者清理干净了）。"""
+    lines: list[str] = []
+    plugin = SimpleNamespace(
+        attention_service=_FakeAttention({GROUP_A: _state()}),
+        logger=SimpleNamespace(info=lambda msg, *a, **k: lines.append(str(msg)),
+                               warning=lambda *a, **k: None),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={},
+    )
+    gate = _Gate(plugin)
+
+    async def run() -> None:
+        await gate.start_proactive_loop()
+        await gate.stop_proactive_loop()
+        await gate.start_proactive_loop()
+        await gate.stop_proactive_loop()
+
+    asyncio.run(run())
+
+    assert sum("按群维护循环已启动" in line for line in lines) == 2, lines
