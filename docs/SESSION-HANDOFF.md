@@ -6163,7 +6163,7 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 |---|---|---|---|
 | 自然增长（`warm`：本群 120s 内有人说过话） | `base_rise_rate × clamp(目标间隔 / 实际间隔, 0.15, 1.8) × (1 + 情绪倍率)` | 0.08 × … | 间隔 ≤16.7s：**+8.64 分/分**（顶格 ×1.8）；间隔 30s：**+4.8 分/分**（×1.0）；间隔 120s（正要转凉）：**+1.2 分/分**（×0.25） |
 | 时间回落（`cooling`：静默超过 `heat_warm_gap` 120s） | `fall_rate × max(0.05, 1 − 情绪倍率)` | 0.015 × … | calm：**−0.9 分/分**；playful −0.63；annoyed −0.45；sulking −1.71（最快）；arguing（1.2）时地板生效：**−0.045 分/分** |
-| 睡着（`dormant`） | **两个方向都没有** | — | 分数完全冻结，只有"有人说话"的消息加成能推动它 |
+| 睡着（`dormant`） | **两个方向都没有** | — | 分数完全冻结：时间既不加也不减。**普通闲聊照样 +0.15/条**（门控第 1 步就入账了），这正是"群里又聊热就醒"的燃料 |
 
 配套数字（同一份配置）：
 
@@ -6182,11 +6182,17 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 
 ### 44.4 证据
 
-- 全量 **1536 passed**；两道 ruff 门（repo 门 + CI 门）全过。
+- 全量 **1537 passed**；两道 ruff 门（repo 门 + CI 门）全过。
 - `test_qq_dormancy.py`：`test_auto_wake_when_configured` 换成 **`test_there_is_no_auto_wake`**
   —— 睡下之后把时钟推 **30 天**，标记与分数都不许变，并断言 `dormant_until` 字段与
   `_dormancy_auto_wake_seconds` 读取口都不存在（谁加回来就直接红）；新增
   `test_there_is_no_auto_wake_key`（键不在真源 / 不在默认值 / 不在 saveable）。
+- **顺手订正一处会误导人的过期注释**（本轮复核门控顺序时发现）：四处写着休眠期间普通消息
+  「**也不计分**（睡着的群不该因为别人的闲聊被唤醒）」，而门控的**第 1 步**就已经
+  `update_on_message()` 把加成入账（休眠判定在第 4.5 步）—— 也就是说普通闲聊**照常计分**，
+  而这正是"群里又聊热就醒"的唯一燃料。谁按那句注释去"修"，就把自动苏醒掐死了。
+  注释改成"这一轮不看不答、但计分照常"，并新增
+  `test_plain_chatter_still_scores_while_dormant`（睡着时一条普通消息 +0.15 且仍不醒）钉住它。
 - `test_qq_settings_schema.py` 新增 `test_auto_wake_key_is_gone`：键不在真源、不在默认值，
   但**在**僵尸键名单里（三样缺一就红）。
 - 变异 `verify_dormancy_fail_to_pass.py` **15/15**（锚点全部跟上新实现：新增"热起来也不清休眠

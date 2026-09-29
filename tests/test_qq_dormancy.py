@@ -4,7 +4,7 @@
 
 - 触发判据只有本群自己的 `last_message_at`（默认 `dormancy_idle_seconds = 1800`）；
 - 睡下的效果（跨群取舍删除后重新定义）：**只答点名** —— @ / 引用她 / 关键词照旧必回，
-  其余消息在门控里被忽略，**也不计分**；
+  其余消息在门控里被忽略（**但照常计分**：分数涨回 `dormancy_wake_score` 就自己醒）；
 - 唤醒只有两条：点名即醒（`mark_focus`）或群里又热闹到 `dormancy_wake_score`；
   **没有到点自动醒**（2026-09-29 使用者：「到点自动醒也不要」）；
 - 睡着期间分数**冻住**（已经凉了，再掉只是把"醒来从零熬"做一遍）。
@@ -305,6 +305,23 @@ def test_one_plain_message_does_not_wake_a_sleeping_group():
     _speak(svc, now)
 
     assert svc.is_dormant(GROUP) is True, "一条普通消息就把睡着的群叫醒了"
+
+
+def test_plain_chatter_still_scores_while_dormant():
+    """睡着的群**照常计分** —— 那正是"群里又聊热就醒"的燃料。
+
+    门控那边只负责"这一轮不回"；计分发生在 `evaluate()` 的**第 1 步**
+    （`attention.update_on_message`），早于第 4.5 步的休眠判定。所以注释里那句
+    「也不计分」是错的，谁按它去"修"，就会把唯一的自动苏醒路径掐掉。
+    """
+    svc, now = _service()
+    _sleep(svc, now, score=0.0)
+
+    _speak(svc, now)
+
+    st = svc._load_state(GROUP)
+    assert st.attention_score == pytest.approx(0.15), "睡着期间普通消息的加成没入账"
+    assert st.dormant is True, "一条消息还不该醒（唤醒线是 2.0）"
 
 
 def test_a_lively_burst_wakes_the_group():

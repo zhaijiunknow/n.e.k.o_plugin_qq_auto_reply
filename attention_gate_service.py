@@ -662,7 +662,13 @@ class QQAttentionGateService:
 
         # 4.5 这个群冷漠了（静默 ≥ `dormancy_idle_seconds`，默认半小时）→ **只答点名**。
         #     点名类（@ / 关键词 / 引用她）在上面已经短路返回了，所以走到这里的必然是
-        #     普通消息：不看不答、**也不计分**（睡着的群不该因为别人的闲聊被唤醒）。
+        #     普通消息：这一轮不看不答。
+        #
+        #     ⚠️ **计分照常**：消息加成在第 1 步（`update_on_message`）就已经入账了，
+        #     早于这道判定。这不是漏网，而是机制 —— "群里又聊热就醒"（`_maybe_wake_up`）
+        #     正是靠这些普通消息把分数顶过 `dormancy_wake_score`。真改成"不计分"，
+        #     一个睡着的群就只剩"被点名"一条路能醒（见 tests/test_qq_dormancy.py
+        #     的 test_plain_chatter_still_scores_while_dormant）。
         is_dormant = False
         try:
             is_dormant = bool(attention.is_dormant(normalized_group_id))
