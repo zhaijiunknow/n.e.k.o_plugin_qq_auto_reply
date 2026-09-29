@@ -1095,6 +1095,11 @@ class QQSettingsService:
         dormancy_idle_seconds = kwargs.get("dormancy_idle_seconds")
         if dormancy_idle_seconds is not None:
             self.plugin._qq_settings["dormancy_idle_seconds"] = max(0, int(dormancy_idle_seconds))
+        dormancy_wake_score = kwargs.get("dormancy_wake_score")
+        if dormancy_wake_score is not None:
+            self.plugin._qq_settings["dormancy_wake_score"] = self._clamp_attention_float(
+                dormancy_wake_score, "dormancy_wake_score", floor=0.0,
+            )
         dormancy_auto_wake_seconds = kwargs.get("dormancy_auto_wake_seconds")
         if dormancy_auto_wake_seconds is not None:
             self.plugin._qq_settings["dormancy_auto_wake_seconds"] = max(0, int(dormancy_auto_wake_seconds))

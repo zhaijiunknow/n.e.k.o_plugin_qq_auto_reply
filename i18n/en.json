@@ -269,6 +269,8 @@
   "ui.attention.dormancy_on": "Sleep a Group That Went Cold",
   "ui.attention.dormancy_idle": "Idle Before Cold (sec, 0=off)",
   "ui.attention.dormancy_idle.hint": "After this group has been quiet for that long she goes dormant (default 1800 sec = 30 min). While dormant she only answers when named: @, quotes of her message and keyword hits still reply; every other message is ignored and does not even score. Being named wakes the group up. Set 0 to disable automatic dormancy.",
+  "ui.attention.dormancy_wake_score": "Wake Score (Group Got Lively Again)",
+  "ui.attention.dormancy_wake_score.hint": "While dormant the score only moves when someone speaks (no decay, no natural rise); crossing this line wakes the group up (default 2.0, the same value as the gate's \"this group is chatting\" line). Raise it to 3-4 to demand real liveliness; it does not affect the gate line.",
   "ui.attention.dormancy_auto_wake": "Auto-wake After Dormancy (sec, 0=never)",
   "ui.attention.dormancy_auto_wake.hint": "0 = sleep until someone names her; a positive value wakes the group automatically and lets plain messages be judged again. Ordinary chatter never wakes her early -- that is exactly what dormancy means.",
   "ui.attention.digest_interval": "Group Memory Digest Interval (sec, 0=off)",

@@ -95,6 +95,24 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        state.last_focus_reason = f\"wake:{reason}\"",
     ),
     (
+        "attention_service.py",
+        "群里热起来也不苏醒（把\"聊得热火朝天就醒\"这条接线摘掉）",
+        "        if not self._dormancy_enabled() or not self._state_is_dormant(state, now):\n            return False\n        if float(state.attention_score) < self._dormancy_wake_score():\n            return False",
+        "        if not self._dormancy_enabled() or not self._state_is_dormant(state, now):\n            return False\n        if True:\n            return False",
+    ),
+    (
+        "attention_service.py",
+        "苏醒线读错（拿门控那条线当唤醒线，改配置不生效）",
+        "        raw = self._setting(\"dormancy_wake_score\", 2.0)",
+        "        raw = 2.0",
+    ),
+    (
+        "attention_service.py",
+        "睡着期间分数照常随时间回落（慢漏消息的群永远攒不到唤醒线）",
+        "        if state.heat == \"dormant\":",
+        "        if False:",
+    ),
+    (
         "attention_gate_service.py",
         "门控不看休眠（睡着的群照样被普通消息叫起来）",
         "        if is_dormant:",

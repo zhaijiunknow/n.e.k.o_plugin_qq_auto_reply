@@ -447,6 +447,43 @@ class QQAttentionService:
         except (TypeError, ValueError):
             return 1800
 
+    def _dormancy_wake_score(self) -> float:
+        """群又热闹到什么程度就把它叫醒（默认 2.0 = 在聊的线）。
+
+        使用者口径（2026-09-29）：「如果群里聊得热火朝天就苏醒。这一块可以建模到注意力上」
+        —— 所以苏醒**不另开计数器**，就用注意力分数：睡着期间分数只由「有人说话」推动
+        （不随时间回落、也不自然增长），涨回这条线就醒。
+
+        默认 2.0 与门控那条「本群在聊的线」同值：语义是「这个群又重新聊起来了」。
+        想要更硬的「确实热火朝天」把它调到 3~4 即可（它**不影响**门控那条线）。
+        """
+        raw = self._setting("dormancy_wake_score", 2.0)
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 2.0
+
+    def _maybe_wake_up(self, state: QQGroupAttentionState, now: int) -> bool:
+        """这个群又热闹起来了 → 苏醒。返回是否**这一下刚醒**。
+
+        判据就是注意力分数（见 `_dormancy_wake_score`）。**放在 `update_on_message` 里**
+        （消息刚加完分之后）：这样"把分数顶过线的那一条消息"自己就能被正常回 —— 她说的话
+        不会晚 5 秒（衰减循环的间隔）才跟上，也不会有任何一条消息被白白丢掉。
+
+        未被点名的普通闲聊也走这条路（这正是使用者要的：群里热起来就醒，不必等人叫她）。
+        """
+        if not self._dormancy_enabled() or not self._state_is_dormant(state, now):
+            return False
+        if float(state.attention_score) < self._dormancy_wake_score():
+            return False
+        state.dormant_until = 0
+        state.dormant_forever = False
+        # 睡着那段时间的账不补：回溯补回的游标推到此刻（同 `wake_from_dormancy`）。
+        state.last_focus_at = now
+        state.last_focus_reason = "wake:lively"
+        state.heat = self._heat_tier(state, now)
+        return True
+
     def _dormancy_auto_wake_seconds(self) -> int:
         """睡下之后多少秒自动醒（默认 **0 = 一直睡**，只有点名能叫醒）。"""
         raw = self._setting("dormancy_auto_wake_seconds", 0)
@@ -874,6 +911,21 @@ class QQAttentionService:
         state.msgs_after_reply = max(0, int(state.msgs_after_reply or 0)) + 1
         self._settle_feedback(state, now)
 
+        # 群里热起来就苏醒：**分数已经加完了**，所以"把分数顶过唤醒线的那一条消息"
+        # 自己就能走正常流程（不会被上面那条 dormancy 规则丢掉）。
+        if self._maybe_wake_up(state, now):
+            self.plugin._emit_log(
+                "INFO",
+                f"[Attention] 群{group_id} 又热闹起来了"
+                f"（注意力 {float(state.attention_score):.1f} ≥ {self._dormancy_wake_score():.1f}）"
+                f" → 从休眠中苏醒",
+            )
+            if self.plugin.logger:
+                self.plugin.logger.info(
+                    f"[Attention] 群 {group_id} 又热闹起来了"
+                    f"（注意力 {float(state.attention_score):.1f}），从休眠中苏醒"
+                )
+
         self._write_state(self._normalize_state(state))
         await self._persist()
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力变更 → SSE 通知前端
@@ -892,6 +944,8 @@ class QQAttentionService:
         state.attention_score = min(self._max_attention(), state.attention_score + gain)
         state.last_focus_reason = "message_recovery"
         state.last_boost_at = now
+        # 批量计分同样能把它叫醒（这条路径来自缓冲汇总那类"一次补一批"）。
+        self._maybe_wake_up(state, now)
         self._write_state(self._normalize_state(state))
         await self._persist()
         return self.get_snapshot()

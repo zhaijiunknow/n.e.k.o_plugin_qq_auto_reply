@@ -269,6 +269,8 @@
   "ui.attention.dormancy_on": "群冷漠了就休眠",
   "ui.attention.dormancy_idle": "静默多久算冷漠(秒, 0=关)",
   "ui.attention.dormancy_idle.hint": "这个群自己安静了这么久就休眠（默认 1800 秒 = 半小时）。休眠期间**只答点名**：@ 她、引用她、命中关键词照常回，其余消息不看不答也不计分；被点名即醒。填 0 关掉自动休眠。",
+  "ui.attention.dormancy_wake_score": "群又热闹到多少分苏醒",
+  "ui.attention.dormancy_wake_score.hint": "睡着期间分数只由「有人说话」推动（不随时间回落、也不自然增长），涨回这条线就苏醒（默认 2.0，与门控那条\"本群在聊的线\"同值）。想更严格地要求\"确实热火朝天\"就调到 3~4；它不影响门控那条线。",
   "ui.attention.dormancy_auto_wake": "休眠后自动醒(秒, 0=一直睡)",
   "ui.attention.dormancy_auto_wake.hint": "0 = 一直睡到有人点名叫她；填正数则到时自动醒、重新按普通消息判定。群里的闲聊不会提前叫醒她（那正是休眠要表达的意思）。",
   "ui.attention.digest_interval": "群记忆摘要间隔(秒, 0=不推)",

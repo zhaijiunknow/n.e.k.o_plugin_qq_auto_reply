@@ -271,6 +271,113 @@ def test_dormancy_state_survives_a_restart():
     assert restored.dormant_forever is True
 
 
+# ── 苏醒：群里又热闹起来了（建模到注意力上）────────────────────────
+#
+# 使用者口径（2026-09-29）：「如果群里聊得热火朝天就苏醒。这一块可以建模到注意力上」。
+# 所以睡着期间分数**只由"有人说话"推动**（不随时间回落、也不自然增长），涨回唤醒线
+# 就苏醒；唤醒发生在那条消息加分**之后**，于是"把分数顶过线的那一条"自己就能被正常回。
+
+def _sleep(svc, now, *, score: float = 0.0) -> None:
+    st = QQGroupAttentionState(
+        group_id=GROUP, attention_score=score, last_message_at=now[0] - 1800,
+    )
+    st.last_decay_at = now[0]
+    svc._write_state(st)
+    asyncio.run(svc.decay_all())
+    assert svc.is_dormant(GROUP) is True
+
+
+def _speak(svc, now, *, text: str = "继续聊", at_bot: bool = False) -> None:
+    asyncio.run(svc.update_on_message({
+        "group_id": GROUP, "user_id": "u1", "content": text,
+        "timestamp": now[0], "is_at_bot": at_bot,
+    }))
+
+
+def test_one_plain_message_does_not_wake_a_sleeping_group():
+    svc, now = _service()
+    _sleep(svc, now)
+
+    _speak(svc, now)
+
+    assert svc.is_dormant(GROUP) is True, "一条普通消息就把睡着的群叫醒了"
+
+
+def test_a_lively_burst_wakes_the_group():
+    svc, now = _service()
+    _sleep(svc, now)
+
+    for i in range(20):          # 0.15/条 → 20 条越过 2.0
+        now[0] += 1
+        _speak(svc, now)
+        if not svc.is_dormant(GROUP):
+            break
+
+    st = svc._load_state(GROUP)
+    assert svc.is_dormant(GROUP) is False, "群里连着聊了二十条还没醒"
+    assert st.last_focus_reason == "wake:lively"
+
+
+def test_the_wake_score_is_configurable():
+    svc, now = _service(dormancy_wake_score=5.0)
+    _sleep(svc, now)
+
+    for _ in range(20):          # 顶到 3.0 左右，还不够 5.0
+        now[0] += 1
+        _speak(svc, now)
+    assert svc.is_dormant(GROUP) is True, "唤醒线配高了却还是醒了"
+    assert svc._load_state(GROUP).attention_score < 5.0
+
+    for _ in range(30):
+        now[0] += 1
+        _speak(svc, now)
+    assert svc.is_dormant(GROUP) is False
+
+
+def test_a_dormant_group_does_not_decay_over_time():
+    """睡着期间分数**不随时间回落**：只有"有人说话"能改变它。
+
+    否则一个慢慢漏消息的群永远攒不到唤醒线，而"热起来就醒"这件事会依赖 tick 相位。
+    """
+    svc, now = _service()
+    _sleep(svc, now, score=1.2)
+
+    after = svc._apply_decay(svc._load_state(GROUP), now[0] + 100_000)
+
+    assert after.attention_score == pytest.approx(1.2)
+    assert after.heat == "dormant"
+
+
+def test_waking_by_liveliness_moves_the_retro_cursor():
+    svc, now = _service()
+    _sleep(svc, now)
+
+    for _ in range(20):
+        now[0] += 1
+        _speak(svc, now)
+        if not svc.is_dormant(GROUP):
+            break
+
+    assert svc.get_last_focus_at(GROUP) == now[0]
+
+
+def test_a_batch_count_can_wake_the_group_too():
+    """缓冲汇总那类"一次补一批"的路径也要能叫醒它。"""
+    svc, now = _service()
+    _sleep(svc, now)
+
+    asyncio.run(svc.update_on_message_count(GROUP, message_count=20))
+
+    assert svc.is_dormant(GROUP) is False
+
+
+def test_the_wake_score_defaults_to_the_in_conversation_line():
+    """默认唤醒线 = 门控那条「本群在聊的线」（同一个值，但不是同一个键）。"""
+    svc, _ = _service()
+
+    assert svc._dormancy_wake_score() == pytest.approx(svc.conversation_threshold())
+
+
 # ── 门控：睡着的群只答点名 ─────────────────────────────────────────
 
 class _FakeAttention:
