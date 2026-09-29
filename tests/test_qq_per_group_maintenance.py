@@ -369,7 +369,37 @@ def test_the_loop_starts_once_per_process():
 
     assert sum("按群维护循环已启动" in line for line in first_lines) == 1
     assert not any("按群维护循环已启动" in line for line in second_lines), second_lines
-    assert gate_module._MAINTENANCE_OWNER is None, "停掉之后归属者要清掉，否则下次重载起不来"
+    assert gate_module._maintenance_owner() is None, "停掉之后归属者要清掉，否则下次重载起不来"
+
+
+def test_the_single_flight_marker_survives_a_module_reimport():
+    """单飞标记挂在 `sys` 上，不是本模块的全局。
+
+    插件重载会把本模块**重新导入**（新模块对象 = 新的模块全局），标记若放在模块全局里
+    就会跟着重置 —— 而"两条循环同时在跑"正是重载/多次初始化时才出现的问题。
+    """
+    import sys
+
+    from plugin.plugins.qq_auto_reply import attention_gate_service as gate_module
+
+    plugin = SimpleNamespace(
+        attention_service=_FakeAttention({GROUP_A: _state()}),
+        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={},
+    )
+    gate = _Gate(plugin)
+
+    async def run() -> None:
+        try:
+            await gate.start_proactive_loop()
+            assert getattr(sys, gate_module._MAINTENANCE_OWNER_ATTR) is gate, (
+                "标记不在 sys 上 —— 重载后再导入一次本模块，闸门就没了"
+            )
+        finally:
+            await gate.stop_proactive_loop()
+
+    asyncio.run(run())
 
 
 def test_a_stopped_loop_can_be_started_again():

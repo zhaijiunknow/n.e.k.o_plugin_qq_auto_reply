@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from typing import Any
 
@@ -46,9 +47,22 @@ class GateDecision:
 #:
 #: 为什么不能只靠服务实例上那把 `_maintenance_task`：宿主启动时会把插件的初始化跑
 #: **不止一遍**（收集入口 / 收集 UI 上下文 / 真正跑），每次都会调 `start_proactive_loop`。
-#: 真机 2026-09-29 16:32:08 的日志里同一行启动标记出现了两次 —— 也就是两条循环同时在跑：
-#: 破冰与群记忆摘要各做两遍（"她是一个人，不是两支队伍"）。
-_MAINTENANCE_OWNER: "QQAttentionGateService | None" = None
+#: 真机 2026-09-29 16:32:08 与 16:36:08 的日志里同一行启动标记都出现了两次，而且
+#: 16:37:08 与 16:37:13 两个群**相差 5 秒**各破了一次冰 —— 一轮最多破一次的约束
+#: 是按"一条循环"算的，两条循环就是两次，所以她同时开了两个群的话题。
+#:
+#: 为什么挂在 `sys` 上而不是本模块的全局：插件重载时本模块会被**重新导入**，
+#: 模块全局随之重置（新模块对象 = 新的 `_MAINTENANCE_OWNER`），闸门形同不存在；
+#: `sys` 每个解释器只有一份，重载不会换。
+_MAINTENANCE_OWNER_ATTR = "_qq_auto_reply_maintenance_owner"
+
+
+def _maintenance_owner() -> "QQAttentionGateService | None":
+    return getattr(sys, _MAINTENANCE_OWNER_ATTR, None)
+
+
+def _set_maintenance_owner(owner: "QQAttentionGateService | None") -> None:
+    setattr(sys, _MAINTENANCE_OWNER_ATTR, owner)
 
 
 class QQAttentionGateService:
@@ -63,11 +77,11 @@ class QQAttentionGateService:
         没有"切换"这个事件可挂了，于是改成**每个群自己一个时钟**：谁静得够久谁破冰，
         谁的群记忆有增量谁推摘要。判据全部来自各群自己的状态，与别的群无关。
 
-        **进程内只允许一条**（`_MAINTENANCE_OWNER`，见模块级注释）：宿主在启动阶段会把
+        **进程内只允许一条**（_maintenance_owner()，见模块级注释）：宿主在启动阶段会把
         插件的初始化跑不止一遍（真机 2026-09-29 16:32:08 的日志里同一行出现了两次），
         两条循环会各破一次冰、各推一次摘要 —— 她是一个人，不是两支队伍。
         """
-        owner = _MAINTENANCE_OWNER
+        owner = _maintenance_owner()
         if owner is not None and owner._maintenance_task is not None and not owner._maintenance_task.done():
             self._logger.info("[Gate] 按群维护循环已由本进程的另一处启动，跳过重复启动")
             return
@@ -85,12 +99,12 @@ class QQAttentionGateService:
         self._maintenance_task = asyncio.create_task(
             self._maintenance_loop(interval),
         )
-        globals()["_MAINTENANCE_OWNER"] = self
+        _set_maintenance_owner(self)
 
     async def stop_proactive_loop(self) -> None:
         """停掉维护循环（插件停止/重载时调用）。"""
-        if _MAINTENANCE_OWNER is self:
-            globals()["_MAINTENANCE_OWNER"] = None
+        if _maintenance_owner() is self:
+            _set_maintenance_owner(None)
         task = getattr(self, "_maintenance_task", None)
         self._maintenance_task = None
         if task is None:

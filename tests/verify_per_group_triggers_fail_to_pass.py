@@ -79,15 +79,23 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_gate_service.py",
         "允许第二条维护循环（宿主两次初始化 → 破冰与摘要各做两遍）",
-        "        owner = _MAINTENANCE_OWNER\n"
+        "        owner = _maintenance_owner()\n"
         "        if owner is not None and owner._maintenance_task is not None and not owner._maintenance_task.done():",
-        "        owner = _MAINTENANCE_OWNER\n        if False:",
+        "        owner = _maintenance_owner()\n        if False:",
+    ),
+    (
+        "attention_gate_service.py",
+        "单飞标记改回模块全局（插件重载会把它重置掉，闸门形同不存在）",
+        "def _maintenance_owner() -> \"QQAttentionGateService | None\":\n"
+        "    return getattr(sys, _MAINTENANCE_OWNER_ATTR, None)",
+        "def _maintenance_owner() -> \"QQAttentionGateService | None\":\n"
+        "    return globals().get(_MAINTENANCE_OWNER_ATTR)",
     ),
     (
         "attention_gate_service.py",
         "停掉循环不清归属者（本进程再想重载/重连时归错了队）",
-        '        if _MAINTENANCE_OWNER is self:\n            globals()["_MAINTENANCE_OWNER"] = None',
-        '        if False:\n            globals()["_MAINTENANCE_OWNER"] = None',
+        "        if _maintenance_owner() is self:\n            _set_maintenance_owner(None)",
+        "        if False:\n            _set_maintenance_owner(None)",
     ),
     (
         "attention_gate_service.py",
