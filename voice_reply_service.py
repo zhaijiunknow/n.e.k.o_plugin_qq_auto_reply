@@ -14,6 +14,12 @@ import websockets
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
 
+#: 宿主用 ``gsv:<raw>`` 标记 GPT-SoVITS 音色（见宿主的 ``config.GSV_VOICE_PREFIX``）。
+#: 插件的语音管线**没有这一路** —— 它只有：本地 ws SoVITS/CosyVoice、MiMo、MiniMax、
+#: Gemini native、免费音色、DashScope（百炼）。撞到这种 id 要当场说清楚，别拿它去问百炼
+#: （那边只会回一个"音色不存在"，看起来像网络问题）。
+GSV_VOICE_PREFIX = "gsv:"
+
 try:
     from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
 except (ImportError, ModuleNotFoundError):
@@ -169,6 +175,14 @@ class QQVoiceReplyService:
 
             voices = config_manager.get_voices_for_current_api()
             voice_id = await self.get_current_voice_id()
+            if voice_id.startswith(GSV_VOICE_PREFIX):
+                # 走到这里说明本地那条 ws 线路没产出音频（没配端点或合成失败），而
+                # GPT-SoVITS 只存在于宿主自己的 TTS 里 —— 插件这条链上没有它。
+                raise RuntimeError(
+                    f"当前音色是宿主的 GPT-SoVITS 音色（{GSV_VOICE_PREFIX}…），插件的语音管线没有这一路："
+                    "要么把 tts_custom 指向 ws://… 用本地合成，要么在角色上换成插件支持的音色"
+                    "（百炼 / MiniMax / MiMo / Gemini / 免费音色）"
+                )
             if not voice_id and get_active_realtime_native_provider_for_ui:
                 active_native = get_active_realtime_native_provider_for_ui(config_manager)
                 if active_native:
@@ -316,7 +330,10 @@ class QQVoiceReplyService:
             except Exception:
                 tts_api_config = {}
             if not voice_id:
-                raise RuntimeError("未配置 voice_id 且无实时语音 provider，无法合成语音")
+                raise RuntimeError(
+                    "当前猫娘未配置 voice_id，而这条 TTS 线路需要音色"
+                    "（本地 SoVITS/CosyVoice 已经先试过：没配 ws:// 端点，或者合成没成）"
+                )
             preview_base_url = cosyvoice_base_url or tts_api_config.get("base_url", "")
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = (voice_data or {}).get("clone_model") or get_cosyvoice_clone_model(provider)
@@ -342,12 +359,18 @@ class QQVoiceReplyService:
             raise RuntimeError(str(e)) from e
 
     async def synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
+        """合成一条语音并落成文件，返回 ``(file:// uri, mime)``。
+
+        **这里不再要求角色必须有 ``voice_id``**（2026-09-29 改）。以前第一件事就是
+        `if not voice_id: raise`，而它挡住的是**本地那条路**：`_synthesize_local_tts`
+        （自建 SoVITS/CosyVoice，音色取自 ``tts_custom.voice_name``，缺 voice_id 时用
+        ``"default"``）本来就排在最前面、本来就不需要角色音色 —— GSV/自建 TTS 的用户因此
+        永远发不出语音，日志里只留一句"当前猫娘未配置 voice_id"，像是配置错了。
+        要求现在留在真正需要它的地方：云端各分支自己有守卫（DashScope 那条见下）。
+        """
         normalized_text = str(text or "").strip()
         if not normalized_text:
             raise RuntimeError("语音合成文本不能为空")
-        voice_id = await self.get_current_voice_id()
-        if not voice_id:
-            raise RuntimeError("当前猫娘未配置 voice_id，无法发送语音")
         await self.cleanup_voice_output_dir()
         audio_bytes, mime_type = await self.synthesize_reply_voice_audio(normalized_text)
         if not audio_bytes:

@@ -562,13 +562,24 @@ class QQReplyDeliveryNode:
                     fb = await self.plugin.qq_client.send_message(plan.target_id, block.record)
                 return self._confirm_platform_result(fb)
             return False
-        except Exception:
-            self.plugin.logger.warning("语音发送失败", exc_info=True)
+        except Exception as exc:
+            # 语音发不出去**多数是配置性的**（角色没配音色、线路不认识这个音色、本地那条
+            # ws 没端点）—— 这类原因一句话就够，整段 traceback 只会淹掉它；真正的意外
+            # （不是 RuntimeError）照旧带栈，免得把 bug 也降噪掉。
+            if isinstance(exc, RuntimeError):
+                self.plugin.logger.warning(f"语音未发送：{exc}")
+            else:
+                self.plugin.logger.warning("语音发送失败", exc_info=True)
             if plan.fallback_to_text_on_voice_failure and block.record:
                 text = block.record
                 if plan.target_type == "group":
                     result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
                 else:
                     result = await self.plugin.qq_client.send_message(plan.target_id, text)
-                return self._confirm_platform_result(result)
+                if self._confirm_platform_result(result):
+                    # 这一行是为了对上 `[Send] … 已发送（语音）`：那个标签按**块里有什么**
+                    # 命名，语音回退成文字时不会变，不说明一句读日志的人会以为语音发出去了。
+                    self.plugin.logger.info("语音这条已改发文字（上面那条是原因）")
+                    return True
+                return False
             return False

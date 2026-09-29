@@ -5452,3 +5452,72 @@ docstring 本次一并改对（保留原文作为"错在哪"的记录）。
   上游发版之前，副本仍是 Steam 旧宿主的唯一靠山。
 - `_extract_attachments` 的 `"name"`（附件文件名）没进宿主 PR —— 留给上游。
 - 宿主适配器**只在开放平台通道**有，OneBot 那边本来就是原生 image 段，不走这条。
+
+## 38. 语音发不出去：入口那道 voice_id 闸挡掉的是**本地那条路**
+
+> 使用者口径（2026-09-29）：「主要是 gsv 环境，会出现这个报错，但是接入百炼就好了」。
+
+### 38.1 现场
+
+06-29 15:26 真机（本机，私聊 820040531）：
+
+```
+15:26:28 AI 生成回复完成 (length: 41)
+15:26:29 WARNING 语音发送失败
+           RuntimeError: 当前猫娘未配置 voice_id，无法发送语音
+             （voice_reply_service.synthesize_reply_voice_file）
+15:26:29 [Send] private 820040531 已发送（语音, blocks=1）
+```
+
+- **消息没丢**：`_send_record` 捕获后按 `fallback_to_text_on_voice_failure` 把 `block.record`
+  当文字发了出去并确认 → 所以那行才是"已发送"（代码上只有这条路能返回 True）。
+- `%LOCALAPPDATA%\N.E.K.O\config\characters.json` 的 mtime 是 **15:26:41** —— 失败后 12 秒
+  才被写。也就是说那一刻角色确实还没有音色；现在读出来是有的（当前猫娘 `宅久皖萱` 有、
+  `YUI` 没有）。
+
+### 38.2 根因：要求被放错了地方
+
+`synthesize_reply_voice_file` 第一件事就是 `if not voice_id: raise`。而它挡住的是**排在最前面
+的本地那条路**：
+
+| 链路 | 需要角色 voice_id 吗 |
+|---|---|
+| `_synthesize_local_tts`（自建 SoVITS/CosyVoice ws，音色取 `tts_custom.voice_name`，缺 voice_id 时用 `"default"`） | **不需要** |
+| MiMo / MiniMax / Gemini native / DashScope（百炼）/ 免费音色 | 需要 |
+
+于是 GSV/自建 TTS 的用户**永远发不出语音**，日志里只剩一句像"你配置错了"的话；换百炼就好了，
+只是因为百炼正好在链上、且选音色时把 voice_id 写上了。
+
+另一层事实（写在这里免得下次再查）：**插件的合成链里没有 GPT-SoVITS 这一路** —— 宿主的
+`gsv:` 音色由宿主自己的 TTS 工（`main_logic/tts_client/workers/gptsovits.py`）负责，插件的
+`voice_reply_service` 全文件没有一个 `gsv` 字。所以角色若选的是 `gsv:…` 音色，插件这边本来就
+合成不出来（以前会把它当普通音色丢给百炼，拿回一个"音色不存在"，像网络问题）。
+
+### 38.3 改了什么
+
+| 位置 | 改动 |
+|---|---|
+| `voice_reply_service.synthesize_reply_voice_file` | **删掉入口的 voice_id 硬闸**（要求留在真正需要它的分支里）；顺带补上 docstring 说明为什么 |
+| `voice_reply_service.synthesize_reply_voice_audio` | 撞到 `gsv:` 前缀时**当场说清**：这是宿主的 GPT-SoVITS 音色、插件没有这一路，并给出两条出路（把 `tts_custom` 指到 ws 端点，或换插件支持的音色）。新增模块常量 `GSV_VOICE_PREFIX`（对齐宿主的 `config.GSV_VOICE_PREFIX`） |
+| 同上（云端那条守卫） | 报错从「未配置 voice_id 且无实时语音 provider」改成**指名**缺 voice_id、并说明本地那条**已经先试过**（没配 ws:// 或合成没成） |
+| `reply_delivery_node._send_record` | 配置性失败（`RuntimeError`）只打**一句人话**（原因进日志），**不再**整段 traceback；非 `RuntimeError` 的意外照旧 `exc_info=True`（别把 bug 也降噪掉）。回退文字成功时补一行 `语音这条已改发文字（上面那条是原因）` |
+
+### 38.4 证据
+
+- `tests/test_qq_voice_degradation.py`（新，5 条）：本地那条在**没有 voice_id** 时照样合成
+  （回归守卫，以前是红的）／没音色可用时原因指名 voice_id 与"本地已试过"／`gsv:` 音色给出
+  无此路的说明／配置性失败只打一行且补了"改发文字"／意外异常仍带 traceback。
+- 全量 **1496 passed**；两道 ruff 门全过。
+- 变异证据 **6/6**（`.dsh-artifacts/verify-voice-degradation-mutations.py`）：把入口那道闸加回去
+  → 2 failed；GSV 说明去掉 → 1；云端报错不提本地 → 1；配置性失败改回打栈 → 1；回退说明去掉
+  → 1；对照 5 passed。
+
+### 38.5 边界（没做，别当成已解决）
+
+- `[Send] … 已发送（语音）` 这个**标签本身**没改：它按"块里有什么"命名（`_describe_blocks`），
+  语音回退成文字时不会跟着变。这轮用"补一行说明"绕开；要真改标签得把**实际通道**从
+  `_send_record` 一路带回投递结果，那是另一个改动。
+- 插件仍然**不支持 GPT-SoVITS**：GSV 用户想用插件发语音，要么把 `tts_custom.base_url` 指到
+  兼容 `/v1/audio/speech/stream` 的 ws 端点（本地那条路就会接管），要么在角色上换插件支持的
+  音色。要真支持 GSV 得让插件去调宿主的 TTS 工（本文件没有这条路）。
+- 云端需要 voice_id 的那几个分支**行为不变**：没音色仍然是失败（只是报错更好读）。
