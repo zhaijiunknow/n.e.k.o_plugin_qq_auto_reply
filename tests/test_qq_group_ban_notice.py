@@ -27,9 +27,10 @@ from plugin.plugins.qq_auto_reply._vendor.connection_onebot.onebot_client import
 GROUP = "1048307485"
 ALICE = "1782348687"
 ADMIN = "10001"
+BOT = "3281414178"
 
 
-def _client(*, self_id: str = "3281414178") -> OneBotClient:
+def _client(*, self_id: str = BOT) -> OneBotClient:
     client = object.__new__(OneBotClient)      # 绕过 __init__（见文件头）
     client._message_queue = asyncio.Queue()
     client._pending_actions = {}
@@ -49,11 +50,12 @@ def _take(client: OneBotClient):
     return asyncio.run(client.receive_message(timeout=0.05))
 
 
-def _ban(*, user_id: str, sub_type: str = "ban", duration: int = 600) -> dict:
+def _ban(*, user_id: str, sub_type: str = "ban", duration: int = 600, self_id: str = BOT) -> dict:
+    """一条原始 OneBot 事件：每个事件都带 bot 自己的 `self_id`。"""
     return {
         "post_type": "notice", "notice_type": "group_ban", "sub_type": sub_type,
         "group_id": GROUP, "user_id": user_id, "operator_id": ADMIN,
-        "duration": duration, "time": 1_790_000_000,
+        "duration": duration, "time": 1_790_000_000, "self_id": self_id,
     }
 
 
@@ -138,3 +140,60 @@ def test_other_notices_are_still_dropped():
     })
 
     assert client._message_queue.qsize() == 0
+
+
+# ── 四、身份：她自己被禁言（登录信息还没到）────────────────────────────
+
+def test_her_own_ban_before_login_info_is_still_hers():
+    """禁言通知可能先于 get_login_info（或任何群消息）到达，那时 `_self_id` 还是空的。
+
+    按空身份分类会把她自己的禁言判成"第三方"：通知错误入队，而 `_group_muted` 不更新
+    —— 她会继续在一个自己已被禁言的群里尝试说话。通知自带 `self_id`，就用它。
+    """
+    client = _client(self_id="")
+    assert client._self_id == "", "夹具应当从「没有身份」开始"
+
+    _feed(client, _ban(user_id=BOT))
+
+    assert client._message_queue.qsize() == 0, "她自己的禁言被当成第三方送出去了"
+    assert client.is_group_muted(GROUP) is True, "她自己的禁言没有记进 _group_muted"
+    assert client._self_id == BOT, "通知没有教会客户端自己的 id"
+
+
+def test_a_third_party_ban_with_an_unknown_identity_is_still_forwarded():
+    client = _client(self_id="")
+
+    _feed(client, _ban(user_id=ALICE))
+
+    assert client._message_queue.qsize() == 1
+    assert client.is_group_muted(GROUP) is False, "别人的禁言不该把她自己按下去"
+    assert client._self_id == BOT
+
+
+# ── 五、通知也要进 inbound sink ──────────────────────────────────────
+
+def test_the_normalized_notice_reaches_the_registered_sink():
+    """只挂 sink 的消费方也必须看得到通知（消息那条路对每条消息都分发）。"""
+    seen: list[dict] = []
+
+    async def scenario():
+        await client.receive_message(timeout=0.05)
+        await asyncio.sleep(0.05)          # sink 跑在自己的任务上
+        return seen
+
+    client = _client()
+    client.set_inbound_sink(lambda message: _collect(seen, message))
+    # 先入队、再进事件循环：`_feed` 自己会调 asyncio.run，而这里**不能**嵌套
+    # （宿主套件的 conftest 用 nest_asyncio 允许嵌套，插件套件没有那个补丁 ——
+    #  写在协程里就等于只在一个仓库里有效）。
+    _feed(client, _ban(user_id=ALICE))
+
+    seen = asyncio.run(scenario())
+
+    assert len(seen) == 1, "sink 没有收到禁言通知"
+    assert seen[0]["notice_type"] == "group_ban"
+    assert seen[0]["user_id"] == ALICE
+
+
+async def _collect(bucket: list[dict], message: dict) -> None:
+    bucket.append(message)
