@@ -41,6 +41,7 @@ DECLARED: dict[str, dict[str, bool]] = {
     pipeline_models.KIND_PROACTIVE_GROUP:   {"synthetic": True,  "buffer_internal": True},
     pipeline_models.KIND_RETROACTIVE_REVIEW: {"synthetic": True, "buffer_internal": False},
     pipeline_models.KIND_GROUP_JOIN_NOTICE: {"synthetic": True,  "buffer_internal": False},
+    pipeline_models.KIND_GROUP_BAN_NOTICE:  {"synthetic": True,  "buffer_internal": False},
     pipeline_models.KIND_PLUGIN_TOOL_RESULT: {"synthetic": True,  "buffer_internal": True},
 }
 
@@ -54,6 +55,10 @@ NOT_ASSIGNED_AS_LITERAL: dict[str, str] = {
         "由 message_dispatcher 的 message['_synthetic_source'] 承载，"
         "经变量注入 source_kind=（message_dispatcher.py:912 "
         "`source_kind=synthetic_source or \"incoming_group\"`），"
+        "因此静态扫描看不到这个字面量",
+    pipeline_models.KIND_GROUP_BAN_NOTICE:
+        "与入群通知同一条路：由 message_dispatcher 的 message['_synthetic_source'] 承载，"
+        "经变量注入 source_kind=（`source_kind=synthetic_source or \"incoming_group\"`），"
         "因此静态扫描看不到这个字面量",
     pipeline_models.KIND_PLUGIN_TOOL_RESULT:
         "唯一生产者是 plugin_tool_followup_service.deliver()：它用**模块常量**"
@@ -142,7 +147,11 @@ def test_exemptions_are_justified_and_still_reachable():
 
     防的是"为了过测试而往豁免里塞东西"：每条豁免都要在源码里找得到它的产出。
     """
-    assert len(NOT_ASSIGNED_AS_LITERAL) <= 3, (
+    # 上限从 3 提到 4：`_synthetic_source` 承载的"某某通知"是一族（入群欢迎、
+    # 禁言反应…），每加一种通知就多一条，而它们的成因与产出方式完全相同
+    # （`source_kind=synthetic_source or "incoming_group"`）。这条闸防的是为了过测试
+    # 往豁免里塞东西，不是不许这一族长大 —— 但仍然要有上限，所以每加一条都值得再看一眼。
+    assert len(NOT_ASSIGNED_AS_LITERAL) <= 4, (
         f"豁免膨胀到 {len(NOT_ASSIGNED_AS_LITERAL)} 条，重新审视一遍"
     )
     all_src = "\n".join(p.read_text(encoding="utf-8") for p in _source_files())

@@ -6470,11 +6470,12 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
   三道闸：① 群必须是 trusted；② 被禁言的人必须「正在和她对话」；③ 节流
         ↓
   合成一条系统消息（照抄 group_increase 那条路）：
-     [系统] 小张被管理员禁言了 10 分 0 秒。他刚才还在跟你说话。
-     想接一句就自然地说一句（不必 @ 他，也别评论管理员怎么管群）；不想说就不说。
+     [系统] 小张被管理员禁言了 10 分 0 秒。他刚才还在跟你说话，你说一句自然的话接一下。
+     注意：不必 @ 他，也别评论管理员怎么管群。
      message_type=group / user_id=被禁言者 / _synthetic_source=group_ban_notice
         ↓
-  走正常 pipeline（会话锁登记进 CONVERTED_NOTICE_TYPES，否则这一轮全程无锁）
+  走正常 pipeline，且**绕过门控、必定生成一句**（`FORCED_SYNTHETIC_SOURCES`，见 48.6）
+  （会话锁登记进 CONVERTED_NOTICE_TYPES，否则这一轮全程无锁）
 ```
 
 **「正在和她对话"的判据是新模块 `dialogue_partner.py`：一来一回，两条都要在窗口内**
@@ -6497,25 +6498,27 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
   也会让整条消息处理直接跳过）。
 - **normal 群不反应**：那边她本来就不开口，只按概率把消息转达给主人 —— 在那里替别人被
   禁言发言，等于把这件事转达成她的话。
-- **合成消息仍然要过门控**：它不是点名，所以照样受"这个群现在值不值得开口"（注意力闸 +
-  必要性）的约束。群冷、她刚刷过屏时，她会不出声 —— 这是有意的，禁言不是 @ 她。
+- **合成消息不走门控**（这一条在 48.6 被使用者口径改掉了）：判断做完就该生成，
+  再让注意力闸 / 必要性闸审一遍等于同一件事被两套口径各判一次。
 - **每群 600 秒**：管理员批量禁言（清刷屏的人）时，只对第一个人开一轮生成。
 - 每条反应 = 一次 LLM 调用，所以三道闸里有两道是节流。
 
 ### 48.4 证据
 
-- 插件全量 **1574 passed**；两道 ruff 门全过。
+- 插件全量 **1578 passed**；两道 ruff 门全过。
 - 新增三份用例：
   - `test_qq_dialogue_partner.py`（14 条）：一来一回才算 / 单向不算 / 窗口过期 /
     半条腿过期 / 多群不串 / 每群上限与淘汰 / 排序 / 时钟缺省与坏值；
   - `test_qq_group_ban_notice.py`（8 条）：第三方禁言/解禁入队且归一化正确、
     自己与全员只记账不入队、poke 归一化不受影响、其它通知仍丢弃；
-  - `test_qq_ban_reaction.py`（11 条）：合成消息的形状与措辞、陌生人不开一轮、
-    非 trusted 不反应、两道冷却、"冷却过去后重新反应"、以及门控侧"她回他"真的入账。
-- 变异 `verify_ban_reaction_fail_to_pass.py` **9/9**：把连接层的"往上送"改回丢弃、
+  - `test_qq_ban_reaction.py`（14 条）：合成消息的形状与措辞、"脚本判完就必定生成"
+    （合成源在 `FORCED_SYNTHETIC_SOURCES` 里、登记成合成轮、不进缓冲）、
+    陌生人不开一轮、非 trusted 不反应、两道冷却、"冷却过去后重新反应"、
+    欢迎那条旁路没被弄丢、以及门控侧"她回他"真的入账。
+- 变异 `verify_ban_reaction_fail_to_pass.py` **11/11**：把连接层的"往上送"改回丢弃、
   把事件名归一化回 `sub_type`、让 trusted/对话对象/同事件冷却/每群冷却四道闸分别失效、
-  把合成消息改回通知类型、把"她回他"的记账摘掉 —— 目标用例全部变红，控制组全绿，
-  逐字节恢复。
+  把合成消息改回通知类型、把"她回他"的记账摘掉、把禁言源从"必定回复"集合里拿掉、
+  把新来源从 `SYNTHETIC_SOURCE_KINDS` 里拿掉 —— 目标用例全部变红，控制组全绿，逐字节恢复。
 - 宿主仓库新增 `tests/unit/test_onebot_group_ban_notice.py`（7 条，覆盖**活的**那份
   连接器），`pytest tests/unit/test_onebot_group_ban_notice.py` 全绿。
 
@@ -6527,3 +6530,37 @@ OneBot 的 `post_type=notice, notice_type=group_ban` 里带着 `user_id`（被�
   `[Ban] … 他不是正在和她对话的人 → 不反应`。
 - 反应口径可以再收紧：现在只说"不必 @ 他、别评论管理员"，如果发现她语气不合适，
   调的是那条合成提示的措辞（`message_dispatcher._maybe_react_to_ban`），不是机制。
+
+### 48.6 「先判断，再生成」：判过了就必定说一句（2026-09-29，紧随 48.5）
+
+使用者口径：
+
+> 先用「群… … 他不是正在和她对话的人 → 不反应」判断，再生成
+
+也就是：**判断在脚本里做完**（`_maybe_react_to_ban` 的三道闸），做完了就**生成** ——
+不要再让注意力闸 / 必要性闸把同一件事重审一遍，也不要让模型自己选说还是不说。否则
+"她到底有没有反应"取决于哪道闸先拦下，而这个功能要的是一个确定的行为。
+
+改动四处：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `pipeline_models.py` | 新增 `KIND_GROUP_BAN_NOTICE = "group_ban_notice"` 并登记进 `SYNTHETIC_SOURCE_KINDS`（它的 sender 是**名义发言人** = 被禁言的人，不是他这一轮说的话；漏登记会让读侧/写侧把它当真实发言）。**不**进 `BUFFER_INTERNAL_SOURCE_KINDS` —— 与入群欢迎一样走正常投递 |
+| 2 | `message_dispatcher.py` | "绕过门控、必定回复"的来源从写死的 `== "group_join_notice"` 收成 `FORCED_SYNTHETIC_SOURCES`，禁言反应加进去（`_is_forced_synthetic()` 判据） |
+| 3 | 合成提示词 | 去掉"想接一句就说、不想说就不说"这种让模型自决的措辞 → 「你说一句自然的话接一下。注意：不必 @ 他，也别评论管理员怎么管群。」 |
+| 4 | `tests/test_qq_source_kind_sets.py` | 新来源登记进 `DECLARED`（synthetic=True / buffer_internal=False），并加一条"由 `message['_synthetic_source']` 变量注入"的豁免；豁免上限 3 → 4，理由写在注释里（这一族每加一种通知就多一条，成因相同） |
+
+**新增的用例与证据**：`test_the_ban_reaction_is_a_forced_synthetic_turn`（合成源在集合里、
+登记成合成轮、不进缓冲）、`test_the_welcome_turn_still_bypasses_the_gate`（欢迎那条路没被
+弄丢）、`test_handle_group_message_uses_the_forced_set`（旁路还接着集合，不是又写死一种
+来源）；变异加到 **11/11**（把禁言源从"必定回复"集合里拿掉 → 红；把新来源从
+`SYNTHETIC_SOURCE_KINDS` 里拿掉 → 红）。
+
+**留下的顺序**（这一节之后就是最终口径）：
+
+```
+连接层 → 入队 + 归一化
+派发层 → ① trusted？ ② 正在和她对话？ ③ 冷却？
+         ② 不成立 → 记一行 DEBUG「他不是正在和她对话的人 → 不反应」，到此为止（不生成）
+         三道都过 → 合成系统消息 + 标记 forced → 绕过门控、必定生成一句
+```

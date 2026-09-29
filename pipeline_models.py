@@ -25,7 +25,7 @@ KIND_INCOMING_GROUP = "incoming_group"
 KIND_RAPID_FIRE = "rapid_fire_flush"
 
 #: 该轮的 sender 只是**名义发言人**，prompt 文本不是这个人说的话。
-#: 主动搭话的控制指令、缓冲合并、回溯补回、入群通知都属此类。
+#: 主动搭话的控制指令、缓冲合并、回溯补回、入群通知、禁言反应都属此类。
 #:
 #: 原来还有一个 `KIND_PROACTIVE_SPEECH = "proactive_speech"`（**冷场破冰**那一轮）。
 #: 主动破冰整套已于 2026-09-29 删除（使用者口径「干脆不要这个先」），它随之成为
@@ -34,6 +34,11 @@ KIND_PROACTIVE_PRIVATE = "proactive_private"
 KIND_PROACTIVE_GROUP = "proactive_group"
 KIND_RETROACTIVE_REVIEW = "retroactive_review"
 KIND_GROUP_JOIN_NOTICE = "group_join_notice"
+#: 群里**别人**被禁言/解禁 → 她按"正在和她对话的人"的判断说一句（2026-09-29 使用者口径：
+#: 「先用『他不是正在和她对话的人 → 不反应』判断，再生成」）。sender 同样是名义发言人：
+#: `_synthetic_source` 里放的这个值，`user_id` 是事件主角（被禁言的人），prompt 文本是
+#: 我们写的事件描述，**不是他这一轮说的话**。
+KIND_GROUP_BAN_NOTICE = "group_ban_notice"
 #: 异步插件任务的结果回投（她先前答应过"结果出来告诉你"，后台轮询到结果后由
 #: `plugin_tool_followup_service` 合成的那一轮）。sender 同样是**名义发言人**：
 #: 群聊里借管理员的身份，私聊里就是收件人本人。
@@ -55,6 +60,7 @@ SYNTHETIC_SOURCE_KINDS = frozenset({
     KIND_RAPID_FIRE,
     KIND_RETROACTIVE_REVIEW,
     KIND_GROUP_JOIN_NOTICE,
+    KIND_GROUP_BAN_NOTICE,
     KIND_PLUGIN_TOOL_RESULT,
 })
 

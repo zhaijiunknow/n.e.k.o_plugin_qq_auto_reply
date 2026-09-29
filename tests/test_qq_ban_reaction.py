@@ -16,10 +16,13 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 from types import SimpleNamespace
 
+from plugin.plugins.qq_auto_reply import pipeline_models
 from plugin.plugins.qq_auto_reply.message_dispatcher import QQMessageDispatcher
 
+PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 GROUP = "1048307485"
 BOT = "3281414178"
 ALICE = "1782348687"
@@ -112,6 +115,10 @@ def test_a_ban_on_her_partner_opens_a_turn():
     assert message["message_id"].startswith("ban_")
     assert "小张" in message["content"] and "10 分" in message["content"], message["content"]
     assert "别评论管理员" in message["content"], "口径里明确要求不评价管理员"
+    assert "你说一句" in message["content"], "没让她说一句（判断通过就该生成）"
+    assert "不想说就不说" not in message["content"], (
+        "又把说不说交回给模型了 —— 使用者口径是「先判断，再生成」"
+    )
     assert "小张" in _logs(plugin)
 
 
@@ -203,7 +210,57 @@ def test_ban_and_lift_are_separate_events():
     assert len(plugin.pipeline) == 1, "同一群冷却内不该既反应禁言又反应解禁"
 
 
-# ── 四、门控侧：她回他会被记进"正在和她对话的人" ─────────────────────
+# ── 四、"先判断，再生成"：判过了就必定生成一句 ──────────────────────
+
+def test_the_ban_reaction_is_a_forced_synthetic_turn():
+    """禁言反应走"绕过门控、必定回复"那条路（与入群欢迎同一机制）。
+
+    使用者口径：「先用『他不是正在和她对话的人 → 不反应』判断，再生成」——
+    判断在派发层做完之后，不该再让注意力闸 / 必要性闸把同一件事重审一遍，
+    也不该让模型自己选说不说。否则"她到底有没有反应"取决于哪道闸先拦下。
+    """
+    dispatcher, plugin = _dispatcher()
+    message = _ban(dispatcher)
+
+    source = str(message["_synthetic_source"])
+    assert source == pipeline_models.KIND_GROUP_BAN_NOTICE
+    assert dispatcher._is_forced_synthetic(source) is True, "没走必定回复的旁路"
+    assert pipeline_models.is_synthetic_source(source) is True, (
+        "没登记成合成轮 —— 它的 sender 是名义发言人（被禁言的人），"
+        "读侧/写侧会把它当成他这一轮说的话"
+    )
+    assert pipeline_models.KIND_GROUP_BAN_NOTICE not in pipeline_models.BUFFER_INTERNAL_SOURCE_KINDS, (
+        "与入群欢迎一样走正常投递，不该被投回缓冲"
+    )
+
+
+def test_the_welcome_turn_still_bypasses_the_gate():
+    """原来写死的 `== "group_join_notice"` 收成了集合，别把欢迎那条路弄丢。"""
+    dispatcher, _plugin = _dispatcher()
+
+    assert dispatcher._is_forced_synthetic(pipeline_models.KIND_GROUP_JOIN_NOTICE) is True
+    assert dispatcher._is_forced_synthetic("incoming_group") is False
+    assert dispatcher._is_forced_synthetic("") is False
+    assert dispatcher._is_forced_synthetic(None) is False
+
+
+def test_handle_group_message_uses_the_forced_set():
+    """接线检查：门控旁路必须读那个集合，而不是又写死一种来源。
+
+    （不驱动整条 `handle_group_message`：它要跑回复管线、权限、backlog 与运行时记账，
+    为这一行断言搭那么大一个桩不划算。这条扫描保证的是"旁路还接着集合"。）
+    """
+    text = (PLUGIN_DIR / "message_dispatcher.py").read_text(encoding="utf-8")
+
+    assert "if self._is_forced_synthetic(synthetic_source):" in text, (
+        "handle_group_message 里的合成轮旁路没接到 FORCED_SYNTHETIC_SOURCES"
+    )
+    assert 'synthetic_source == "group_join_notice"' not in text, (
+        "又出现写死的来源判断了 —— 请用 FORCED_SYNTHETIC_SOURCES"
+    )
+
+
+# ── 五、门控侧：她回他会被记进"正在和她对话的人" ─────────────────────
 
 def test_on_reply_sent_records_who_she_answered():
     """「一来一回」的另外半条腿：她回了他。

@@ -74,6 +74,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "        message[\"message_type\"] = \"notice\"\n        message[\"group_id\"] = group_id",
     ),
     (
+        "message_dispatcher.py",
+        "禁言反应不再走「必定回复」旁路（判过了也要再被门控审一遍，可能一个字都不说）",
+        "    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE, KIND_GROUP_BAN_NOTICE})",
+        "    FORCED_SYNTHETIC_SOURCES = frozenset({KIND_GROUP_JOIN_NOTICE})",
+    ),
+    (
+        "pipeline_models.py",
+        "禁言反应没登记成合成轮（名义发言人的话被当成他这一轮说的）",
+        "    KIND_GROUP_JOIN_NOTICE,\n    KIND_GROUP_BAN_NOTICE,\n    KIND_PLUGIN_TOOL_RESULT,\n})",
+        "    KIND_GROUP_JOIN_NOTICE,\n    KIND_PLUGIN_TOOL_RESULT,\n})",
+    ),
+    (
         "attention_gate_service.py",
         "她回他不再记进对话对象（一来一回只剩半条腿，判据退化成「谁叫过她」）",
         "            if user_id:\n                self._dialogue.note_reply(group_id, user_id, now=now)",
