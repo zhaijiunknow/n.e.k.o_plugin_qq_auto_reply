@@ -57,8 +57,16 @@ class QQAttentionGateService:
         task = getattr(self, "_maintenance_task", None)
         if task is not None and not task.done():
             return
+        interval = self._maintenance_interval()
+        # 起一行标记：这条循环是**纯后台**的（她主动开口、推群记忆），没有它就没有
+        # 任何"我起来了"的凭据 —— 真机验收只能靠"她怎么不说话"来反推。
+        self._logger.info(
+            f"[Gate] 按群维护循环已启动（每 {interval:.0f}s 过一遍每个群："
+            f"静默 {self._icebreaker_idle_seconds()}s 破冰 / 群记忆摘要每 "
+            f"{self._digest_interval_seconds()}s，均为**每群自己的**时钟）"
+        )
         self._maintenance_task = asyncio.create_task(
-            self._maintenance_loop(self._maintenance_interval()),
+            self._maintenance_loop(interval),
         )
 
     async def stop_proactive_loop(self) -> None:

@@ -306,3 +306,28 @@ def test_stop_proactive_loop_is_idempotent():
     asyncio.run(gate.start_proactive_loop())
     asyncio.run(gate.stop_proactive_loop())
     asyncio.run(gate.stop_proactive_loop())
+
+
+def test_starting_the_loop_leaves_a_log_line():
+    """启动时留一行凭据。
+
+    这条循环是纯后台的（她主动开口、推群记忆），"她为什么一直不说话"在没有这行日志时
+    完全无法区分"循环没起来"和"群里就是不冷场"。
+    """
+    lines: list[str] = []
+    plugin = SimpleNamespace(
+        attention_service=_FakeAttention({GROUP_A: _state()}),
+        logger=SimpleNamespace(info=lambda msg, *a, **k: lines.append(str(msg)),
+                               warning=lambda *a, **k: None),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={},
+    )
+    gate = _Gate(plugin)
+
+    async def run() -> None:
+        await gate.start_proactive_loop()
+        await gate.stop_proactive_loop()
+
+    asyncio.run(run())
+
+    assert any("按群维护循环已启动" in line for line in lines), lines
