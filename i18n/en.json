@@ -100,7 +100,7 @@
   "ui.attention.question_boost": "Question Boost Multiplier",
   "ui.attention.question_boost.hint": "Boost multiplier when the message is a question (default 1.5x).",
   "ui.attention.reply_penalty": "Reply Consume Ratio",
-  "ui.attention.reply_penalty.hint": "Fraction of attention consumed each time the cat replies.",
+  "ui.attention.reply_penalty.hint": "Fraction of attention consumed each time the cat replies (0.05 = 5%: 0.5 point per reply at a full 10-point bar, so 12 replies before dropping to the focus line).",
   "ui.attention.rise_rate": "Base Rise Rate",
   "ui.attention.rise_rate.hint": "Per-second natural attention growth in the rise phase (0.02 = +2 points per 100s).",
   "ui.attention.title": "Attention Parameters",

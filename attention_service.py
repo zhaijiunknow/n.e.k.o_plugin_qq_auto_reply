@@ -310,7 +310,7 @@ class QQAttentionService:
         """读配置，尊重 0 值：缺失（未设置/None）才回退 default。
 
         旧写法 ``get(key, default) or default`` 会把保存的 0 当成 falsy 回退
-        默认——例如 attention_consume_ratio=0（禁用回复消耗）被读回 0.10，
+        默认——例如 attention_consume_ratio=0（禁用回复消耗）被读回默认值，
         attention_fall_rate=0 被读回 0.015，dashboard 报保存成功但运行时
         行为不变。
         """
@@ -350,8 +350,13 @@ class QQAttentionService:
         return max(0.0, float(self._setting("attention_fall_rate", 0.015)))
 
     def _consume_ratio(self) -> float:
-        """猫娘每次发言消耗注意力的比例（0~1）。"""
-        return min(1.0, max(0.0, float(self._setting("attention_consume_ratio", 0.10))))
+        """猫娘每次发言消耗注意力的比例（0~1）。
+
+        兜底值**必须**与 `settings_schema` 声明的默认值一致（0.05）。这里曾经漂过：
+        真源是 0.3、读取端兜底 0.1，于是"只塞部分 settings 的调用方"（测试、debug
+        脚本）验到的是产品不使用的行为（同 `_frequency_max_multiplier` 的旧账）。
+        """
+        return min(1.0, max(0.0, float(self._setting("attention_consume_ratio", 0.05))))
 
     def _max_attention(self) -> float:
         return float(self._setting("attention_max_score", 10.0))

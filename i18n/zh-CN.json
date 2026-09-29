@@ -100,7 +100,7 @@
   "ui.attention.question_boost": "提问加成倍率",
   "ui.attention.question_boost.hint": "消息是提问时的加成倍率（默认 1.5 倍）。",
   "ui.attention.reply_penalty": "回复消耗比例",
-  "ui.attention.reply_penalty.hint": "猫娘每回复一次消耗的注意力比例（0.10 = 扣 10%）。",
+  "ui.attention.reply_penalty.hint": "猫娘每回复一次消耗的注意力比例（0.05 = 扣 5%：满格 10 分时每条扣 0.5 分，满格能连发 12 条才掉到焦点线）。",
   "ui.attention.rise_rate": "基础上升速率",
   "ui.attention.rise_rate.hint": "rise 相位每秒的自然注意力增长（0.02 = 每100秒+2分）。",
   "ui.attention.title": "注意力参数",

@@ -48,7 +48,9 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "attention_message_boost": 0.15,
     "attention_keyword_boost_ratio": 1.8,
     "attention_fall_rate": 0.015,
-    "attention_consume_ratio": 0.10,
+    # 2026-09-29 使用者口径「满 10 的注意力发 6 条就踩线了」→ 0.10 降到 0.05
+    # （满格 12 条才到焦点线、16 条才到在聊线）。见 test_qq_attention_behavior.py。
+    "attention_consume_ratio": 0.05,
     "attention_maintenance_interval_seconds": 60.0,
     # 有意删除（不在此快照里）：`attention_honeymoon_seconds`(60) /
     # `attention_fall_seconds`(30) / `attention_fall_boost_attenuation`(0.3)

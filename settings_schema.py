@@ -142,8 +142,13 @@ ATTENTION = (
                 description="save：本群静默多少秒算「凉下来了」（0=永不算凉）"),
     SettingSpec("attention_fall_rate", "float", 0.015, saveable=True,
                 floor=0.0, description="save：凉下来之后每秒回落量"),
-    SettingSpec("attention_consume_ratio", "float", 0.10, saveable=True,
-                floor=0.0, ceiling=1.0, description="save：每次回复消耗的注意力比例"),
+    # 每次回复消耗的注意力比例。语义是 `max_score × 比例` 的**绝对量**（减性、与当前
+    # 分数解耦，见 `attention_service.update_on_reply`）。
+    # 2026-09-29 使用者口径「满 10 的注意力发 6 条就踩线了」→ 0.10 降到 **0.05**：
+    # 满格时 12 条才掉到焦点线、16 条才掉到「本群在聊的线」（旧值 6 条 / 8 条）。
+    SettingSpec("attention_consume_ratio", "float", 0.05, saveable=True,
+                floor=0.0, ceiling=1.0,
+                description="save：每次回复消耗的注意力比例（满格 × 比例 = 每条扣多少分）"),
 )
 
 #: 本轮从硬编码提上来的注意力项。

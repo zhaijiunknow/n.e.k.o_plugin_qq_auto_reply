@@ -26,7 +26,8 @@ LIVE = {
     "attention_keyword_boost_ratio": 1.8,
     "attention_heat_warm_gap_seconds": 120,
     "attention_fall_rate": 0.015,
-    "attention_consume_ratio": 0.1,
+    # 2026-09-29 起真机是 0.05（满格 0.5 分/条），见下面两条用例
+    "attention_consume_ratio": 0.05,
     "attention_at_bot_boost": 3.0,
     "attention_question_boost": 1.5,
     "attention_wake_boost_ratio": 0.75,
@@ -154,6 +155,48 @@ def test_reply_cost_is_not_proportional_to_current_score():
         f"回复代价随分数放大：4.0 扣 {cost_a:.2f}、8.0 扣 {cost_b:.2f}。"
         f"使用者要的是一直聊，热群不该被罚得更重。"
     )
+
+
+def test_full_attention_now_survives_twelve_replies():
+    """满格 10 分时，她连发 **12 条**才掉到焦点线、**16 条**才掉到在聊线。
+
+    使用者口径（2026-09-29）：「满 10 的注意力发 6 条就踩线了」→
+    `attention_consume_ratio` 从 0.10 降到 **0.05**（满格时每条 0.5 分）。
+    旧值下这两个数是 6 条 / 8 条 —— 这条用例正是那时的红。
+    """
+    svc, clock = _service()
+    cost = svc._max_attention() * svc._consume_ratio()
+    assert cost == pytest.approx(0.5), f"每条消耗 {cost} 分（max_score × consume_ratio）"
+
+    on_focus = int((svc._max_attention() - svc._focus_threshold()) / cost)
+    on_talk = int((svc._max_attention() - svc.conversation_threshold()) / cost)
+    assert (on_focus, on_talk) == (12, 16), (
+        f"满格只撑得住 {on_focus}/{on_talk} 条，与 0.05 的预期（12/16）不符"
+    )
+
+    # 真的回 12 条：仍然站在焦点线上（时钟不动，排除时间衰减的干扰）
+    _seed(svc, "A", svc._max_attention(), now=clock.now)
+    for _ in range(on_focus):
+        _reply(svc, "A")
+    assert svc._load_state("A").attention_score >= svc._focus_threshold()
+
+    _reply(svc, "A")                       # 第 13 条才掉下去
+    assert svc._load_state("A").attention_score < svc._focus_threshold()
+
+
+def test_consume_ratio_default_and_fallback_agree():
+    """兜底值必须与真源默认值一致：这里漂过一次（真源 0.3、读取端 0.1）。
+
+    只塞部分 settings 的调用方（测试、debug 脚本）拿到的是**兜底值** —— 两处不一致时，
+    用真机配置跑出来的手感与自动化验证的完全是两回事。
+    """
+    from plugin.plugins.qq_auto_reply import settings_schema as schema
+
+    svc, _ = _service()
+    svc.plugin._qq_settings = {}          # 一个键都不给 → 只能吃兜底值
+    declared = schema.BY_KEY["attention_consume_ratio"].default
+    assert declared == pytest.approx(0.05)
+    assert svc._consume_ratio() == pytest.approx(declared)
 
 
 # ── 意图 3：回血不能被档位压制 ──────────────────────────────────────

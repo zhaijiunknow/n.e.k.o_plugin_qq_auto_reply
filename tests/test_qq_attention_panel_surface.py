@@ -79,14 +79,20 @@ def test_frozen_keys_have_no_panel_control_but_stay_readable():
 
 
 def test_frozen_defaults_keep_their_values():
-    """冻结只是不暴露，**值不能被顺手改掉** —— 这里钉住几个关键默认值。"""
+    """冻结只是不暴露，**值不能被顺手改掉** —— 这里钉住几个关键默认值。
+
+    ⚠️ `attention_consume_ratio` 是**使用者点名改过**的那一个（2026-09-29：
+    「满 10 的注意力发 6 条就踩线了」→ 0.10 降到 0.05）。改它要有口径，
+    不是顺手；改完请同步 `tests/test_qq_attention_behavior.py`
+    （`test_full_attention_now_survives_twelve_replies` 把 12 条 / 16 条钉死了）。
+    """
     from plugin.plugins.qq_auto_reply import settings_schema
 
     expected = {
         "attention_max_score": 10.0,
         "attention_at_bot_boost": 3.0,
         "attention_question_boost": 1.5,
-        "attention_consume_ratio": 0.1,
+        "attention_consume_ratio": 0.05,
     }
     defaults = settings_schema.defaults()
     for key, value in expected.items():

@@ -94,6 +94,18 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_service.py",
+        "回复消耗兜底值漂回 0.10（满格发 6 条就踩线）",
+        "        return min(1.0, max(0.0, float(self._setting(\"attention_consume_ratio\", 0.05))))",
+        "        return min(1.0, max(0.0, float(self._setting(\"attention_consume_ratio\", 0.10))))",
+    ),
+    (
+        "settings_schema.py",
+        "真源默认值漂回 0.10（新装的群又是「发 6 条就踩线」）",
+        "    SettingSpec(\"attention_consume_ratio\", \"float\", 0.05, saveable=True,",
+        "    SettingSpec(\"attention_consume_ratio\", \"float\", 0.10, saveable=True,",
+    ),
+    (
+        "attention_service.py",
         "提示词里又把跨群话术装回来（「你不是焦点」会让模型以为自己不该开口）",
         'f"这个群当前的注意力 {float(this_state.get(\'attention_score\', 0)):.1f}，',
         'f"这不是你当前关注的焦点群（本群注意力 {float(this_state.get(\'attention_score\', 0)):.1f}，',
