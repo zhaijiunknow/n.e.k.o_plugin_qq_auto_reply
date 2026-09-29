@@ -102,6 +102,21 @@ class QQGroupAttentionState:
     feedback_settled_at: int = 0      # 上次结算时刻
     feedback_tier: str = ""           # 上次结算结论："" | silent | quiet | warm
     feedback_msgs: int = 0            # 上次结算时计入的条数
+    # ── 休眠（「这个群冷漠了」）───────────────────────────────────────
+    # 触发：**这个群自己**静默 ≥ `dormancy_idle_seconds`（默认 1800 = 半小时）。
+    #
+    # 使用者口径（2026-09-29）：「群聊如果冷漠了就休眠，大概就是半个小时没有任何发言」。
+    # 这与「破冰」是两件事：破冰是**她主动开口**（用时间判「该说话了」很蠢，已删除），
+    # 休眠是**她不看了**（凉了就是凉了，不需要花任何 LLM 调用）。
+    #
+    # 睡下的效果（跨群取舍删除后重新定义，见 `attention_gate_service`）：
+    # **这个群只答点名**（@ / 引用她 / 关键词）；其余消息不看不答、也不计分。
+    # 唤醒：点名即醒（`mark_focus` 清标记）；`dormancy_auto_wake_seconds > 0` 时到点自动醒。
+    #
+    # 「一直睡」用**独立布尔量**表示，不用「一个很大的时间戳」或 `-1` 哨兵：一个 int
+    # 兼两种含义（0=没睡 / >now=到点醒）迟早会被某处 `or` 或比较写错。
+    dormant_until: int = 0            # 自动醒的时刻；0 = 不自动醒（此时看下面那个 bool）
+    dormant_forever: bool = False     # True = 一直睡，直到有人点名叫她
 
     def dimension_dict(self) -> dict[str, float]:
         """展示用：标量 + 热度 + 情绪是否活跃。"""
@@ -136,6 +151,8 @@ class QQGroupAttentionState:
             "feedback_settled_at": int(self.feedback_settled_at),
             "feedback_tier": str(self.feedback_tier or ""),
             "feedback_msgs": int(self.feedback_msgs),
+            "dormant_until": int(self.dormant_until),
+            "dormant_forever": bool(self.dormant_forever),
         }
 
     @classmethod
@@ -164,9 +181,13 @@ class QQGroupAttentionState:
             feedback_settled_at=int(data.get("feedback_settled_at") or 0),
             feedback_tier=str(data.get("feedback_tier") or ""),
             feedback_msgs=int(data.get("feedback_msgs") or 0),
-            # 旧存档里的 `dormant_until` / `dormant_forever` / `proactive_pending` **不再读**：
-            # 休眠随主动破冰一起删除。这是有意的 —— 不清掉的话，那些群会被一个永远没有
-            # 触发源的标记冻住（`_advance_heat` 曾对 dormant 档直接 return，分数再也不会动）。
+            # 休眠标记**要读**：`_load_state` 每次都经 `from_dict` 重建，不读就等于
+            # 「睡下 → 下一次读状态又醒了」。
+            #
+            # 旧破冰时代那些标记的清理放在 `load_cached_state`（插件启动时一次性清空）：
+            # 那样既不会让升级后的群被陈年标记叫睡，也不会破坏本次运行内的往返。
+            dormant_until=int(data.get("dormant_until") or 0),
+            dormant_forever=bool(data.get("dormant_forever") or False),
         )
         # 旧维度模型（四维加权分）与相位时代（rise/fall + 蜜月）的存档都能读：
         # 分数保留，热度不读旧值 —— 它由 `_advance_heat` 按本群时间戳重算。
@@ -203,6 +224,12 @@ class QQAttentionService:
         for payload in self._cache.values():
             if isinstance(payload, dict):
                 payload["last_decay_at"] = now
+                # 启动时清一次休眠标记：旧存档里那些是**破冰时代**留下的（那时唯一的
+                # 触发源是「她主动开口没人接」），回放它们等于让一批群在升级后立刻睡下、
+                # 且没人叫就永远不醒。清掉之后休眠只会由「这个群静默够久」重新产生
+                # （半小时后又睡回去，代价可以忽略）。
+                payload["dormant_until"] = 0
+                payload["dormant_forever"] = False
 
     def _current_time(self) -> int:
         return int(__import__("time").time())
@@ -402,6 +429,94 @@ class QQAttentionService:
         """她发言后多少条回应算「聊起来了」。"""
         return max(1, int(self._setting("attention_feedback_warm_count", 3)))
 
+    # ── 休眠（「这个群冷漠了」）──
+
+    def _dormancy_enabled(self) -> bool:
+        """冷场自动休眠的总开关。"""
+        return bool(self._setting("dormancy_enabled", True))
+
+    def _dormancy_idle_seconds(self) -> int:
+        """这个群静默多久算「冷漠了」（秒，默认 1800 = 半小时；0 = 关掉自动休眠）。
+
+        使用者口径（2026-09-29）：「群聊如果冷漠了就休眠，大概就是半个小时没有任何发言」。
+        显式取值不用 `... or 1800`：0 是「关掉这个行为」的合法值。
+        """
+        raw = self._setting("dormancy_idle_seconds", 1800)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 1800
+
+    def _dormancy_auto_wake_seconds(self) -> int:
+        """睡下之后多少秒自动醒（默认 **0 = 一直睡**，只有点名能叫醒）。"""
+        raw = self._setting("dormancy_auto_wake_seconds", 0)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _state_is_dormant(state: QQGroupAttentionState, now: int) -> bool:
+        if bool(getattr(state, "dormant_forever", False)):
+            return True
+        return int(state.dormant_until or 0) > int(now or 0)
+
+    def is_dormant(self, group_id: str, *, now: int | None = None) -> bool:
+        """这个群现在是不是睡着（门控据此只放行点名类消息）。
+
+        走 `_state_is_dormant` + 总开关：开关关掉时对外也必须报「没睡」，否则这个查询与
+        门控的实际行为会各说各话。
+        """
+        if not self._dormancy_enabled():
+            return False
+        st = self._load_state(str(group_id or "").strip())
+        return self._state_is_dormant(st, int(now if now is not None else self._current_time()))
+
+    def _maybe_fall_asleep(self, state: QQGroupAttentionState, now: int) -> bool:
+        """静默够久 → 睡下。返回是否**这一轮刚睡着**（用于打日志）。
+
+        判据只有本群自己的 `last_message_at`：从没说过话的群不睡（那是「还没认识」，
+        不是「冷漠了」）。分数与**焦点字段一概不动** —— 醒来时不必从零熬。
+        """
+        if not self._dormancy_enabled():
+            return False
+        idle = self._dormancy_idle_seconds()
+        if idle <= 0 or self._state_is_dormant(state, now):
+            return False
+        last_message_at = int(state.last_message_at or 0)
+        if last_message_at <= 0 or now - last_message_at < idle:
+            return False
+        auto_wake = self._dormancy_auto_wake_seconds()
+        state.dormant_until = now + auto_wake if auto_wake > 0 else 0
+        state.dormant_forever = auto_wake <= 0
+        state.heat = "dormant"
+        state.last_focus_reason = "dormant:idle"
+        return True
+
+    def wake_from_dormancy(self, group_id: str, *, reason: str = "at") -> bool:
+        """唤醒睡着的群（点名类路径都会经过这里）。返回 True 表示刚从休眠里醒过来。
+
+        顺手把回溯补回的游标（`last_focus_at`）推到此刻：**睡着这段时间的账不补了** ——
+        一个凉了半小时的群，回来时该从当下接上，而不是把半小时前的旧消息翻出来逐条回应。
+        """
+        key = str(group_id or "").strip()
+        if not key:
+            return False
+        state = self._load_state(key)
+        if not self._state_is_dormant(state, self._current_time()):
+            return False
+        state.dormant_until = 0
+        state.dormant_forever = False
+        state.last_focus_at = self._current_time()
+        state.last_focus_reason = f"wake:{reason}"
+        state.heat = self._heat_tier(state, self._current_time())
+        self._write_state(state)
+        self.plugin._emit_log("INFO", f"[Attention] 群{key} 从休眠中唤醒（{reason}）")
+        if self.plugin.logger:
+            self.plugin.logger.info(f"[Attention] 群 {key} 从休眠中唤醒（{reason}），只看点名")
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()
+        return True
+
     def _frequency_target_gap(self) -> float:
         """发言频率的目标间隔（秒）：恰好这个节奏时增速为基准 1.0×。"""
         return max(1.0, float(self._setting("attention_frequency_target_gap", 30.0)))
@@ -478,7 +593,9 @@ class QQAttentionService:
         两个档，判据只有本群的时间戳：
 
         - ``warm``：最近 ``attention_heat_warm_gap_seconds`` 之内有人说过话 → 增长；
-        - ``cooling``：静默超过那个窗口 → 回落（正向情绪跌得慢）。
+        - ``cooling``：静默超过那个窗口 → 回落（正向情绪跌得慢）；
+        - ``dormant``：静默 ≥ ``dormancy_idle_seconds``（默认半小时）→ **分数冻住**，
+          等有人点名叫她（或到点自动醒）。
 
         ⚠️ 这里**不再有** rise/fall 相位、蜜月、让位、以及"到线就转回落"的切换：
         那套东西的前提是"同一时刻只有一个群能说话"。跨群取舍删除后（2026-09-29）：
@@ -490,6 +607,9 @@ class QQAttentionService:
             return
         state.last_decay_at = now
         state.heat = self._heat_tier(state, now)
+        if state.heat == "dormant":
+            # 睡着的群分数冻住：它已经凉了，再往下掉只是把「醒来时从零熬」这件事做一遍。
+            return
         emo = self._emotion_multiplier(state.emotion)
 
         if state.heat == "cooling":
@@ -519,11 +639,14 @@ class QQAttentionService:
     def _heat_tier(self, state: QQGroupAttentionState, now: int) -> str:
         """这个群现在属于哪一档（纯函数式判据，全部来自本群自己的状态）。
 
-        - 判据只有"最近有没有人说话"：窗口内 → warm，否则 cooling。
+        - 先看睡没睡（`dormant_forever` 或 `dormant_until > now`）→ dormant；
+        - 再判「最近有没有人说话」：窗口内 → warm，否则 cooling。
 
         **不看分数**：分数是热度的结果，不是判据 —— 否则会绕回"到线就转档"那套
         （那正是被删掉的相位机在做的事）。
         """
+        if bool(state.dormant_forever) or int(state.dormant_until or 0) > now:
+            return "dormant"
         gap = self._heat_warm_gap_seconds()
         if gap <= 0:
             return "warm"
@@ -1182,6 +1305,17 @@ class QQAttentionService:
         state = self._load_state(normalized_group_id)
         now = self._current_time()
         current_id = self._current_focus_group_id([self._load_state(gid) for gid in self._normalized_groups()])
+        # 被点名 = 唤醒。**点名口 = @（门控第 2 步）/ 关键词 / 引用她（第 4 步）** ——
+        # 这三条都在注意力闸之前、都会走到 `mark_focus`，所以睡着的群被点到就醒；
+        # 普通消息则在门控里被 dormancy 那条直接忽略（连计分都不做），自然保持睡眠。
+        if self._state_is_dormant(state, now):
+            state.dormant_until = 0
+            state.dormant_forever = False
+            # 睡着那段时间的账不补：回溯补回的游标推到此刻（同 `wake_from_dormancy`）。
+            state.last_focus_reason = "wake:addressed"
+            self.plugin._emit_log(
+                "INFO", f"[Attention] 群{normalized_group_id} 从休眠中唤醒（点名）",
+            )
         state.last_focus_at = now
         if current_id != normalized_group_id or int(state.focus_acquired_at or 0) <= 0:
             state.focus_acquired_at = now
@@ -1457,6 +1591,21 @@ class QQAttentionService:
             # emotion_display 到期 → 重置为 calm
             if now > state.emotion_display_until and state.emotion_display != "calm":
                 state.emotion_display = "calm"
+            if self._maybe_fall_asleep(state, now):
+                where = (
+                    "一直睡（只有点名能唤醒）" if state.dormant_forever
+                    else f"{self._dormancy_auto_wake_seconds()}s 后自动醒"
+                )
+                self.plugin._emit_log(
+                    "INFO",
+                    f"[Attention] 群{group_id} 已静默 {now - int(state.last_message_at or now)}s，"
+                    f"冷漠了 → 休眠（{where}）；这个群此后只答点名",
+                )
+                if self.plugin.logger:
+                    self.plugin.logger.info(
+                        f"[Attention] 群 {group_id} 冷漠了 → 休眠（{where}），"
+                        f"此后只答 @ / 引用她 / 关键词"
+                    )
             state = self._apply_decay(state, now)
             self._decay_emotion(state, now)
             # 接话反馈：**由时间触发**的结算点（没有新消息的群也要能结算出「没人接」）。

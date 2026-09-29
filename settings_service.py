@@ -1087,9 +1087,17 @@ class QQSettingsService:
         attention_lock_seconds = kwargs.get("attention_lock_seconds")
         if attention_lock_seconds is not None:
             self.plugin._qq_settings["attention_lock_seconds"] = max(0, int(attention_lock_seconds))
-        # 主动破冰 + 休眠的四个键（icebreaker_idle_seconds / icebreaker_hold_seconds /
-        # icebreaker_dormant_enabled / icebreaker_dormant_seconds）随功能一起删除，
-        # 见 docs/SESSION-HANDOFF.md §42。
+        # 主动破冰的四个键（icebreaker_*）随功能一起删除，见 docs/SESSION-HANDOFF.md §42。
+        # 休眠**没有删** —— 它的触发换成了「这个群静默够久」（§43）。
+        dormancy_enabled = kwargs.get("dormancy_enabled")
+        if dormancy_enabled is not None:
+            self.plugin._qq_settings["dormancy_enabled"] = bool(dormancy_enabled)
+        dormancy_idle_seconds = kwargs.get("dormancy_idle_seconds")
+        if dormancy_idle_seconds is not None:
+            self.plugin._qq_settings["dormancy_idle_seconds"] = max(0, int(dormancy_idle_seconds))
+        dormancy_auto_wake_seconds = kwargs.get("dormancy_auto_wake_seconds")
+        if dormancy_auto_wake_seconds is not None:
+            self.plugin._qq_settings["dormancy_auto_wake_seconds"] = max(0, int(dormancy_auto_wake_seconds))
         attention_maintenance_interval_seconds = kwargs.get("attention_maintenance_interval_seconds")
         if attention_maintenance_interval_seconds is not None:
             self.plugin._qq_settings["attention_maintenance_interval_seconds"] = max(

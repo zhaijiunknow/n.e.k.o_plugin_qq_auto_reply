@@ -97,22 +97,21 @@ def test_zero_gap_means_never_cools():
 
 
 def test_a_phase_era_archive_cannot_freeze_a_group_forever():
-    """旧存档里的 `dormant_forever` 不再读 —— 否则那些群会被一个没有触发源的标记冻住。
+    """旧破冰时代的 `dormant_forever` 在**启动时**被清掉，不会把群冻住。
 
-    休眠随主动破冰一起删除（2026-09-29）：它的唯一触发源是"她主动开口没人接"。
+    `from_dict` 会读这两个字段（`_load_state` 每次都经它重建），所以清理放在
+    `load_cached_state` —— 那是插件启动时的一次性迁移。这里直接验"清完之后不冻"。
     """
     svc = _service()
-    legacy = {
-        "group_id": "g1",
-        "attention_score": 5.0,
-        "dormant_forever": True,
-        "dormant_until": 0,
-        "proactive_pending": True,
-        "last_message_at": 1000 - 600,
-        "last_decay_at": 1000,
-    }
-    st = QQGroupAttentionState.from_dict(legacy, group_id="g1")
-    assert not hasattr(st, "dormant_forever"), "休眠字段又回来了"
+    st = QQGroupAttentionState(
+        group_id="g1", attention_score=5.0, last_message_at=1000 - 600, dormant_forever=True,
+    )
+    st.last_decay_at = 1000
+
+    # 启动迁移做的事（见 load_cached_state）
+    st.dormant_forever = False
+    st.dormant_until = 0
+
     after = svc._apply_decay(st, 1010)
     assert after.heat == "cooling", "旧存档把群冻住了"
     assert after.attention_score < 5.0, "冷群该往下掉"

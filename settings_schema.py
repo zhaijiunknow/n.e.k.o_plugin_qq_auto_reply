@@ -493,7 +493,25 @@ MISC = (
                 ui=UIInput("cfg-gm-digest-interval", min=0, max=3600, step=30,
                            label="ui.attention.digest_interval",
                            hint="ui.attention.digest_interval.hint")),
-    # ── 主动破冰 + 休眠：整套删除（2026-09-29 使用者口径「干脆不要这个先」）──
+    # ── 休眠（「这个群冷漠了」）──────────────────────────────────────
+    # 使用者口径（2026-09-29）：「群聊如果冷漠了就休眠，大概就是半个小时没有任何发言」。
+    # 睡下的效果 = **这个群只答点名**（@ / 引用她 / 关键词），其余消息不看不答、也不计分；
+    # 点名即醒。它与「主动破冰」是两件事，后者已删除（那个才是用时间判「该说话了」）。
+    SettingSpec("dormancy_enabled", "bool", True, saveable=True,
+                description="save：群冷漠了就休眠（只答点名）",
+                ui=UIInput("cfg-dormancy-on", kind="checkbox",
+                           label="ui.attention.dormancy_on")),
+    SettingSpec("dormancy_idle_seconds", "int", 1800, saveable=True,
+                floor=0, description="save：群静默多少秒算冷漠（0=关掉自动休眠）",
+                ui=UIInput("cfg-dormancy-idle", min=0, max=86400, step=60,
+                           label="ui.attention.dormancy_idle",
+                           hint="ui.attention.dormancy_idle.hint")),
+    SettingSpec("dormancy_auto_wake_seconds", "int", 0, saveable=True,
+                floor=0, description="save：休眠后多少秒自动醒（0=一直睡，只有点名能唤醒）",
+                ui=UIInput("cfg-dormancy-auto-wake", min=0, max=86400, step=60,
+                           label="ui.attention.dormancy_auto_wake",
+                           hint="ui.attention.dormancy_auto_wake.hint")),
+    # ── 主动破冰：整套删除（2026-09-29 使用者口径「干脆不要这个先」）──
     # 原触发判据是"这个群静默 1800 秒"（`icebreaker_idle_seconds`）—— 使用者明确不要
     # 用时间判断；给他的四个事件驱动备选（她说完没人接 / 有人喊冷场 / 群在聊但不带她 /
     # 话题收尾）他选了"先不要"。随之删除的还有它带出来的休眠

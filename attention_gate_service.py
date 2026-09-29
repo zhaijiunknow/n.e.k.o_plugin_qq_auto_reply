@@ -660,6 +660,21 @@ class QQAttentionGateService:
                 self._backoff.reset(normalized_group_id)
             return GateDecision("reply", reason="reply_to_bot", force_reply=True)
 
+        # 4.5 这个群冷漠了（静默 ≥ `dormancy_idle_seconds`，默认半小时）→ **只答点名**。
+        #     点名类（@ / 关键词 / 引用她）在上面已经短路返回了，所以走到这里的必然是
+        #     普通消息：不看不答、**也不计分**（睡着的群不该因为别人的闲聊被唤醒）。
+        is_dormant = False
+        try:
+            is_dormant = bool(attention.is_dormant(normalized_group_id))
+        except Exception:
+            is_dormant = False
+        if is_dormant:
+            self.plugin._emit_log(
+                "INFO",
+                f"[Gate] 群{normalized_group_id} 冷漠休眠中（静默够久），只答点名，这一轮忽略",
+            )
+            return GateDecision("ignore", reason="dormant")
+
         # 5. 没人点名 → 看**这个群自己**的注意力够不够（原来这里是"是不是焦点群"，
         #    非焦点一律 block）。低于保持线说明这个群最近没在聊，那就不搭话 ——
         #    判据从"跟别的群比"改成"看自己在不在状态"，每个群各自算。
