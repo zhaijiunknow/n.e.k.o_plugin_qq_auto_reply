@@ -177,6 +177,43 @@ def test_focus_score_tracks_raw_attention_scalar():
     assert service.get_snapshot()["focus_group_id"] == "focus"
 
 
+def test_attention_context_speaks_about_this_group_only():
+    """注入提示词的注意力上下文只说**这个群自己**的状态。
+
+    2026-09-29 跨群取舍删除前，这句话是"这是你当前关注的焦点群 / 这不是你当前关注的群"
+    —— 而门控那时真的按它决定搭不搭话。取舍删掉后每个群各自判定，还留着那句"你不是
+    焦点"只会让模型以为自己不该开口（它其实已经被放行到 LLM 了）。
+    """
+    from types import SimpleNamespace as _NS
+
+    from plugin.plugins.qq_auto_reply.attention_service import (
+        QQAttentionService,
+        QQGroupAttentionState,
+    )
+
+    plugin = _NS(
+        _qq_settings={"attention_focus_threshold": 4, "attention_min_threshold": 1},
+        backlog_store=None,
+        group_permission_mgr=None,
+        permission_mgr=None,
+        _emit_log=lambda *args, **kwargs: None,
+    )
+    service = QQAttentionService(plugin)
+    service._current_time = lambda: 100
+    service._cache = {
+        "focus": QQGroupAttentionState(group_id="focus", attention_score=8.0).to_dict(),
+        "other": QQGroupAttentionState(group_id="other", attention_score=6.5).to_dict(),
+    }
+
+    hottest = service.get_attention_context("focus")
+    colder = service.get_attention_context("other")
+
+    for text, score in ((hottest, "8.0"), (colder, "6.5")):
+        assert "焦点" not in text, f"提示词还在讲「焦点群」这套跨群话术：{text!r}"
+        assert score in text, f"没报出这个群自己的分数：{text!r}"
+    assert hottest != colder, "两个群拿到的上下文一模一样 —— 说明报的不是本群的状态"
+
+
 def test_rise_phase_does_not_clamp_above_focus_line():
     """The rise phase must not clamp scores above the focus line.
 

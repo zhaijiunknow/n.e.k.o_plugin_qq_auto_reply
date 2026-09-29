@@ -1,9 +1,10 @@
-"""fail-to-pass 证据：把「>5 人 + 焦点群 + 只跟一次」的三个条件逐个拆掉，确认看门狗会红。
+"""fail-to-pass 证据：把「>5 人 + 本群在聊 + 只跟一次」的三个条件逐个拆掉，确认看门狗会红。
 
-拆的六种情况，每一种都对应一个真实坏结果：
+拆的情况，每一种都对应一个真实坏结果：
 
 1. 按**条**数而不是按**人**数算 → 一个人刷 6 条就触发，群里会看到她对着一个人复读
-2. 不检查「这个群是焦点」 → 任何群复读都能把她的嘴撬开（使用者明确要求只在焦点群）
+2. 不检查「这个群在聊」 → 任何群复读都能把她的嘴撬开（使用者明确要求只在"这个群热着"时跟）
+2b. 去问**别的群**在不在聊 → 判据不落在本群身上（跨群取舍的回归形态）
 3. 没有冷却（每次都跟） → 群一直刷她就一直跟，变成复读机本身
 4. 把 CQ 码一起发出去 → 复读里带 `[CQ:at,qq=…]` 时会变成她 @人 / 发图
 5. 阈值改成 5（而不是「大于 5」） → 使用者说的是大于 5
@@ -45,9 +46,15 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "repeat_echo_service.py",
-        "不检查「这个群是焦点」（任何群复读都跟）",
-        '        if not self._is_focus_group(group):\n            return None',
+        "不检查「这个群在聊」（任何群复读都跟）",
+        '        if not self._is_active_group(group):\n            return None',
         '        if False:\n            return None',
+    ),
+    (
+        "repeat_echo_service.py",
+        "去问别的群在不在聊（判据不再落在这个群自己身上）",
+        '            return bool(attention.is_in_conversation(str(group_id or "").strip()))',
+        '            return bool(attention.is_in_conversation("__some_other_group__"))',
     ),
     (
         "repeat_echo_service.py",
@@ -131,7 +138,7 @@ def main() -> int:
     if missed:
         print(f"[FAIL] {len(missed)} 项不符合预期: {missed}")
         return 1
-    print(f"[PASS] {len(results)}/{len(results)} —— 「>5 人 + 焦点群 + 只跟一次 + 只跟纯文本」都真的被钉住了")
+    print(f"[PASS] {len(results)}/{len(results)} —— 「>5 人 + 本群在聊 + 只跟一次 + 只跟纯文本」都真的被钉住了")
     return 0
 
 

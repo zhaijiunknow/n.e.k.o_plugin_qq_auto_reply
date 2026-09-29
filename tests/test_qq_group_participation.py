@@ -3,16 +3,15 @@
 
 **为什么钉**（2026-09-27 使用者拍板「normal 群不参与注意力竞争」）：
 
-门控第 4 步（非焦点群 → ignore）原先对所有群一视同仁，于是 normal 群只要不是焦点群，
-消息就被丢掉 —— 下游 `reply_decision_node` 里那个 `normal → relay`（按概率转达给主人）
-分支**永远走不到**。而 necessity 那段的注释担心的正是这件事（"若在这里返回 ignore，
-转发也会被 dispatcher 一起跳过"），只守住了自己那一步。
+门控里原来那道「非焦点群 → ignore」的跨群闸门 2026-09-29 已删除（使用者口径：
+「每个群自己管自己的注意力」），所以现在 trusted 群按**自己的分数**决定搭不搭话，
+normal 群照旧直接放行 —— 两者都不再受"别的群是不是焦点"影响。
 
 现在：normal / none 群
-* 不进 `update_on_message`（不累计分数、不抢焦点）；
-* 不被焦点门控（第 4~8.5 步）拦；
+* 不进 `update_on_message`（不累计分数）；
+* 不被注意力闸拦；
 * 直接以 `normal_group_passthrough` 放行，由权限层决定回还是转达；
-* 被 @ 时照旧必回，但**不上锁不抢焦点**（它不在竞争里）。
+* 被 @ 时照旧必回，但**不上锁不参与竞争**（它不在竞争里）。
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ OTHER = "g2"
 class _TrackingAttention(_FakeAttention):
     """在 _FakeAttention 上记下"有没有被当成竞争者对待"。"""
 
-    def __init__(self, *, focus_group: str = OTHER, score: float = 5.0):
-        super().__init__(focus_group=focus_group, score=score)
+    def __init__(self, *, score: float = 5.0):
+        super().__init__(score=score)
         self.locked: list[str] = []
         self.marked: list[str] = []
         self.boosted: list[str] = []
@@ -105,15 +104,15 @@ def test_normal_group_at_bot_replies_without_locking_focus():
     )
 
 
-def test_trusted_group_keeps_the_old_behaviour():
-    """trusted 群必须一点没变：非焦点 → non_focus；焦点 → 交给 LLM。"""
-    attention = _TrackingAttention(focus_group=OTHER)
+def test_trusted_group_is_judged_by_its_own_score():
+    """trusted 群照常累计注意力；搭不搭话看**本群自己**的分数（不再看别的群）。"""
+    attention = _TrackingAttention(score=5.0)
     plugin = _plugin(level="trusted", attention=attention)
-    assert _evaluate(plugin).reason.startswith("non_focus")
+    assert _evaluate(plugin).reason == "in_conversation"
     assert attention.calls == ["update_on_message"], "trusted 群必须照常累计注意力"
 
-    focused = _plugin(level="trusted", attention=_TrackingAttention(focus_group=GROUP))
-    assert _evaluate(focused).reason == "focus_group"
+    cold = _plugin(level="trusted", attention=_TrackingAttention(score=0.5))
+    assert _evaluate(cold).reason.startswith("low_attention")
 
 
 # ── 模型侧：非参与者不持有焦点 ──────────────────────────────────────

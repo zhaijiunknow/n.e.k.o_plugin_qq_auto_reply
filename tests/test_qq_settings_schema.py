@@ -51,7 +51,15 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "attention_fall_seconds": 30,
     "attention_fall_rate": 0.015,
     "attention_consume_ratio": 0.10,
-    "icebreaker_cold_threshold": 3,
+    "attention_maintenance_interval_seconds": 60.0,
+    # 有意删除（不在此快照里）："icebreaker_cold_threshold"（原默认 3）。
+    # 它数的是**焦点切换次数** —— 跨群焦点取舍删掉后没有切换事件可数，
+    # 判据换成 `icebreaker_idle_seconds`（每群自己静默多久），老键进
+    # `_LEGACY_ZOMBIE_KEYS`，见 `test_icebreaker_cold_threshold_is_gone`。
+    "icebreaker_idle_seconds": 1800,
+    "retroactive_review_min_unreviewed": 5,
+    "retroactive_review_cooldown_seconds": 300,
+    "group_memory_digest_interval_seconds": 300,
     "backlog_retention_limit": 200,
     "backlog_summary_threshold": 10,
     "backlog_notify_cooldown_seconds": 900,
@@ -406,6 +414,24 @@ def test_waking_keys_are_gone():
     # 新机制的键在位（删旧的不是把功能删掉）。
     assert "addressee_names" in settings_schema.BY_KEY
     assert "addressee_penalty" in settings_schema.BY_KEY
+
+
+def test_icebreaker_cold_threshold_is_gone():
+    """「冷场破冰阈值」删除契约（2026-09-29 跨群取舍删除）。
+
+    旧键数的是**焦点切换次数**（"焦点反复落到同一群却没人说话"）。跨群焦点取舍删掉后
+    没有切换事件可数，破冰判据换成 `icebreaker_idle_seconds`（**每群自己**静默多久）。
+    谁把旧键加回来，这条会红。
+    """
+    from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
+
+    assert "icebreaker_cold_threshold" not in settings_schema.BY_KEY, "旧键被加回真源表了"
+    assert "icebreaker_cold_threshold" not in settings_schema.defaults(), "旧键又写进默认值了"
+    assert "icebreaker_cold_threshold" in QQAutoReplyConfigStore._LEGACY_ZOMBIE_KEYS, (
+        "旧键不在僵尸键名单里 —— 老配置文件里的残留值会被原样传下去"
+    )
+    # 新机制的键在位（删旧的不是把功能删掉）。
+    assert "icebreaker_idle_seconds" in settings_schema.BY_KEY
 
 
 def test_legacy_strategy_key_is_dropped_on_load(tmp_path):

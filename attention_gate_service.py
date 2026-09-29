@@ -1,12 +1,16 @@
-"""注意力门控服务 — 基于多群注意力竞争的消息分发决策
+"""注意力门控服务 — 每个群按**自己的**注意力决定搭不搭话
 
 职责：
-1. 每条群消息到达时，更新该群注意力、判定是否回复
-2. 检测焦点群切换，触发回溯补回流程
-3. 回溯补回：摘要 → LLM 挑选需回复的消息 → 逐条补回
+1. 每条群消息到达时，更新该群注意力、判定是否回复（点名优先，注意力垫底）
+2. 本群**凉转热**时回头看它错过的消息（回溯补回，见 `_note_in_conversation`）
+3. 按群维护循环：谁静得够久谁破冰、谁的群记忆有增量谁推摘要（`_maintenance_loop`）
 4. 全局休眠判定
 
-底层依赖 QQAttentionService 提供注意力分数、衰减、focus 判定。
+2026-09-29：跨群取舍（"唯一的焦点群说了算"）整体删除 —— 使用者口径「每个群自己管自己
+的注意力」。原来挂在焦点切换上的机制（回溯补回、记忆摘要、冷场破冰计数）全部改成
+**按群触发**；门控里那道「非焦点群一律 block」的闸门换成"本群分数过没过保持线"。
+
+底层依赖 QQAttentionService 提供注意力分数、衰减、`is_in_conversation` 判定。
 """
 
 from __future__ import annotations
@@ -38,34 +42,194 @@ class GateDecision:
         self.force_reply = force_reply
 
 
-class FocusShiftResult:
-    """焦点切换结果"""
-    __slots__ = ("previous_focus_group", "new_focus_group", "triggered_at")
-
-    def __init__(self, previous_focus_group: str = "", new_focus_group: str = "", triggered_at: int = 0):
-        self.previous_focus_group = previous_focus_group
-        self.new_focus_group = new_focus_group
-        self.triggered_at = triggered_at
-
-
 class QQAttentionGateService:
-    """基于注意力的多群门控 + 回溯补回（含疲劳睡眠）"""
+    """基于注意力的多群门控 + 回溯补回（每群自己管自己）"""
 
     async def start_proactive_loop(self) -> None:
-        """保留接口兼容性——破冰由焦点切换冷场计数触发。"""
-        pass
+        """启动**按群**的维护循环（冷场破冰 + 群记忆摘要）。
+
+        这两件事原来挂在**跨群焦点切换**上（`check_focus_shift`）：切换发生时给旧焦点群
+        推记忆摘要、给新焦点群做回溯补回，冷场计数也由"焦点反复落到同一群却没人说话"
+        驱动。跨群取舍删掉后（2026-09-29 使用者口径：「每个群自己管自己的注意力」）
+        没有"切换"这个事件可挂了，于是改成**每个群自己一个时钟**：谁静得够久谁破冰，
+        谁的群记忆有增量谁推摘要。判据全部来自各群自己的状态，与别的群无关。
+        """
+        task = getattr(self, "_maintenance_task", None)
+        if task is not None and not task.done():
+            return
+        self._maintenance_task = asyncio.create_task(
+            self._maintenance_loop(self._maintenance_interval()),
+        )
 
     async def stop_proactive_loop(self) -> None:
-        """保留接口兼容性。"""
-        pass
+        """停掉维护循环（插件停止/重载时调用）。"""
+        task = getattr(self, "_maintenance_task", None)
+        self._maintenance_task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: B014 - 与隔壁 decay_loop 同款
+            pass
+
+    async def _maintenance_loop(self, interval_seconds: float) -> None:
+        """按群维护循环。
+
+        单轮异常**就地吞掉**（与 `attention_service._decay_loop` 同款理由）：它要碰
+        磁盘与 memory server，一次坏 JSON / 网络抖动若把循环杀掉，破冰与群记忆会
+        无声无息地永久停摆 —— 那种故障在日志里只表现为"她再也不主动说话了"。
+        """
+        while True:
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+            try:
+                await self.run_maintenance_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._logger.warning(f"[Gate] 按群维护轮次异常，已跳过本轮: {e}")
+
+    async def run_maintenance_tick(self) -> None:
+        """走一遍所有参与竞争的群，每群各自判断要不要破冰 / 推记忆摘要。
+
+        **一轮最多破冰一次**（`broke_ice` 那道闸）。理由：破冰是"她主动开口"，而她是
+        一个**人**不是一个群发器 —— 五个群同时静了 30 分钟时，她该一个接一个地看过来
+        （每 tick 一个，默认一分钟一个），而不是同一秒往五个群各丢一句。这条也顺手挡住
+        了"插件重载后所有冷群一起被破冰"的启动爆发：重载时每个群的 `last_message_at`
+        都还是旧的，判据会同时成立。
+        """
+        attention = self.plugin.attention_service
+        if not attention:
+            return
+        now = int(attention._current_time())
+        broke_ice = False
+        for group_id in self._maintenance_groups(attention):
+            if not broke_ice and self._participates_in_attention(group_id):
+                broke_ice = await self._maybe_break_ice(group_id, now)
+            await self._maybe_push_digest(group_id, now)
+
+    def _maintenance_groups(self, attention: Any) -> list[str]:
+        """本服务要照看的群清单（注意力账本里出现过的群）。"""
+        try:
+            groups = [str(g or "").strip() for g in attention._normalized_groups()]
+        except Exception:
+            return []
+        return [g for g in groups if g]
+
+    def _maintenance_interval(self) -> float:
+        """按群维护循环的 tick 间隔（秒，`attention_maintenance_interval_seconds`，默认 60）。
+
+        破冰判据是"静了多久"，分钟级粒度就够；间隔越小只是判定越及时，代价是每个
+        tick 都要把所有群过一遍（读内存态，不落盘）。
+        """
+        raw = (self.plugin._qq_settings or {}).get(
+            "attention_maintenance_interval_seconds", 60,
+        )
+        try:
+            return max(5.0, float(raw))
+        except (TypeError, ValueError):
+            return 60.0
+
+    def _icebreaker_idle_seconds(self) -> int:
+        """这个群**自己**静多少秒之后，她才值得主动开口（默认 1800，0 = 关掉主动破冰）。
+
+        显式取值而不用 `... or 1800`：0 是"关掉这个行为"的合法值，被 `or` 吞掉就再也
+        关不掉了（同 `icebreaker_hold_seconds` 的坑）。
+
+        为什么是**每群自己的静默时长**而不是"焦点切换了几次"：跨群取舍删掉后没有切换
+        事件可数，而"这个群没人说话了"本来就是每群自己的事实。
+        """
+        raw = (self.plugin._qq_settings or {}).get("icebreaker_idle_seconds", 1800)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 1800
+
+    def _digest_interval_seconds(self) -> int:
+        """群记忆摘要的推送间隔（秒，`group_memory_digest_interval_seconds`，默认 300）。"""
+        raw = (self.plugin._qq_settings or {}).get(
+            "group_memory_digest_interval_seconds", 300,
+        )
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 300
+
+    async def _maybe_break_ice(self, group_id: str, now: int) -> bool:
+        """这个群静得够久 → 主动破冰一次。返回是否真的尝试了。
+
+        跳过条件（全部是**这个群自己**的状态，不看别的群）：
+
+        - 还在休眠（破冰没人接的群本来就该安静，等 @ 唤醒）；
+        - 有人点名叫她、锁还没到期（她正该回应人，不该另起话题）；
+        - 静默时长还没到 `icebreaker_idle_seconds`（0 = 关掉主动破冰）；
+        - 上一轮破冰离现在还不够久 —— 否则每 tick 都去问一次 LLM，
+          "破冰"会变成刷屏。
+        """
+        idle_seconds = self._icebreaker_idle_seconds()
+        if idle_seconds <= 0:
+            return False
+        attention = self.plugin.attention_service
+        if not attention:
+            return False
+        try:
+            state = attention.get_state(group_id)
+        except Exception:
+            return False
+        if bool(getattr(state, "dormant_forever", False)) or int(getattr(state, "dormant_until", 0) or 0) > now:
+            return False
+        if int(getattr(state, "lock_until", 0) or 0) > now:
+            return False
+        last_message_at = int(getattr(state, "last_message_at", 0) or 0)
+        if last_message_at <= 0:
+            return False
+        if now - last_message_at < idle_seconds:
+            return False
+        if now - int(self._last_icebreaker_at.get(group_id, 0)) < idle_seconds:
+            return False
+        self._last_icebreaker_at[group_id] = now
+        self._logger.info(
+            f"[Icebreaker] 群 {group_id} 已静默 {now - last_message_at}s（阈值 {idle_seconds}s），尝试破冰"
+        )
+        return await self._try_icebreaker(group_id)
+
+    async def _maybe_push_digest(self, group_id: str, now: int) -> bool:
+        """群记忆摘要按**每群自己的**节奏推送（`group_memory_digest_interval_seconds`）。
+
+        原来它挂在焦点切换上："焦点离开这个群时把它的会话增量推给 Memory Server"。
+        跨群取舍删掉后没有"离开"这个事件，改成按时间推 —— 推送本身是**幂等**的
+        （游标 `last_group_digest_index` 精确记录推到哪里），所以"多久推一次"只影响
+        及时性，不影响正确性。
+        """
+        interval = self._digest_interval_seconds()
+        if interval <= 0:
+            return False
+        if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get("group_memory_enabled", False)):
+            return False
+        if now - int(self._last_digest_at.get(group_id, 0)) < interval:
+            return False
+        self._last_digest_at[group_id] = now
+        await self._push_group_digest(group_id)
+        return True
+
 
     def _touch_group(self, group_id: str) -> None:
         """保留接口兼容性——冷场检测已改为焦点切换计数。"""
         pass
 
     def _mark_active(self, group_id: str) -> None:
-        """保留接口兼容性——原先只用于更新疲劳计时，疲劳系统已删除。"""
-        pass
+        """这条消息被放行了 → 记下"这个群在聊"，并在**凉转热**那一下排一次回溯补回。
+
+        原来的等价物是"焦点切到这个群"（dispatcher 拿 `check_focus_shift()` 的返回值再调
+        `run_retroactive_review`）。跨群取舍删掉后没有切换事件，判据换成每群自己的状态
+        迁移，见 `_note_in_conversation`。
+        """
+        if self._note_in_conversation(group_id):
+            self._schedule_retro_review(str(group_id or "").strip())
 
     def _log_decision(self, message: str) -> None:
         """门控决策双写：**文件日志**（可事后核对、重启不丢）+ 内存环（前端实时看）。
@@ -89,7 +253,7 @@ class QQAttentionGateService:
 
     def _evaluate_necessity(
         self, *, group_id: str, sender_id: str, message_text: str, is_reply_to_bot: bool, now: float,
-        addressee: addressing.AddresseeVerdict | None = None,
+        addressee: addressing.AddresseeVerdict | None = None, in_conversation: bool = False,
     ):
         """组装信号并打分。信号全部来自本进程已有的状态，不额外查库。"""
         threshold = self._necessity_threshold()
@@ -104,7 +268,9 @@ class QQAttentionGateService:
         signals = NecessitySignals(
             message_text=message_text,
             is_group=True,
-            focus_active=True,
+            # 「本群在聊」= 本群分数过保持线（`is_in_conversation`）。跨群取舍去掉后
+            # 这里不再是"抢到唯一焦点"，而是每个群各自判断自己在不在状态。
+            focus_active=in_conversation,
             is_reply_to_bot=is_reply_to_bot,
             pending_count=max(1, pending),
             pending_threshold=self._pending_threshold(),
@@ -370,6 +536,8 @@ class QQAttentionGateService:
                 # 14:28:39 有人接了话，她也答了（24 字）→ **14:28:41 焦点就被
                 # 更热闹的 1048307485 抢走**，接着她在那边连做 6 轮，破冰的这个群
                 # 直到 14:29:42 才拿回焦点，接她话的人被 `non_focus` 丢掉。
+                # （`non_focus` 这道跨群闸门 2026-09-29 已删除；按住焦点的语义换成
+                #  对该群自己的分数与保持线作用，见 attention_service.is_in_conversation。）
                 # 原因就是这里只写了 `last_reply_at`：既不锁（`_choose_focus_state`
                 # 的优先级 1 就是锁），也不重置接话反馈周期、不记频率环。
                 #
@@ -403,11 +571,15 @@ class QQAttentionGateService:
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
-        self._last_focus_group: str = ""
-        self._focus_shifting: bool = False
         self._retroactive_lock = asyncio.Lock()
-        self._digest_tasks: set[asyncio.Task] = set()
-        self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
+        #: 按群维护（冷场破冰 / 群记忆摘要）的状态。跨群取舍删掉后这两件事不再挂
+        #: 焦点切换，而是各自读"这个群自己"的时钟（见 `_maintenance_loop`）。
+        self._maintenance_task: asyncio.Task | None = None
+        self._last_icebreaker_at: dict[str, int] = {}   # 群 → 上次尝试破冰的时刻
+        self._last_digest_at: dict[str, int] = {}       # 群 → 上次推记忆摘要的时刻
+        self._last_retro_at: dict[str, int] = {}        # 群 → 上次回溯补回的时刻
+        self._in_conversation: dict[str, bool] = {}     # 群 → 上一轮判定"在聊吗"
+        self._retro_tasks: set[asyncio.Task] = set()    # 在跑的回溯补回任务（强引用）
         #: 群 → 连续多少条"没在跟她说话"的消息（`human_pair_streak` 的存储）。
         #: 只出数据：默认惩罚 0，日志里能看到 `人对人×N`，等真机数据再决定扣多少。
         self._human_pair_streak: dict[str, int] = {}
@@ -466,12 +638,15 @@ class QQAttentionGateService:
         quoted_sender_id: str = "",
         segments: Any = None,
     ) -> GateDecision:
-        """评估群聊消息：先更新注意力，再做焦点门控，输出跳过原因。
+        """评估群聊消息：先更新注意力，再按**本群自己**的分数决定搭不搭话，输出跳过原因。
 
-        门控规则（焦点前置）：
+        门控规则（点名优先，注意力垫底）：
         - @bot 直接点名 → 唯一旁路，任何群都强制回复
-        - 其余消息（含关键词、回复猫娘的消息）→ 非焦点群一律 block，
-          不生成回复，但注意力照常累计，并输出跳过原因
+        - 关键词 / 引用她 → 强制回复（排在注意力闸**之前**：凉群里被点名也要答）
+        - 其余消息 → 本群分数低于保持线则 block（注意力照常累计），够了就交给 LLM
+
+        2026-09-29 之前这里还有一道"非焦点群一律 block"的跨群闸门；使用者口径
+        「每个群自己管自己的注意力」之后删掉了，墓碑见下面第 0.5 步。
 
         后四个参数（`mentioned_user_ids` / `mentions_all` / `quoted_sender_id` /
         `segments`）是**「谁在跟谁说话」的原料**，由 dispatcher 从已规范化的消息里
@@ -501,13 +676,12 @@ class QQAttentionGateService:
         # 0. 记录消息时间（用于主动发言检测）
         self._touch_group(normalized_group_id)
 
-        # 0.5 焦点门控前置：先捕获「接收时焦点」再更新注意力。
-        #    若在 update_on_message() 之后再取焦点，当前群刚被 boost 过，
-        #    一个接收前非焦点的群可能因此在步骤 1 变成焦点，同一条非 @ 消息
-        #    会被放行进 LLM 而非返回 non_focus——破坏焦点优先规则。
-        focus_group = attention.get_focus_group()
+        # 0.5 墓碑（2026-09-29）：这里原来是 `focus_group = attention.get_focus_group()`，
+        #    用来在 update_on_message() 之前捕获"接收时焦点"，防止当前群被 boost 后
+        #    同一条非 @ 消息越过 `non_focus` 判定。跨群取舍已删除（使用者口径：
+        #    「每个群自己管自己的注意力」），没有唯一焦点可捕获，取值处一并删掉。
 
-        # 1. 消息更新注意力（非焦点群也要累计，等待成为焦点）—— 只对参与竞争的群。
+        # 1. 消息更新注意力（每个群各自累计自己的分数）—— 只对参与竞争的群。
         if participates:
             await attention.update_on_message({
                 "group_id": normalized_group_id,
@@ -598,48 +772,47 @@ class QQAttentionGateService:
             )
             return GateDecision("ignore", reason=f"addressee_first_at_other({addressee.first_at})")
 
-        # 4. 焦点门控前置：非焦点群 → block（注意力已在步骤 1 累计），
-        #    输出跳过原因。关键词/回复猫娘的消息同样在此被拦下。
-        current_score = float(attention.get_state(normalized_group_id).attention_score)
-        if focus_group != normalized_group_id:
-            self.plugin._emit_log(
-                "INFO",
-                f"[Gate] 群{normalized_group_id} block: 非焦点群 (focus={focus_group or '无'}, score={current_score:.1f})",
-            )
-            return GateDecision("ignore", reason=f"non_focus(focus={focus_group or '无'},score={current_score:.1f})")
-
-        # 5. 焦点群：检查注意力是否足够——用「焦点保持线」（低于焦点线）而非
-        #    焦点线本身。焦点线是赢得焦点的资格线；发送门控若也用焦点线，焦点
-        #    群回一条就跌破线、立刻被门控。低于焦点保持线（默认 2.0）才算过低。
-        min_threshold = attention._focus_send_threshold()
-        if current_score < min_threshold:
-            self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold}), 忽略")
-            return GateDecision("ignore", reason=f"focus_low_attention({current_score:.1f})")
-
-        # 6. 焦点群：关键词 → 必定回复（抢焦点 + 注意力 boost）
+        # 4. 「谁在点名」优先于注意力闸：**关键词 / 回复她** 直接放行。
+        #    这两条以前排在**焦点门控之后**，于是非焦点群里的"引用她"和"关键词"
+        #    会被当 non_focus 丢掉；跨群取舍去掉后（2026-09-29 使用者口径：
+        #    「每个群自己管自己的注意力」）没有"非焦点"这回事，点名就该回。
         category = QQFeedbackClassifier.classify(message_text, label_defs)
         if category == "mention" and not is_at_bot:
             category = "chat"
         if category and category != "chat":
-            attention.mark_focus(normalized_group_id)
-            attention.wake_boost(normalized_group_id)
-            self._backoff.reset(normalized_group_id)
+            if participates:
+                attention.mark_focus(normalized_group_id)
+                attention.wake_boost(normalized_group_id)
+                self._backoff.reset(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
-        # 7. 焦点群：回复 bot 的消息 → 等同于被点名，强制回复
         if is_reply_to_bot:
-            attention.mark_focus(normalized_group_id)
-            attention.wake_boost(normalized_group_id)
-            self._backoff.reset(normalized_group_id)
+            if participates:
+                attention.mark_focus(normalized_group_id)
+                attention.wake_boost(normalized_group_id)
+                self._backoff.reset(normalized_group_id)
             return GateDecision("reply", reason="reply_to_bot", force_reply=True)
 
-        # 8. 「回复过于频繁 → 强制静默」这道硬闸**已删除**（2026-09-27 使用者口径：
+        # 5. 没人点名 → 看**这个群自己**的注意力够不够（原来这里是"是不是焦点群"，
+        #    非焦点一律 block）。低于保持线说明这个群最近没在聊，那就不搭话 ——
+        #    判据从"跟别的群比"改成"看自己在不在状态"，每个群各自算。
+        in_conversation = bool(attention.is_in_conversation(normalized_group_id))
+        current_score = float(attention.get_state(normalized_group_id).attention_score)
+        min_threshold = attention.conversation_threshold()
+        if not in_conversation and current_score < min_threshold:
+            self.plugin._emit_log(
+                "INFO",
+                f"[Gate] 群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold:.1f})，这一轮不搭话",
+            )
+            return GateDecision("ignore", reason=f"low_attention({current_score:.1f})")
+
+        # 6. 「回复过于频繁 → 强制静默」这道硬闸**已删除**（2026-09-27 使用者口径：
         #    「不要这个，有注意力控制频率了」）。原来的位置在这里，判据是"窗口内她已发
         #    够 N 条"，@ / 引用 / 关键词可绕过 —— 详见本文件 __init__ 末尾的墓碑注释。
-        #    现在频率由两处软机制管：注意力（焦点竞争 + 分数消耗 + 频率增速缩放）
+        #    现在频率由两处软机制管：注意力（本群分数 + 消耗 + 频率增速缩放）
         #    与 `attention_service.pacing_hint()`（说得偏密时提醒她自己收敛）。
 
-        # 8.5 「这句到底该不该接」——只作用于 trusted 群。
+        # 6.5 「这句到底该不该接」——只作用于 trusted 群。
         #     normal 群不在这里拦：它们本来就不回复，只按概率转发给主人；
         #     若在这里返回 ignore，转发也会被 dispatcher 一起跳过（那是功能回退）。
         group_level = ""
@@ -665,6 +838,7 @@ class QQAttentionGateService:
                 is_reply_to_bot=is_reply_to_bot,
                 now=now_ts,
                 addressee=addressee,
+                in_conversation=in_conversation,
             )
             if verdict.decision != "trigger":
                 backoff = self._backoff.record_wait(normalized_group_id, now=now_ts)
@@ -678,10 +852,12 @@ class QQAttentionGateService:
                 f"[Necessity] 群{normalized_group_id} 接（score={verdict.score} ≥ 阈值，依据={verdict.breakdown.reasons}）"
             )
 
-        # 9. 焦点群普通消息 → LLM 自行判断是否回复
+        # 7. 本群在聊的普通消息 → LLM 自行判断是否回复
         self._mark_active(normalized_group_id)
-        self.plugin._emit_log("INFO", f"[Attention] 焦点群 {normalized_group_id} 消息, LLM自行判断是否回复")
-        return GateDecision("reply", reason="focus_group")
+        self.plugin._emit_log(
+            "INFO", f"[Attention] 群 {normalized_group_id} 在聊（本群分数够），消息交给 LLM 自行判断"
+        )
+        return GateDecision("reply", reason="in_conversation")
 
     # ==========================================
     # 回复后消耗 + 焦点切换检测
@@ -700,54 +876,110 @@ class QQAttentionGateService:
         self._speech.record_self(group_id, now=float(now))
         self._backoff.reset(group_id)
 
-    async def check_focus_shift(self) -> FocusShiftResult | None:
-        """检测焦点群是否切换"""
+    def _note_in_conversation(self, group_id: str) -> bool:
+        """记下"这个群在聊"，返回**这一下是不是从凉转热**（跨过保持线的那一步）。
+
+        原来"回头看这个群错过的消息"挂在**跨群焦点切换**上（`check_focus_shift`）：
+        焦点从别的群切到它 → 做一次回溯补回。跨群取舍删掉后没有切换事件，取而代之的是
+        **每群自己的状态迁移**：凉了很久的群重新热起来 = 值得回头看看这段时间群里聊了什么。
+
+        只看**本群**上一次的判定，与其它群无关 —— 这正是"每个群自己管自己的注意力"。
+        """
+        key = str(group_id or "").strip()
+        if not key:
+            return False
         attention = self.plugin.attention_service
         if not attention:
-            return None
+            return False
+        try:
+            now_in_conversation = bool(attention.is_in_conversation(key))
+        except Exception:
+            return False
+        was = self._in_conversation.get(key)
+        self._in_conversation[key] = now_in_conversation
+        return bool(was is False and now_in_conversation)
 
-        new_focus = attention.get_focus_group()
-        previous = self._last_focus_group
-        if new_focus and new_focus != previous:
-            self._last_focus_group = new_focus
-            self._logger.info(f"[AttentionGate] 焦点切换: {previous or '无'} → {new_focus}")
-            if previous:
-                digest_task = asyncio.create_task(self._push_group_digest(previous))
-                self._digest_tasks.add(digest_task)
-                self.plugin._group_digest_task = digest_task
+    def _schedule_retro_review(self, group_id: str) -> None:
+        """给刚热起来的群排一次回溯补回（异步，不阻塞这条消息）。
 
-                def _clear_digest_task(done_task: asyncio.Task) -> None:
-                    self._digest_tasks.discard(done_task)
-                    if self.plugin._group_digest_task is done_task:
-                        self.plugin._group_digest_task = None
+        用后台任务而不是 await：补回要走一遍完整的回复链路（LLM + 发送），
+        让当前这条消息等它毫无道理 —— 当前消息自己已经在下游处理了。
+        """
+        gate = self
 
-                digest_task.add_done_callback(_clear_digest_task)
-            return FocusShiftResult(
-                previous_focus_group=previous or "",
-                new_focus_group=new_focus,
-                triggered_at=attention._current_time(),
-            )
-        if previous and not new_focus:
-            # 全局休眠
-            self._last_focus_group = ""
-            self._logger.info("[AttentionGate] 全局休眠：所有群注意力过低")
-        return None
+        async def _run_retro() -> None:
+            try:
+                await gate.run_retroactive_review(group_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                gate._logger.warning(f"[RetroReview] 回溯补回失败: {e}")
+
+        try:
+            task = asyncio.create_task(_run_retro())
+        except RuntimeError:   # 没有运行中的事件循环（同步调用方/收尾阶段）
+            return
+        self._retro_tasks.add(task)
+
+        def _on_done(done_task: asyncio.Task) -> None:
+            self._retro_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                self._logger.warning(f"[RetroReview] 回溯补回任务失败: {exc}")
+
+        task.add_done_callback(_on_done)
 
     # ==========================================
     # 回溯补回流程
     # ==========================================
 
     async def run_retroactive_review(self, group_id: str) -> list[str]:
-        """焦点切换到 group_id 后，对忽略消息做回溯补回"""
+        """这个群**刚热起来**时，把它没看过的消息补回来。
+
+        原来是"焦点切换到 group_id 后"由 dispatcher 调；跨群取舍删掉后触发点换成
+        `_note_in_conversation` 检测到的**本群凉转热**（见 `_mark_active`）。
+        """
         async with self._retroactive_lock:
             return await self._run_retroactive_review_locked(group_id)
+
+    def _retro_min_unreviewed(self) -> int:
+        """至少攒够多少条没看过的消息才值得回头补一次（默认 5，0 = 不设门槛）。
+
+        为什么要有这道门槛：跨群取舍删掉后，"凉转热"比"焦点切换"频繁得多，而真去补一次
+        要花一次完整的 LLM 调用。只攒了一两条（她本来就打算答当前这条）时补回毫无意义，
+        放着让当前这条回复覆盖即可。
+        """
+        raw = (self.plugin._qq_settings or {}).get("retroactive_review_min_unreviewed", 5)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 5
+
+    def _retro_cooldown_seconds(self) -> int:
+        """同一个群两次回溯补回之间至少隔多久（默认 300 秒，0 = 不限）。"""
+        raw = (self.plugin._qq_settings or {}).get("retroactive_review_cooldown_seconds", 300)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 300
 
     async def _run_retroactive_review_locked(self, group_id: str) -> list[str]:
         attention = self.plugin.attention_service
         if not attention:
             return []
 
-        # 1. 从统一 backlog_store 取出上次 focus 以来的未审核消息
+        now = int(attention._current_time())
+        cooldown = self._retro_cooldown_seconds()
+        last_at = int(self._last_retro_at.get(group_id, 0))
+        if cooldown > 0 and now - last_at < cooldown:
+            self._logger.info(
+                f"[RetroReview] 群 {group_id} 距上次回溯仅 {now - last_at}s（冷却 {cooldown}s），跳过"
+            )
+            return []
+
+        # 1. 从统一 backlog_store 取出上次她认真看这个群以来的未审核消息
         since = attention.get_last_focus_at(group_id)
         if not hasattr(self.plugin, "backlog_store") or not self.plugin.backlog_store:
             self._logger.warning("[RetroReview] backlog_store 不可用，跳过回溯")
@@ -756,23 +988,20 @@ class QQAttentionGateService:
         # 这个键此前是**死键**：默认值/保存/校验/界面全都有，提示词里却写死了"1-2 条"。
         max_reply = max(1, int((self.plugin._qq_settings or {}).get("retroactive_review_max_reply", 5) or 5))
         unreviewed = await self.plugin.backlog_store.get_unreviewed_messages_since(group_id, since_timestamp=since, limit=max_messages)
-        if not unreviewed:
-            self._logger.info(f"[RetroReview] 群 {group_id} 无未审核消息，跳过回溯")
-            count = self._cold_focus_count.get(group_id, 0) + 1
-            self._cold_focus_count[group_id] = count
-            threshold = int((self.plugin._qq_settings or {}).get("icebreaker_cold_threshold", 3) or 3)
-            if threshold > 0 and count >= threshold:
-                self._logger.info(f"[Icebreaker] 群 {group_id} 连续 {count} 次冷场切换，尝试破冰")
-                await self._try_icebreaker(group_id)
-                self._cold_focus_count[group_id] = 0
+        min_unreviewed = self._retro_min_unreviewed()
+        if not unreviewed or len(unreviewed) < min_unreviewed:
+            self._logger.info(
+                f"[RetroReview] 群 {group_id} 未审核消息 {len(unreviewed)} 条"
+                f"（门槛 {min_unreviewed}），不值得补回，跳过"
+            )
             try:
                 await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
             except Exception:
                 pass
             return []
 
-        # 有未审消息 → 重置冷场计数
-        self._cold_focus_count.pop(group_id, None)
+        # 有未审消息 → 记下这次补回时刻（同群的冷却从这里算）
+        self._last_retro_at[group_id] = now
         self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
         # 本次**真正喂给模型**的消息就是"已审"的边界。标记必须收窄到这个集合，
         # 不能整群全标：模型只看得到最新 max_messages 条，超窗的旧消息若被一起
@@ -858,7 +1087,12 @@ class QQAttentionGateService:
         return "\n".join(lines)
 
     async def _push_group_digest(self, group_id: str) -> None:
-        """焦点切换时将旧焦点群的完整会话摘要推送到 Memory Server"""
+        """把这个群的**会话增量**推送到 Memory Server（按群，幂等）。
+
+        触发点原来是"焦点离开这个群"（`check_focus_shift`）；跨群取舍删掉后改为
+        `_maybe_push_digest` 按**每群自己的**间隔调用。推送本身由游标
+        `last_group_digest_index` 精确记录推到哪里，重复调用不会重发。
+        """
         try:
             if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
                 "group_memory_enabled", False,
@@ -972,17 +1206,18 @@ class QQAttentionGateService:
     # ==========================================
 
     async def shutdown(self) -> None:
-        self._last_focus_group = ""
-        self._focus_shifting = False
-        digest_tasks = list(self._digest_tasks)
-        for task in digest_tasks:
+        await self.stop_proactive_loop()
+        retro_tasks = list(self._retro_tasks)
+        for task in retro_tasks:
             if not task.done():
                 task.cancel()
-        if digest_tasks:
-            await asyncio.gather(*digest_tasks, return_exceptions=True)
-        self._digest_tasks.clear()
-        self.plugin._group_digest_task = None
+        if retro_tasks:
+            await asyncio.gather(*retro_tasks, return_exceptions=True)
+        self._retro_tasks.clear()
+        self._last_icebreaker_at.clear()
+        self._last_digest_at.clear()
+        self._last_retro_at.clear()
+        self._in_conversation.clear()
         if self.plugin.attention_service:
             await self.plugin.attention_service.stop_decay_loop()
-        self._cold_focus_count.clear()
         self._logger.info("[AttentionGate] 已关闭")

@@ -1008,14 +1008,16 @@ class QQMessageDispatcher:
                 self.plugin.logger.info(
                     f"[AttentionGate] 群 {group_id} 消息被忽略 (sender={sender_id}, reason={gate_decision.reason})"
                 )
-                # ignore 分支也要推进焦点切换：一条非焦点消息 boost 后可能让该群
-                # 变成焦点，若不在这里 check_shift，_last_focus_group 不更新、
-                # 回溯补回不触发、切换点消息留在 backlog（等下次 LLM 消息才补）。
-                await self._run_focus_shift_check()
                 return
             force_reply = gate_decision.force_reply
-            # 焦点群消息猫娘已看过，从 backlog 清除
-            if gate_decision.reason == "focus_group" and current_message_id:
+            # 这条消息要交给 LLM 了 → 从 backlog 里标为已看。
+            #
+            # 判据从 `reason == "focus_group"` 改成"只要没被 ignore"：跨群取舍删掉后
+            # 能走到这里的 reason 有 in_conversation / at_bot / keyword:* / reply_to_bot /
+            # normal_group_passthrough，它们**都会**进 LLM —— 老写法只标焦点群那一种，
+            # 于是被 @ 的和命中关键词的消息一直留在 backlog 里当"没看过"，
+            # 下一次回溯补回会把同一条消息再答一遍。
+            if current_message_id:
                 if hasattr(self.plugin, "backlog_store") and self.plugin.backlog_store:
                     await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
@@ -1086,46 +1088,4 @@ class QQMessageDispatcher:
 
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 
-        # 检查焦点切换，触发回溯补回
-        await self._run_focus_shift_check()
 
-    async def _run_focus_shift_check(self) -> None:
-        """neko_dynamic 下推进焦点切换并触发回溯补回。
-
-        ignore 分支和正常回复路径都调用：一条被 gate ignore 的消息 boost 后
-        可能让该群变成焦点，若只在回复路径检测，_last_focus_group 不更新、
-        回溯补回不触发、切换点消息留在 backlog（等下次 LLM 消息才补）。
-        """
-        if not hasattr(self.plugin, "attention_gate_service"):
-            return
-        gate = self.plugin.attention_gate_service
-        if gate is None:
-            return
-        shift = await gate.check_focus_shift()
-        if not shift or not shift.new_focus_group:
-            return
-        import asyncio
-
-        retro_tasks = getattr(gate, "_retro_tasks", None)
-        if retro_tasks is None:
-            retro_tasks = set()
-            gate._retro_tasks = retro_tasks
-        retro_task = asyncio.create_task(
-            gate.run_retroactive_review(shift.new_focus_group)
-        )
-        # 强引用+关机 join：回溯任务在会话锁内改历史/排除名单，
-        # stop 清锁表前必须等它收尾。完成回调消费异常——否则失败
-        # 静默丢弃，只留延迟的未取回异常告警。
-        retro_tasks.add(retro_task)
-
-        def _on_retro_done(task: "asyncio.Task") -> None:
-            retro_tasks.discard(task)
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc is not None:
-                self.plugin.logger.warning(
-                    f"[RetroReview] 回溯补回任务失败: {exc}"
-                )
-
-        retro_task.add_done_callback(_on_retro_done)

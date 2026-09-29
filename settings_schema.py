@@ -471,10 +471,28 @@ MISC = (
                 floor=1, description="save：回溯最多补回多少条",
                 ui=UIInput("cfg-retro-max-reply", min=1, max=50, step=1,
                            label="ui.napcat.config.retro_review_max_reply")),
-    SettingSpec("icebreaker_cold_threshold", "int", 3, saveable=True,
-                floor=0, description="save：连续冷场多少次触发破冰（0=禁用）",
-                ui=UIInput("cfg-icebreaker-threshold", min=0, max=20, step=1,
+    # 回溯补回的**触发**从跨群焦点切换换成"本群凉转热"之后（2026-09-29），这两道闸
+    # 必须存在：新触发比老触发频繁得多（任何群从低于保持线回到线上都算一次），
+    # 而真去补一次要花一整次 LLM 调用。
+    SettingSpec("retroactive_review_min_unreviewed", "int", 5, saveable=True,
+                floor=0, description="save：至少攒够多少条没看过的消息才值得回溯补一次（0=不设门槛）"),
+    SettingSpec("retroactive_review_cooldown_seconds", "int", 300, saveable=True,
+                floor=0, description="save：同一个群两次回溯补回之间至少隔多少秒（0=不限）"),
+    # 「这个群静了多久才值得她主动开口」。原来触发条件是"焦点反复落到同一群却没人
+    # 说话"（`icebreaker_cold_threshold` 数的是**焦点切换次数**）。
+    # 跨群取舍删掉后没有切换事件可数 —— 而"这个群没人说话了"本来就是每群自己的事实，
+    # 于是判据换成**每群自己的静默时长**，由 `_maintenance_loop` 每分钟核对一次。
+    # 0 = 关掉主动破冰（显式取值，不用 `or` 兜底）。
+    SettingSpec("icebreaker_idle_seconds", "int", 1800, saveable=True,
+                floor=0, description="save：群静默多少秒后主动破冰（0=禁用）",
+                ui=UIInput("cfg-icebreaker-threshold", min=0, max=86400, step=60,
                            label="ui.attention.icebreaker", hint="ui.attention.icebreaker.hint")),
+    # 按群维护循环的 tick 间隔：破冰判据是"静了多久"（分钟级），群记忆摘要是防丢
+    # （游标幂等，多久推一次只影响及时性）。
+    SettingSpec("attention_maintenance_interval_seconds", "float", 60.0, saveable=True,
+                floor=5.0, description="save：按群维护循环（破冰 / 群记忆摘要）的间隔秒数"),
+    SettingSpec("group_memory_digest_interval_seconds", "int", 300, saveable=True,
+                floor=0, description="save：群记忆摘要推送间隔秒数（0=不按时间推）"),
     # 破冰后按住焦点的秒数。破冰的语义是「我主动开口了，等人接」——发完就把焦点
     # 让给最热闹的群，等于白破（真机 2026-09-27 14:28：破冰后 2 秒焦点被抢走，
     # 接话的人被 non_focus 丢掉）。与 `attention_lock_seconds`（被 @ 的来由）

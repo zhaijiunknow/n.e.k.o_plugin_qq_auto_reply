@@ -161,6 +161,10 @@ class QQAutoReplyConfigStore:
         # 现在由 `addressee_names` + `addressing.py` 正式接管，这两条没有存在理由了。
         "neko_dynamic_waking_users",
         "neko_dynamic_waking_keywords",
+        # 「冷场破冰阈值」删除后的遗留键（2026-09-29）。它数的是**焦点切换次数** ——
+        # 跨群焦点取舍删掉后没有切换事件可数，判据换成 `icebreaker_idle_seconds`
+        # （**每群自己**静默多久）。留着它等于配置里挂一个改了不生效的旋钮。
+        "icebreaker_cold_threshold",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现

@@ -1,13 +1,13 @@
 """fail-to-pass 证据：normal 群「不参与注意力竞争」的四处接线都是必要条件。
 
-背景（2026-09-27 使用者拍板）：门控第 4 步原先对所有群一视同仁 —— normal 群不是焦点群时
-消息就被丢掉，下游 `normal → relay`（按概率转达给主人）永远走不到。改成"只有 trusted 群
-参与竞争"后，四处接线缺一不可：
+背景（2026-09-27 使用者拍板）：门控里那道跨群闸门原先对所有群一视同仁 —— normal 群只要
+不是"那个唯一的焦点群"，消息就被丢掉，下游 `normal → relay`（按概率转达给主人）永远走不到。
+改成"只有 trusted 群参与竞争"后，四处接线缺一不可：
 
-1. 不参与竞争的群**直接放行**（否则又被判 non_focus）；
-2. 不参与竞争的群**不计分**（否则照样抢焦点）；
+1. 不参与竞争的群**直接放行**（否则又被注意力闸/跨群闸拦下）；
+2. 不参与竞争的群**不计分**（否则照样参与竞争）；
 3. 模型侧**不选非参与者当焦点**（否则被降级的群凭残留分数把 trusted 群静音二十来分钟）；
-4. 被 @ 的 normal 群**不上锁不抢焦点**（必回，但不是竞争者）。
+4. 被 @ 的 normal 群**不上锁不参与竞争**（必回，但不是竞争者）。
 
 铁律（沿用 verify_ui_sse_resilience_fail_to_pass.py）：
 1. **先确认目标用例在干净树上绿**；
@@ -35,7 +35,7 @@ CONTROL_FILE = str(TESTS / "test_qq_permission_levels.py")
 MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "attention_gate_service.py",
-        "不参与竞争的群不再放行（又被判 non_focus，relay 跟着没了）",
+        "不参与竞争的群不再放行（relay 跟着没了）",
         """        if not participates:
             self._mark_active(normalized_group_id)""",
         """        if False:
@@ -43,7 +43,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_gate_service.py",
-        "不参与竞争的群照样计分（会抢焦点）",
+        "不参与竞争的群照样计分（会参与竞争）",
         """        if participates:
             await attention.update_on_message({""",
         """        if True:
@@ -57,7 +57,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "attention_gate_service.py",
-        "被 @ 的 normal 群又去上锁/抢焦点了",
+        "被 @ 的 normal 群又去上锁/参与竞争了",
         """            if participates:
                 attention.lock_group(normalized_group_id)""",
         """            if True:

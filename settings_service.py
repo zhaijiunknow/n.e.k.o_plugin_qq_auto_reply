@@ -1089,9 +1089,31 @@ class QQSettingsService:
         attention_lock_seconds = kwargs.get("attention_lock_seconds")
         if attention_lock_seconds is not None:
             self.plugin._qq_settings["attention_lock_seconds"] = max(0, int(attention_lock_seconds))
-        icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
-        if icebreaker_cold_threshold is not None:
-            self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))
+        # 群静默多久后主动破冰（0=禁用）。原来是 `icebreaker_cold_threshold`（数
+        # 焦点切换次数）—— 跨群取舍删掉后没有切换事件，判据换成每群自己的静默时长。
+        icebreaker_idle_seconds = kwargs.get("icebreaker_idle_seconds")
+        if icebreaker_idle_seconds is not None:
+            self.plugin._qq_settings["icebreaker_idle_seconds"] = max(0, int(icebreaker_idle_seconds))
+        attention_maintenance_interval_seconds = kwargs.get("attention_maintenance_interval_seconds")
+        if attention_maintenance_interval_seconds is not None:
+            self.plugin._qq_settings["attention_maintenance_interval_seconds"] = max(
+                5.0, float(attention_maintenance_interval_seconds),
+            )
+        group_memory_digest_interval_seconds = kwargs.get("group_memory_digest_interval_seconds")
+        if group_memory_digest_interval_seconds is not None:
+            self.plugin._qq_settings["group_memory_digest_interval_seconds"] = max(
+                0, int(group_memory_digest_interval_seconds),
+            )
+        retroactive_review_min_unreviewed = kwargs.get("retroactive_review_min_unreviewed")
+        if retroactive_review_min_unreviewed is not None:
+            self.plugin._qq_settings["retroactive_review_min_unreviewed"] = max(
+                0, int(retroactive_review_min_unreviewed),
+            )
+        retroactive_review_cooldown_seconds = kwargs.get("retroactive_review_cooldown_seconds")
+        if retroactive_review_cooldown_seconds is not None:
+            self.plugin._qq_settings["retroactive_review_cooldown_seconds"] = max(
+                0, int(retroactive_review_cooldown_seconds),
+            )
         # 破冰后按住焦点的秒数（0=不按）。
         icebreaker_hold_seconds = kwargs.get("icebreaker_hold_seconds")
         if icebreaker_hold_seconds is not None:

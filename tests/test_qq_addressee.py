@@ -331,8 +331,7 @@ def test_no_verdict_means_no_change():
 # ==========================================================================
 
 class _FakeAttention:
-    def __init__(self, *, focus_group: str = GROUP, score: float = 5.0, now: int = 1000):
-        self._focus = focus_group
+    def __init__(self, *, score: float = 5.0, now: int = 1000):
         self._score = score
         self._now = now
 
@@ -342,11 +341,14 @@ class _FakeAttention:
     def _current_time(self) -> int:
         return self._now
 
-    def get_focus_group(self):
-        return self._focus or None
-
     def get_state(self, group_id: str):
         return SimpleNamespace(attention_score=self._score)
+
+    def is_in_conversation(self, group_id: str) -> bool:
+        return float(self._score) >= self.conversation_threshold()
+
+    def conversation_threshold(self) -> float:
+        return 2.0
 
     def get_group_multiplier(self, group_id: str) -> float:
         return 1.0
@@ -356,9 +358,6 @@ class _FakeAttention:
 
     def _focus_threshold(self) -> float:
         return 4.0
-
-    def _focus_send_threshold(self) -> float:
-        return 2.0
 
     def is_first_reply_after_own_speech(self, group_id: str) -> bool:
         return False

@@ -229,11 +229,13 @@ def test_delivery_private_is_not_guarded():
 
 
 class _EchoAttention:
+    """复读服务的触发前置：本群在聊（`is_in_conversation`，2026-09-29 起按群判定）。"""
+
     def _enabled(self) -> bool:
         return True
 
-    def get_focus_group(self):
-        return GROUP
+    def is_in_conversation(self, group_id: str) -> bool:
+        return True
 
 
 def _bridge_service(guard):

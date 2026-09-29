@@ -407,13 +407,16 @@ def test_enter_dormancy_ignores_an_empty_group_id():
     assert svc.enter_dormancy("") is False
 
 
-def test_only_at_can_wake_a_sleeping_group():
-    """**唤醒口只有 @** —— 这条钉的是门控里的顺序（结构级断言，不是行为猜测）。
+def test_only_named_paths_can_wake_a_sleeping_group():
+    """**唤醒口 = 所有"点名叫她"的路**（@ / 关键词 / 引用她），普通闲聊不行。
 
-    gate 第 2 步「@ 必回」在焦点门控**之前**，所以休眠群里 @ 她走得到
-    `lock_group`；而关键词唤醒（第 6 步）与"引用她"（第 7 步）都在**焦点群分支**
-    里，休眠群不是焦点 → 走不到。写清楚这件事，是为了让"休眠的群可以用 @ 唤醒"
-    这条口径有据可查，而不是让人以为引用她也能唤醒。
+    这条钉的是门控里的**顺序**（结构级断言，不是行为猜测）：三道点名判据全部排在
+    注意力闸**之前**，而它们都会调 `mark_focus` —— 休眠就是在 `mark_focus` 里被清掉的。
+    所以休眠群被 @、被关键词点到、被引用时都会醒；只有普通消息会卡在注意力闸上
+    （本群分数低于保持线 → 不搭话，休眠自然保持）。
+
+    2026-09-29 之前不是这样：关键词与"引用她"在**焦点群分支**里，休眠群不是焦点 →
+    走不到那两步，于是"唤醒口只有 @"。跨群取舍删掉后那个分支没了，这两条也能唤醒。
     """
     from pathlib import Path
 
@@ -421,16 +424,20 @@ def test_only_at_can_wake_a_sleeping_group():
         encoding="utf-8"
     )
     at_step = src.index("if is_at_bot and not is_reply_to_bot:")
-    focus_gate = src.index("if focus_group != normalized_group_id:")
     keyword_step = src.index('if category and category != "chat":')
     reply_step = src.index("if is_reply_to_bot:")
+    floor_step = src.index("in_conversation = bool(attention.is_in_conversation(")
 
-    assert at_step < focus_gate, "@ 必回必须排在焦点门控之前（否则休眠群 @ 不醒）"
-    assert focus_gate < keyword_step, "关键词唤醒在焦点群分支里 —— 顺序变了就要重新看这条口径"
-    assert focus_gate < reply_step, "「引用她」也在焦点群分支里"
-    assert "attention.lock_group(normalized_group_id)" in src[at_step:focus_gate], (
-        "@ 那条路必须调 lock_group —— 它才是唤醒休眠的那个入口"
+    assert at_step < keyword_step < reply_step < floor_step, (
+        "三道点名判据必须全部排在注意力闸之前 —— 顺序变了这条口径就要重新看"
     )
+    assert "attention.lock_group(normalized_group_id)" in src[at_step:keyword_step], (
+        "@ 那条路必须调 lock_group —— 它是「有人点名叫我」的独占入口"
+    )
+    for start, end, label in ((keyword_step, reply_step, "关键词"), (reply_step, floor_step, "引用她")):
+        assert "attention.mark_focus(normalized_group_id)" in src[start:end], (
+            f"{label}那条路没有 mark_focus —— 它就清不掉休眠（少一个唤醒口）"
+        )
 
 
 def test_dormancy_survives_a_restart():

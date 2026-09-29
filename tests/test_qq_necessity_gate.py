@@ -22,8 +22,7 @@ GROUP = "g1"
 
 
 class _FakeAttention:
-    def __init__(self, *, focus_group: str = GROUP, score: float = 5.0, now: int = 1000):
-        self._focus = focus_group
+    def __init__(self, *, score: float = 5.0, now: int = 1000):
         self._score = score
         self._now = now
         self.calls: list[str] = []
@@ -34,11 +33,19 @@ class _FakeAttention:
     def _current_time(self) -> int:
         return self._now
 
-    def get_focus_group(self):
-        return self._focus or None
+    def _score_for(self, group_id: str) -> float:
+        return float(self._score)
 
     def get_state(self, group_id: str):
-        return SimpleNamespace(attention_score=self._score)
+        return SimpleNamespace(attention_score=self._score_for(group_id))
+
+    def is_in_conversation(self, group_id: str) -> bool:
+        # 「本群在聊」= 本群分数过保持线。跨群取舍删除后，必要性里原来那个
+        # `focus_active`（+40）读的就是这个判据。
+        return self._score_for(group_id) >= self.conversation_threshold()
+
+    def conversation_threshold(self) -> float:
+        return 2.0
 
     def get_group_multiplier(self, group_id: str) -> float:
         return 1.0
@@ -48,9 +55,6 @@ class _FakeAttention:
 
     def _focus_threshold(self) -> float:
         return 4.0
-
-    def _focus_send_threshold(self) -> float:
-        return 2.0
 
     async def update_on_message(self, message: dict) -> None:
         self.calls.append("update_on_message")
@@ -130,7 +134,7 @@ def test_trusted_group_speaks_when_the_group_gets_busy():
         gate._speech.record(GROUP, now=990 + i, speaker=f"u{i}")
     decision = _evaluate(plugin, gate)
     assert decision.action == "reply"
-    assert decision.reason == "focus_group"
+    assert decision.reason == "in_conversation"
 
 
 def test_trusted_group_ignores_pure_short_reaction():

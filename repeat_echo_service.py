@@ -8,7 +8,8 @@
 
 1. **同一个群、同一段文本**，窗口内由 **超过 5 个不同的人**发过（>5 ⇒ 至少 6 人；
    按**人**算不按条算 —— 一个人刷 6 条不算复读）
-2. 触发那一刻**这个群是焦点群**（注意力关掉 / 没有焦点群 ⇒ 永不触发）
+2. 触发那一刻**这个群自己在聊**（注意力关掉 ⇒ 永不触发）。原话是"这个群是焦点"，
+   跨群取舍 2026-09-29 删除后读作"本群分数过保持线"（`is_in_conversation`）
 3. 这一句**还没跟过**（同一句在同一个群里有冷却，免得群一直刷她就一直跟）
 
 跟的内容是**那句原文**（剥掉 CQ 码与协议标签后逐字发出），不是让模型重写：
@@ -130,13 +131,16 @@ class QQRepeatEchoService:
         """判重用的形态：剥掉 CQ/标签后再去掉空格、标点、表情。"""
         return _NORMALIZE_DROP_RE.sub("", cls.sanitize(text).casefold())
 
-    # ── 焦点判定 ────────────────────────────────────────────────
+    # ── 「这个群在聊」判定 ──────────────────────────────────────
 
-    def _is_focus_group(self, group_id: str) -> bool:
-        """"这个群是焦点"== 注意力开着 且 当前焦点群就是它。
+    def _is_active_group(self, group_id: str) -> bool:
+        """"这个群在聊" == 注意力开着 且 **本群自己的分数**过了保持线。
 
-        注意力关掉时没有焦点这个概念（门控那边也是直接放行），所以**不触发** ——
-        使用者的规则明确要求"这个群是焦点的时候"。
+        2026-09-29 之前这里是"当前全局焦点群就是它"（`attention.get_focus_group()`）。
+        跨群取舍删除后没有唯一焦点，判据换成每群各自的 `is_in_conversation()` ——
+        语义仍是使用者原话里那句"这个群是焦点的时候"，只是"焦点"不再由别的群决定。
+
+        注意力关掉时这个判据不成立（门控那边也是直接放行），所以**不触发**。
         """
         attention = getattr(self.plugin, "attention_service", None)
         if attention is None:
@@ -144,11 +148,10 @@ class QQRepeatEchoService:
         try:
             if not attention._enabled():
                 return False
-            focus = str(attention.get_focus_group() or "").strip()
+            return bool(attention.is_in_conversation(str(group_id or "").strip()))
         except Exception as exc:  # noqa: BLE001
-            self.plugin.logger.warning(f"[Repeat] 取焦点群失败: {exc}")
+            self.plugin.logger.warning(f"[Repeat] 判本群在不在聊失败: {exc}")
             return False
-        return bool(focus) and focus == str(group_id or "").strip()
 
     # ── 判定 ────────────────────────────────────────────────────
 
@@ -200,7 +203,7 @@ class QQRepeatEchoService:
 
         if len(episode["senders"]) < self.min_senders:
             return None
-        if not self._is_focus_group(group):
+        if not self._is_active_group(group):
             return None
         if now - float(episode["echoed_at"]) < self.cooldown_seconds:
             return None

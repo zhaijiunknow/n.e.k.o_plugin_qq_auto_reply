@@ -376,8 +376,23 @@ class QQAttentionService:
         焦点群，注意力会随回复消耗（_consume_ratio）和时间衰减；若发送门控
         也用焦点线，焦点群回一条就跌破线、立刻被门控——焦点形同虚设。这里用
         更低的「焦点保持线」作为发送门控，让焦点群在合理注意力水平上继续回应。
+
+        2026-09-29 跨群取舍删除后，外部一律走 `conversation_threshold()`（同一个值，
+        「本群还热着吗」的口径）；这个方法退成内部取值口 + 老配置键的读取点。
         """
         return float(self._setting("attention_focus_hold_threshold", 2.0))
+
+    def conversation_threshold(self) -> float:
+        """「这个群还在聊」的线（默认 2.0，键仍是 `attention_focus_hold_threshold`）。
+
+        低于这条线 = 这个群最近凉了 → 门控的注意力闸不搭话、必要度里原来的
+        ``focus_active`` 不加那 40 分、重复回声不认它。三者共用这一个入口，避免
+        "一个说热、一个说凉"。
+
+        配置键**刻意不改名**：`attention_focus_hold_threshold` 已经写进使用者的
+        配置文件，改名等于让老配置静默失效（值会悄悄退回默认 2.0）。
+        """
+        return self._focus_send_threshold()
 
     def _minimum_threshold(self) -> float:
         return float(self._setting("attention_min_threshold", 1.0))
@@ -1244,9 +1259,14 @@ class QQAttentionService:
     # ── 注意力上下文注入（供 LLM prompt 使用）──
 
     def get_attention_context(self, group_id: str) -> str:
-        """生成注意力上下文文本，注入到系统提示中。"""
+        """生成**这个群自己**的注意力上下文文本，注入到系统提示中。
+
+        2026-09-29 跨群取舍删除前，这里会说"这是你当前关注的焦点群 / 这不是你当前关注的
+        群" —— 而那句话在提示词里是**有后果**的：门控真的按它决定搭不搭话。取舍删掉后
+        每个群各自判定，再说"你不是焦点"只会让模型以为自己不该开口（而它其实已经被放行
+        到 LLM 了）。现在只报本群自己的状态：注意力多少、相位、情绪。
+        """
         snapshot = self.get_snapshot()
-        is_focus = (snapshot.get("focus_group_id") == str(group_id))
         states = snapshot.get("groups") or []
         this_state = None
         for s in states:
@@ -1257,11 +1277,11 @@ class QQAttentionService:
         parts: list[str] = []
         parts.append("## 当前群聊注意力状态")
 
-        if is_focus:
-            parts.append(f"这是你当前关注的焦点群（注意力 {snapshot.get('focus_score', 0):.1f}，相位 {snapshot.get('dominant_dimension', 'rise')}）")
-            parts.append(f"主要原因: {snapshot.get('focus_reason', '') or '注意力最高'}")
-        elif this_state:
-            parts.append(f"这不是你当前关注的群（注意力 {float(this_state.get('attention_score', 0)):.1f}，相位 {this_state.get('phase', 'rise')}）")
+        if this_state:
+            parts.append(
+                f"这个群当前的注意力 {float(this_state.get('attention_score', 0)):.1f}"
+                f"（相位 {this_state.get('phase', 'rise')}）"
+            )
         else:
             parts.append("此群暂无注意力数据。")
 
@@ -1302,26 +1322,42 @@ class QQAttentionService:
         return float(state.attention_score)
 
     def get_group_multiplier(self, group_id: str) -> float:
+        """这个群**自己**的频率增速缩放（0.8 ~ 1.65）。
+
+        以前它按**跨群差距**算：非焦点群与焦点群差距 ≥ 焦点线就直接返回 0.0（等于封死），
+        其余按差距线性压。跨群取舍去掉之后（2026-09-29 使用者口径：「每个群自己管自己的
+        注意力」），这里只看**本群**分数落在哪一档 —— 原本"焦点群"那一档（≥ 焦点线 →
+        最高 1.65）现在任何热起来的群都能拿到，而冷群拿到 0.8，即"说得慢一点"，
+        而不是"根本不许说"。
+        """
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id or not self._enabled():
             return 1.0
-        focus_group_id = self.get_focus_group_id()
         now = self._current_time()
-        state = self._apply_decay(self._load_state(normalized_group_id), now, is_focus=(normalized_group_id == focus_group_id))
-        focus_state = self._apply_decay(self._load_state(focus_group_id), now, is_focus=True) if focus_group_id else None
-        focus_score = self._effective_focus_score(focus_state, now)
-        group_score = self._effective_focus_score(state, now) if normalized_group_id == focus_group_id else float(state.attention_score)
-        if focus_group_id and focus_group_id != normalized_group_id:
-            gap = max(0.0, focus_score - group_score)
-            if gap >= self._focus_threshold():
-                return 0.0
-            return max(0.35, 1.0 - min(0.6, gap / max(self._focus_threshold(), 1.0)))
+        state = self._apply_decay(self._load_state(normalized_group_id), now, is_focus=False)
+        group_score = float(state.attention_score)
         if group_score >= self._focus_threshold():
             return min(1.65, 1.0 + min(0.65, group_score / max(self._focus_threshold(), 1.0) * 0.25))
         if group_score <= self._minimum_threshold():
             return 0.8
         emo = state.emotion or "calm"
         return max(0.05, 1.0 + self._emotion_multiplier(emo))
+
+    def is_in_conversation(self, group_id: str) -> bool:
+        """这个群**自己**是不是正聊着（本群分数 ≥ 保持线，默认 2.0）。
+
+        取代原来那句"是不是**全局焦点**"（2026-09-29 起跨群取舍去掉）：判据从"跟别的群比"
+        变成"看自己在不在状态"。`attention_focus_hold_threshold` 这条线原本的语义就是
+        "焦点群还能不能继续回"，现在读作"这个群还热着吗" —— 门控的注意力闸、必要度里
+        原来那个 ``focus_active``（+40）、以及重复回声那条都改用它，三者不会再出现
+        "一个说有焦点、一个说没有"。
+        """
+        normalized_group_id = str(group_id or "").strip()
+        if not normalized_group_id or not self._enabled():
+            return False
+        now = self._current_time()
+        state = self._apply_decay(self._load_state(normalized_group_id), now, is_focus=False)
+        return float(state.attention_score) >= self.conversation_threshold()
 
     def should_focus_group(self, group_id: str) -> bool:
         normalized_group_id = str(group_id or "").strip()
@@ -1343,12 +1379,16 @@ class QQAttentionService:
         state = self._load_state(normalized_group_id)
         now = self._current_time()
         current_id = self._current_focus_group_id([self._load_state(gid) for gid in self._normalized_groups()])
-        # 被点名 = 唤醒。**唤醒口其实只有 @**：gate 第 2 步（@ 必回）在焦点门控
-        # **之前**，所以休眠群里 @ 她走得到这里；而关键词唤醒与"引用她"在 gate 的
-        # **焦点群分支**里，休眠群通常不是焦点，走不到那两步（唯一例外是"所有群都在
-        # 睡"的兜底情形 —— 那时被选中的群会经过这条路）。
-        # `mark_focus` 顺手清休眠是为了让这两条路径一旦走到就自洽，不是宣称它们能
-        # 唤醒。看门狗 `test_only_at_can_wake_a_sleeping_group` 钉住这个事实。
+        # 被点名 = 唤醒。**唤醒口 = 所有"点名叫她"的路**：@（gate 第 2 步）、关键词
+        # 与"引用她"（第 4 步）。这三条 2026-09-29 起全部排在注意力闸**之前**，所以
+        # 休眠群里被点到就能走到这里；普通闲聊则卡在注意力闸上（本群分数低于保持线
+        # → 不搭话），休眠自然保持。
+        #
+        # 跨群取舍删除前不是这样：关键词与"引用她"在**焦点群分支**里，休眠群不是焦点
+        # → 走不到那两步，于是当时的口径是"唤醒口只有 @"。看门狗
+        # `test_only_named_paths_can_wake_a_sleeping_group` 钉住现在的顺序。
+        # `mark_focus` 顺手清休眠是为了让这几条路径一旦走到就自洽，不是宣称它们能
+        # 唤醒 —— 唤醒是 @/点名带来的，不是 mark_focus 自己发明的。
         if int(state.dormant_until or 0) or bool(state.dormant_forever):
             state.dormant_until = 0
             state.dormant_forever = False

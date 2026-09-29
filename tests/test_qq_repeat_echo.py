@@ -5,7 +5,8 @@
 所以这里钉的是**三个必要条件 + 一次**：
 
 1. **>5 个不同的人**（≥6 人）复读同一句 —— 按**人**不按条：一个人刷 6 条不算
-2. **这个群是焦点群** —— 注意力关掉 / 焦点在别的群都不跟
+2. **这个群自己在聊** —— 原话是"这个群是焦点"，跨群取舍 2026-09-29 删除后读作
+   "本群分数过保持线"；注意力关掉则不跟
 3. **一句只跟一次** —— 同一句在同一个群里有冷却，免得群一直刷她就一直跟
 
 以及三条工程约束：
@@ -40,15 +41,23 @@ LINE = "一江大气喵"
 
 
 class _FakeAttention:
-    def __init__(self, focus: str | None, *, enabled: bool = True) -> None:
-        self.focus = focus
+    """只出「本群在不在聊」这一个判据，并记下**问的是哪个群**。
+
+    真实现是 `attention_service.is_in_conversation()`（本群分数 ≥ 保持线）；
+    2026-09-29 之前这里问的是"全局焦点群是不是它"，跨群取舍删掉后换成每群各自判定。
+    """
+
+    def __init__(self, *, in_conversation: bool = True, enabled: bool = True) -> None:
+        self.in_conversation = in_conversation
         self.enabled = enabled
+        self.asked: list[str] = []
 
     def _enabled(self) -> bool:
         return self.enabled
 
-    def get_focus_group(self):
-        return self.focus
+    def is_in_conversation(self, group_id: str) -> bool:
+        self.asked.append(str(group_id))
+        return bool(self.in_conversation)
 
 
 class _FakeQQClient:
@@ -81,7 +90,7 @@ class _FakeSession:
         self._conversation_history: list = []
 
 
-def _service(*, focus=GROUP, enabled=True, fail=False, with_session=True) -> QQRepeatEchoService:
+def _service(*, in_conversation=True, enabled=True, fail=False, with_session=True) -> QQRepeatEchoService:
     client = _FakeQQClient()
     client.fail = fail
     gate = _FakeGate()
@@ -90,7 +99,7 @@ def _service(*, focus=GROUP, enabled=True, fail=False, with_session=True) -> QQR
         logger=logging.getLogger("qq.test"),
         _emit_log=lambda *a, **k: None,
         qq_client=client,
-        attention_service=_FakeAttention(focus, enabled=enabled),
+        attention_service=_FakeAttention(in_conversation=in_conversation, enabled=enabled),
         attention_gate_service=gate,
         _qq_settings={},
         _user_sessions={"group:" + GROUP: {"session": session}} if with_session else {},
@@ -157,34 +166,39 @@ def test_same_person_does_not_count_twice():
     assert [e for e in echoed if e] == []
 
 
-# ── 必要条件 2：这个群是焦点群 ────────────────────────────────────
+# ── 必要条件 2：这个群自己在聊 ────────────────────────────────────
 
-def test_non_focus_group_does_not_trigger():
-    """复读的人够多，但焦点在别的群 → 不跟。"""
-    service = _service(focus=OTHER_GROUP)
-
-    assert _repeat(service, senders=8) == []
-
-
-def test_no_focus_group_does_not_trigger():
-    service = _service(focus=None)
+def test_a_group_that_is_not_in_conversation_does_not_trigger():
+    """复读的人够多，但这个群自己没在聊（分数没过保持线）→ 不跟。"""
+    service = _service(in_conversation=False)
 
     assert _repeat(service, senders=8) == []
+
+
+def test_the_check_is_about_this_group_not_another_one():
+    """判据必须问**本群**，不能去问别的群（跨群取舍的回归）。"""
+    service = _service()
+
+    assert _repeat(service, senders=6) == [LINE]
+
+    asked = service.plugin.attention_service.asked
+    assert asked and set(asked) == {GROUP}
+    assert OTHER_GROUP not in asked
 
 
 def test_attention_disabled_does_not_trigger():
-    """注意力关掉时没有"焦点群"这个概念，规则里的前置条件不成立。"""
+    """注意力关掉时"这个群在聊"不成立，规则里的前置条件不成立。"""
     service = _service(enabled=False)
 
     assert _repeat(service, senders=8) == []
 
 
-def test_triggering_requires_the_focus_to_be_this_group():
-    """同一个群先不是焦点、后来成为焦点：成为焦点后才算。"""
-    service = _service(focus=OTHER_GROUP)
+def test_triggering_requires_the_group_to_be_in_conversation():
+    """同一个群先没在聊、后来聊起来了：聊起来之后才算。"""
+    service = _service(in_conversation=False)
 
     assert _repeat(service, senders=6) == []
-    service.plugin.attention_service.focus = GROUP
+    service.plugin.attention_service.in_conversation = True
     result = service.observe(group_id=GROUP, sender_id="u6", text=LINE, now=1010.0)
 
     assert result == LINE
@@ -455,6 +469,6 @@ def test_the_threshold_is_strictly_greater_than_five() -> None:
     assert QQRepeatEchoService.DEFAULT_MIN_SENDERS == 6
 
 
-@pytest.mark.parametrize("needle", ["_is_focus_group", "min_senders"])
+@pytest.mark.parametrize("needle", ["_is_active_group", "is_in_conversation", "min_senders"])
 def test_source_keeps_the_two_conditions(needle: str) -> None:
     assert needle in SOURCE

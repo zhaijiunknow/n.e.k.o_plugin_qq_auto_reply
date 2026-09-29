@@ -283,3 +283,53 @@ def test_lock_is_persisted():
     assert int(raw.get("lock_until") or 0) > 0, "to_dict 丢了 lock_until"
     restored = type(svc._load_state("A")).from_dict(raw, group_id="A")
     assert restored.lock_until == raw["lock_until"], "from_dict 丢了 lock_until"
+
+
+# ── 意图：「本群在聊」这条判据（2026-09-29 起按群算，取代全局焦点）────
+#
+# 使用者口径：「每个群自己管自己的注意力」。于是门控/必要度/复读三处共用的判据
+# 从"我是不是唯一焦点"换成"本群自己的分数过没过保持线"。
+
+def test_in_conversation_follows_the_groups_own_score():
+    """本群分数过保持线才算在聊；别的群多热都不改变它。"""
+    svc, clock = _service()
+    now = clock.now
+    _seed(svc, "A", 2.5, now=now)
+    _seed(svc, "B", 9.9, now=now)
+
+    assert svc.is_in_conversation("A") is True
+    assert svc.is_in_conversation("B") is True
+
+    _seed(svc, "A", 1.9, now=now)   # A 凉了，B 仍然很热
+    assert svc.is_in_conversation("A") is False, (
+        "凉了的群因为别的群热就被算成「在聊」 —— 跨群取舍又回来了"
+    )
+    assert svc.is_in_conversation("B") is True
+
+
+def test_in_conversation_is_false_for_unknown_or_empty_groups():
+    """没见过的群（或空 group_id）不算在聊 —— 门控那边就不会误放行。"""
+    svc, clock = _service()
+    _seed(svc, "A", 9.0, now=clock.now)
+
+    assert svc.is_in_conversation("B") is False, "从未出现的群不该被算成在聊"
+    assert svc.is_in_conversation("") is False
+    assert svc.is_in_conversation("   ") is False
+
+
+def test_conversation_threshold_reads_the_live_config_key():
+    """这条线来自 `attention_focus_hold_threshold` —— 键名不许改。
+
+    改名的后果是**老配置静默失效**：使用者配置里写的 2.0 会被忽略、悄悄退回默认值。
+    """
+    svc, _ = _service()
+
+    assert svc.conversation_threshold() == pytest.approx(
+        LIVE["attention_focus_hold_threshold"]
+    )
+    assert svc._focus_send_threshold() == svc.conversation_threshold()
+
+    svc.plugin._qq_settings["attention_focus_hold_threshold"] = 3.5
+    assert svc.conversation_threshold() == pytest.approx(3.5)
+    _seed(svc, "A", 3.0, now=svc._current_time())
+    assert svc.is_in_conversation("A") is False, "阈值调高后 3.0 应该算凉了"
