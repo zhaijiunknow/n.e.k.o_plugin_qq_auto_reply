@@ -19,6 +19,8 @@ from plugin.plugins.qq_auto_reply.reply_necessity import (
     PRESSURE_STANDARD_SCORE,
     QUESTION_SCORE,
     SELF_PENALTY_MAX,
+    SELF_RATIO_FREE,
+    SELF_RATIO_FULL,
     SHORT_REACTION_PENALTY,
     GroupSpeechTracker,
     IdleBackoff,
@@ -68,26 +70,49 @@ def test_question_in_busy_focus_group_triggers():
 
 
 def test_presence_penalty_quietens_a_talkative_bot():
-    """存在感占比 0.60 → 扣满 25 分；在**低压力**场景里足以把 trigger 翻成 wait。
+    """存在感占比拉满 → 扣满 `SELF_PENALTY_MAX`；在**低压力**场景里足以把 trigger 翻成 wait。
 
     高压力场景（积压满 + 提问）单靠存在感压不下去 —— 这是有意的：别人明确在问，
     即使她刚才话多也应该接。测试同时钉住这两面。
     """
     # 积压刚好让 calm 过线（40 + 22 = 62 ≥ 60），翻转只能由存在感惩罚造成
     calm = _sig(message_text="今天天气不错", pending_count=2, pending_threshold=3, self_ratio=0.0)
-    busy = _sig(message_text="今天天气不错", pending_count=2, pending_threshold=3, self_ratio=0.6)
+    busy = _sig(
+        message_text="今天天气不错", pending_count=2, pending_threshold=3,
+        self_ratio=SELF_RATIO_FULL,
+    )
     assert score_necessity(busy, threshold=TEST_THRESHOLD).breakdown.presence == -int(SELF_PENALTY_MAX)
     assert score_necessity(busy, threshold=TEST_THRESHOLD).breakdown.score < score_necessity(calm, threshold=TEST_THRESHOLD).breakdown.score
     assert score_necessity(calm, threshold=TEST_THRESHOLD).decision == "trigger"
     assert score_necessity(busy, threshold=TEST_THRESHOLD).decision == "wait"
 
     # 反面：被明确提问 + 积压满时，存在感不该压掉这一次回复
-    asked = _sig(message_text="这个怎么弄？", pending_count=3, pending_threshold=3, self_ratio=0.6)
+    asked = _sig(
+        message_text="这个怎么弄？", pending_count=3, pending_threshold=3,
+        self_ratio=SELF_RATIO_FULL,
+    )
     assert score_necessity(asked, threshold=TEST_THRESHOLD).decision == "trigger"
 
 
 def test_presence_penalty_is_free_below_the_ratio_floor():
-    assert score_necessity(_sig(self_ratio=0.25), threshold=TEST_THRESHOLD).breakdown.presence == 0
+    assert score_necessity(_sig(self_ratio=SELF_RATIO_FREE), threshold=TEST_THRESHOLD).breakdown.presence == 0
+
+
+def test_presence_penalty_is_milder_and_starts_later():
+    """2026-09-29 使用者口径：「6 条就休息频率有点少了，发言惩罚减轻一点」。
+
+    旧常数（免费区 0.25 / 满罚 25）下，她占窗口六成就被扣满 —— 而基线恰好等于阈值，
+    于是任何一分惩罚都能让她停下。现在免费区 0.45、满罚 15：十句里六句是她只扣 6 分。
+    """
+    assert SELF_RATIO_FREE >= 0.45, "免费区又被调回去了？先问使用者"
+    assert SELF_PENALTY_MAX <= 15, "满罚又被调回去了？先问使用者"
+
+    # 六成是她：15 × (0.6 − 0.45) / 0.35 = 6.4 → 6 分（旧值 25 分）
+    assert score_necessity(_sig(self_ratio=0.6), threshold=TEST_THRESHOLD).breakdown.presence == -6
+    # 刚好一半：15 × 0.05 / 0.35 = 2.1 → 2 分
+    assert score_necessity(_sig(self_ratio=0.5), threshold=TEST_THRESHOLD).breakdown.presence == -2
+    # 还没到免费区上限 → 一分不扣
+    assert score_necessity(_sig(self_ratio=0.4), threshold=TEST_THRESHOLD).breakdown.presence == 0
 
 
 @pytest.mark.parametrize("pending,expected_ratio", [(1, 1 / 3), (3, 1.0)])

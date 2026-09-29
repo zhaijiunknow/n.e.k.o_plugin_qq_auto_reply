@@ -113,17 +113,45 @@ def _gate(plugin) -> QQAttentionGateService:
     return QQAttentionGateService(plugin)
 
 
-def test_trusted_group_stays_quiet_when_she_has_been_talking():
-    """她刚说过一阵子（存在感占比高）→ 普通闲聊让一让。这是 40 档的主力机制。"""
+def test_trusted_group_stays_quiet_when_she_hogs_the_conversation():
+    """她一个人刷屏（窗口里八成都是她说的）→ 普通闲聊让一让。这是 40 档的主力机制。
+
+    口径变化（2026-09-29 使用者：「6 条就休息频率有点少了，发言惩罚减轻一点」）：
+    这条**不再是"说几句就停"**。旧常数的同一个用例是"10 句她 + 4 句别人"就静音；
+    减轻之后那个场景会接（见 `test_she_can_keep_talking_after_six_of_ten`），
+    要她占到八成、且群里没有积压，才会被压到线下（实测 40 + 4 − 15 = 29 → ignore）。
+    """
     plugin = _plugin(level="trusted")
     gate = _gate(plugin)
-    for _ in range(10):
-        gate._speech.record_self(GROUP, now=990)
-    for i in range(4):
-        gate._speech.record(GROUP, now=991 + i, speaker=f"u{i}")
+    for _ in range(12):
+        gate._speech.record_self(GROUP, now=980)
+    for i in range(2):
+        gate._speech.record(GROUP, now=990 + i, speaker=f"u{i}")
+
     decision = _evaluate(plugin, gate)
+
     assert decision.action == "ignore"
     assert decision.reason.startswith("necessity_wait(")
+
+
+def test_she_can_keep_talking_after_six_of_ten():
+    """她说了六成（6 句她 + 4 句别人，窗口 11 条含当前这条）→ 现在接得住。
+
+    使用者口径（2026-09-29）：「6 条就休息频率有点少了，发言惩罚减轻一点」。
+    同一条消息在两套常数下的实测：
+        旧（免费区 0.25 / 满罚 25）：40 + 12 − 21 = 31 → ignore（这就是"6 条就休息"）
+        新（免费区 0.45 / 满罚 15）：40 + 12 − 4  = 48 → reply
+    """
+    plugin = _plugin(level="trusted")
+    gate = _gate(plugin)
+    for _ in range(6):
+        gate._speech.record_self(GROUP, now=980)
+    for i in range(4):
+        gate._speech.record(GROUP, now=990 + i, speaker=f"u{i}")
+
+    decision = _evaluate(plugin, gate, timestamp=1000)
+
+    assert decision.action == "reply", decision.reason
 
 
 def test_trusted_group_speaks_when_the_group_gets_busy():
@@ -204,18 +232,28 @@ def test_backoff_is_bypassed_when_messages_pile_up():
 
 
 def test_her_own_replies_count_towards_presence():
-    """她说过话之后，存在感占比升高 → 同样内容更难通过（切回不接）。"""
+    """她说过话之后，存在感占比升高 → 同样内容更难通过（切回不接）。
+
+    减轻之后（2026-09-29）这条的**量级变了**：对半说（窗口里一半是她）不再有影响
+    —— 她连说 10 句时同一个群、同一条消息仍然接（实测 40 + 53 − 1 = 92）。
+    要连说 20 句、把窗口占掉三分之二，才扣 8 分把普通闲聊压到 40 线下（40 + 0 − 8 = 32）。
+    """
     plugin = _plugin(level="trusted")
     gate = _gate(plugin)
     for i in range(10):
         gate._speech.record(GROUP, now=990 + i, speaker=f"u{i}")
     assert _evaluate(plugin, gate).action == "reply"
 
-    # 她连说 10 句 → 存在感占比拉满，扣满 25 分
     for i in range(10):
         gate._speech.record_self(GROUP, now=995 + i)
-    decision = _evaluate(plugin, gate, timestamp=1005)
+    assert _evaluate(plugin, gate, timestamp=1005).action == "reply", "对半说也被压下去了"
+
+    # 再连说 10 句（共 20 句）→ 窗口占比 0.65、她之后没有新积压 → 压到线下
+    for i in range(10):
+        gate._speech.record_self(GROUP, now=1006 + i)
+    decision = _evaluate(plugin, gate, timestamp=1015)
     assert decision.action == "ignore"
+    assert decision.reason.startswith("necessity_wait(")
 
 
 def test_decision_goes_to_the_file_logger_not_only_the_ring():
