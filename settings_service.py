@@ -1059,7 +1059,7 @@ class QQSettingsService:
             self.plugin._qq_settings["attention_batch_message_gain"] = self._clamp_attention_float(attention_batch_message_gain, "attention_batch_message_gain", floor=0.0)
         attention_base_rise_rate = kwargs.get("attention_base_rise_rate")
         if attention_base_rise_rate is not None:
-            # floor=0：0 表示禁用自然上升（rise 相位不随时间增长）
+            # floor=0：0 表示禁用自然上升（热聊中也不随时间增长）
             self.plugin._qq_settings["attention_base_rise_rate"] = self._clamp_attention_float(attention_base_rise_rate, "attention_base_rise_rate", floor=0.0)
         attention_message_boost = kwargs.get("attention_message_boost")
         if attention_message_boost is not None:
@@ -1067,12 +1067,10 @@ class QQSettingsService:
         attention_keyword_boost_ratio = kwargs.get("attention_keyword_boost_ratio")
         if attention_keyword_boost_ratio is not None:
             self.plugin._qq_settings["attention_keyword_boost_ratio"] = self._clamp_attention_float(attention_keyword_boost_ratio, "attention_keyword_boost_ratio", floor=0.0)
-        attention_honeymoon_seconds = kwargs.get("attention_honeymoon_seconds")
-        if attention_honeymoon_seconds is not None:
-            self.plugin._qq_settings["attention_honeymoon_seconds"] = max(0, int(attention_honeymoon_seconds))
-        attention_fall_seconds = kwargs.get("attention_fall_seconds")
-        if attention_fall_seconds is not None:
-            self.plugin._qq_settings["attention_fall_seconds"] = max(0, int(attention_fall_seconds))
+        # 热度档的判据：本群静默多久算「凉下来了」（0=永不算凉）
+        attention_heat_warm_gap_seconds = kwargs.get("attention_heat_warm_gap_seconds")
+        if attention_heat_warm_gap_seconds is not None:
+            self.plugin._qq_settings["attention_heat_warm_gap_seconds"] = max(0, int(attention_heat_warm_gap_seconds))
         attention_fall_rate = kwargs.get("attention_fall_rate")
         if attention_fall_rate is not None:
             self.plugin._qq_settings["attention_fall_rate"] = self._clamp_attention_float(attention_fall_rate, "attention_fall_rate", floor=0.0)

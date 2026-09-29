@@ -24,11 +24,9 @@ LIVE = {
     "attention_base_rise_rate": 0.08,
     "attention_message_boost": 0.15,
     "attention_keyword_boost_ratio": 1.8,
-    "attention_honeymoon_seconds": 60,
-    "attention_fall_seconds": 30,
+    "attention_heat_warm_gap_seconds": 120,
     "attention_fall_rate": 0.015,
     "attention_consume_ratio": 0.1,
-    "attention_fall_boost_attenuation": 0.3,
     "attention_at_bot_boost": 3.0,
     "attention_question_boost": 1.5,
     "attention_wake_boost_ratio": 0.75,
@@ -68,11 +66,16 @@ def _service(groups=("A", "B")):
     return svc, clock
 
 
-def _seed(svc, gid, score, *, now, focus=True):
+def _seed(svc, gid, score, *, now, focus=True, last_message_at=None):
+    """摆一个群的状态。
+
+    热度档的判据是"这个群最后一条消息离现在多远"，所以摆分数时必须一起摆
+    `last_message_at`（默认 = now，即"刚刚还有人说话" → warm）。
+    """
     st = svc._load_state(gid)
     st.attention_score = score
     st.last_decay_at = now
-    st.phase_started_at = now
+    st.last_message_at = now if last_message_at is None else last_message_at
     if focus:
         st.focus_acquired_at = now
         st.last_focus_at = now
@@ -98,7 +101,7 @@ def _reply(svc, gid):
 # 场景：群每 30 秒有人说话，猫娘每 60 秒回一条，持续 4 分钟。
 
 def _simulate_long_conversation(svc, clock, *, gid="A", start=4.5, minutes=4):
-    """返回 [(经过秒数, 分数, 相位)] 轨迹。"""
+    """返回 [(经过秒数, 分数, 热度档)] 轨迹。"""
     t0 = clock.now
     _seed(svc, gid, start, now=t0)
     traj: list[tuple[int, float, str]] = []
@@ -111,7 +114,7 @@ def _simulate_long_conversation(svc, clock, *, gid="A", start=4.5, minutes=4):
             _reply(svc, gid)
         st = svc._apply_decay(svc._load_state(gid), clock.now)
         svc._write_state(st)
-        traj.append((elapsed, st.attention_score, st.phase))
+        traj.append((elapsed, st.attention_score, st.heat))
     return traj
 
 
@@ -121,7 +124,7 @@ def test_hot_group_stays_replyable_through_a_long_conversation():
     traj = _simulate_long_conversation(svc, clock)
     floor = svc._focus_send_threshold()
     low = [(t, s, p) for t, s, p in traj if s < floor]
-    detail = "\n".join(f"    +{t:3d}s  score={s:5.2f}  phase={p}" for t, s, p in traj)
+    detail = "\n".join(f"    +{t:3d}s  score={s:5.2f}  heat={p}" for t, s, p in traj)
     assert not low, (
         f"热群在持续对话中掉出可回复状态（发送线 {floor}）：\n{detail}\n"
         f"  掉线点：{low}"
@@ -153,55 +156,53 @@ def test_reply_cost_is_not_proportional_to_current_score():
     )
 
 
-# ── 意图 3：回血不能被相位压制 ──────────────────────────────────────
+# ── 意图 3：回血不能被档位压制 ──────────────────────────────────────
 #
-# fall 相位把消息加成乘 0.3，于是「跌下去就爬不回来」：
-#   30 秒内 衰减 0.45，群友发 1 条只补 0.045 —— 净增速恒为负。
+# 老相位机在 fall 里把消息加成乘 0.3（"让位的群不许赖着不走"）：30 秒衰减 0.45、
+# 群友发一条只补 0.045 —— 净增速恒为负，跌下去就爬不回来。跨群取舍删掉后连
+# "让位"都没有了，这条压制也一并取消；现在的回血只取决于**这个群自己**热不热。
 
-def test_message_boost_is_not_attenuated_in_fall_phase():
-    """`fall` 相位里一条消息的加成不得被压到几乎无效。"""
+def test_message_boost_is_the_same_in_both_heat_tiers():
+    """同样一条消息，在冷却档与热聊档里的加成必须一样。"""
     svc, clock = _service()
     now = clock.now
 
-    _seed(svc, "A", 5.0, now=now)              # rise
+    _seed(svc, "A", 5.0, now=now)                       # 刚刚还有人说话 → warm
     _message(svc, "A", clock)
-    rise_boost = svc._load_state("A").attention_score - 5.0
+    warm_boost = svc._load_state("A").attention_score - 5.0
 
-    _seed(svc, "B", 5.0, now=now)
-    st = svc._load_state("B")
-    st.phase = "fall"
-    st.phase_started_at = now
-    svc._write_state(st)
+    _seed(svc, "B", 5.0, now=now, last_message_at=now - 3600)   # 静了一小时 → cooling
     _message(svc, "B", clock)
-    fall_boost = svc._load_state("B").attention_score - 5.0
+    cooling_boost = svc._load_state("B").attention_score - 5.0
 
-    assert fall_boost == pytest.approx(rise_boost, rel=0.05), (
-        f"fall 相位的消息加成被衰减：rise={rise_boost:.3f} fall={fall_boost:.3f}。"
-        f"这条衰减让回落期净增速恒为负，群无法回血。"
+    assert cooling_boost == pytest.approx(warm_boost, rel=0.05), (
+        f"冷却档的消息加成被压掉：warm={warm_boost:.3f} cooling={cooling_boost:.3f}。"
+        f"这条压制让凉下来的群无法回血。"
     )
 
 
 # ── 意图 4：分数必须有余量支撑「一直聊」 ────────────────────────────
 #
-# 现在自然增长被 min(focus_threshold, ...) 封顶在焦点线上：夺冠即「刚好够线、
+# 自然增长曾被 min(focus_threshold, ...) 封顶在档位线上：刚到线即「刚好够线、
 # 零余量」，于是每次回复消耗都会把群打到线下。要能一直聊，线上必须有空间。
 
 def test_score_can_exceed_focus_threshold():
-    """夺冠之后自然增长不得被焦点线封顶。"""
+    """热聊中的自然增长不得被档位线封顶。"""
     svc, clock = _service()
     now = clock.now
     _seed(svc, "A", 4.0, now=now)
 
-    # 甜蜜期里持续推进（期间没有回复消耗），分数应能涨过焦点线
+    # 一直有人说话（每 10 秒一条），期间没有回复消耗：分数应能涨过档位线
     for step in range(1, 7):                    # 6 × 10s
         clock.now = now + step * 10
+        _message(svc, "A", clock)
         st = svc._apply_decay(svc._load_state("A"), clock.now)
         svc._write_state(st)
 
     score = svc._load_state("A").attention_score
     assert score > svc._focus_threshold(), (
-        f"分数被焦点线封顶（score={score:.2f}, 焦点线={svc._focus_threshold()}）。"
-        f"夺冠后没有余量，任何一次回复消耗都会把群打到线下。"
+        f"分数被档位线封顶（score={score:.2f}, 档位线={svc._focus_threshold()}）。"
+        f"到线后没有余量，任何一次回复消耗都会把群打到线下。"
     )
 
 

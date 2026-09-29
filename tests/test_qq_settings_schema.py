@@ -47,11 +47,14 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "attention_base_rise_rate": 0.02,
     "attention_message_boost": 0.15,
     "attention_keyword_boost_ratio": 1.8,
-    "attention_honeymoon_seconds": 60,
-    "attention_fall_seconds": 30,
     "attention_fall_rate": 0.015,
     "attention_consume_ratio": 0.10,
     "attention_maintenance_interval_seconds": 60.0,
+    # 有意删除（不在此快照里）：`attention_honeymoon_seconds`(60) /
+    # `attention_fall_seconds`(30) / `attention_fall_boost_attenuation`(0.3)
+    # 随 rise/fall 相位机一起退役（2026-09-29）：那套"蜜月 + 让位"的前提是
+    # 同一时刻只有一个群能说话。热度改由 `attention_heat_warm_gap_seconds` 决定。
+    "attention_heat_warm_gap_seconds": 120,
     # 有意删除（不在此快照里）："icebreaker_cold_threshold"（原默认 3）。
     # 它数的是**焦点切换次数** —— 跨群焦点取舍删掉后没有切换事件可数，
     # 判据换成 `icebreaker_idle_seconds`（每群自己静默多久），老键进

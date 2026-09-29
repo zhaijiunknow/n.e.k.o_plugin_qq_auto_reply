@@ -165,6 +165,14 @@ class QQAutoReplyConfigStore:
         # 跨群焦点取舍删掉后没有切换事件可数，判据换成 `icebreaker_idle_seconds`
         # （**每群自己**静默多久）。留着它等于配置里挂一个改了不生效的旋钮。
         "icebreaker_cold_threshold",
+        # rise/fall **相位机**删除后的遗留键（2026-09-29）。整套蜜月 + 让位的前提是
+        # "同一时刻只有一个群能说话"；跨群取舍删除后热度只由"这个群最后一条消息离现在
+        # 多远"决定（`attention_heat_warm_gap_seconds`）。三个键里
+        # `attention_fall_boost_attenuation` 其实**更早就已经是死键**（消息加成不再按
+        # 相位衰减，只剩一个没人调用的 accessor），另外两个是相位机的计时器。
+        "attention_honeymoon_seconds",
+        "attention_fall_seconds",
+        "attention_fall_boost_attenuation",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现

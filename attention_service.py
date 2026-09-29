@@ -57,29 +57,29 @@ _EMOTION_DECAY_SECONDS = 30
 class QQGroupAttentionState:
     """单群注意力状态（周期模型）。
 
-    ``attention_score`` 是唯一标量（0~10），按相位机推进：
-      - rise: 随时间增长（消息/@ 加速；情绪/疲劳调制速率）
-      - fall: 随时间回落（发言消耗、夺冠蜜月结束后自然回落）
-    焦点 = 所有 attention_score >= 焦点线的群中最高者。
+    ``attention_score`` 是唯一标量（0~10），按**本群自己的热度档**推进：
+
+      - ``warm``（热聊中）：本群在 ``attention_heat_warm_gap_seconds`` 之内有人说过话 →
+        随时间增长（消息/@ 加速；情绪调制速率）
+      - ``cooling``（凉下来了）：静默超过那个窗口 → 随时间回落
+      - ``dormant``（休眠）：破冰没人接 → 不涨也不掉，等 @ 唤醒
+
+    2026-09-29 之前这里是 rise/fall **相位** + 蜜月 + 让位。那套东西的前提是"同一时刻
+    只有一个群能说话"（跨群焦点竞争）：rise = 攒分夺冠、蜜月 = 夺冠后的纯积累期、
+    fall = "让位给别的群"。跨群取舍删除后没有对手可让、没有冠军可加冕，于是换成
+    "**这个群自己热不热**"—— 判据只有本群最后一条消息的时刻与接话反馈，不看任何别的群。
     """
 
     group_id: str
     attention_score: float = 0.0      # 唯一标量 0~10
-    phase: str = "rise"               # rise | fall
-    phase_started_at: int = 0         # 当前相位起始时间（fall 回落计时 / 蜜月判断用）
+    heat: str = "warm"                # warm | cooling | dormant（每次推进按本群时间戳重算）
     # ── 时间戳 ──
     last_decay_at: int = 0            # 上次相位推进时刻（幂等推进用）
     last_message_at: int = 0
     last_reply_at: int = 0
     last_boost_at: int = 0
     last_focus_at: int = 0
-    focus_acquired_at: int = 0        # 最近夺冠时刻（夺冠身份，不参与蜜月计时）
-    #: 首次「稳住焦点线」的时刻 —— **蜜月计时用它，不用 focus_acquired_at**。
-    #:
-    #: 两者必须分开：从 0 自然涨到焦点线的群一到线就夺冠，若蜜月也从那一刻起算，
-    #: 它还没积累任何余量就被判「蜜月结束」转入 fall，使用者要的「能一直聊很久」
-    #: 在结构上不可能。稳线时刻给了夺冠之后一段纯积累期。
-    steady_since: int = 0
+    focus_acquired_at: int = 0        # 最近一次"站上档位线"的时刻（焦点快照/标记用）
     #: 锁到期时刻（`@猫娘` / 唤醒词触发）。期内该群独占焦点，其余群不参与竞争。
     #:
     #: 与分数是**两个独立信号**：分数表达「没人叫我时我自己看哪」，
@@ -119,30 +119,28 @@ class QQGroupAttentionState:
     proactive_pending: bool = False
 
     def dimension_dict(self) -> dict[str, float]:
-        """展示用：标量 + 相位 + 情绪是否活跃。"""
+        """展示用：标量 + 热度 + 情绪是否活跃。"""
         return {
             "attention": float(self.attention_score),
-            "phase": 1.0 if self.phase == "rise" else 0.0,
+            "heat": 1.0 if self.heat == "warm" else 0.0,
             "emotion": 1.0 if self.emotion != "calm" else 0.0,
         }
 
     def dominant_dimension(self) -> str:
-        """用于解释焦点原因：当前相位。"""
-        return self.phase
+        """用于解释"为什么现在看这个群"：当前热度档。"""
+        return self.heat
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "group_id": self.group_id,
             "attention_score": float(self.attention_score),
-            "phase": str(self.phase),
-            "phase_started_at": int(self.phase_started_at),
+            "heat": str(self.heat),
             "last_decay_at": int(self.last_decay_at),
             "last_message_at": int(self.last_message_at),
             "last_reply_at": int(self.last_reply_at),
             "last_boost_at": int(self.last_boost_at),
             "last_focus_at": int(self.last_focus_at),
             "focus_acquired_at": int(self.focus_acquired_at),
-            "steady_since": int(self.steady_since),
             "lock_until": int(self.lock_until),
             "last_focus_reason": str(self.last_focus_reason or ""),
             "emotion": str(self.emotion or "calm"),
@@ -164,18 +162,15 @@ class QQGroupAttentionState:
         st = cls(
             group_id=group_id,
             attention_score=float(data.get("attention_score") or 0.0),
-            phase=str(data.get("phase") or "rise"),
-            phase_started_at=int(data.get("phase_started_at") or 0),
+            # 旧存档里的 `phase`（rise/fall）不再读：热度是**每次推进按本群时间戳重算**的
+            # 派生量，读旧值只会把"这条存档来自相位时代"这件事带进新模型。
+            heat=str(data.get("heat") or "warm"),
             last_decay_at=int(data.get("last_decay_at") or 0),
             last_message_at=int(data.get("last_message_at") or 0),
             last_reply_at=int(data.get("last_reply_at") or 0),
             last_boost_at=int(data.get("last_boost_at") or 0),
             last_focus_at=int(data.get("last_focus_at") or 0),
             focus_acquired_at=int(data.get("focus_acquired_at") or data.get("last_focus_at") or 0),
-            # 旧存档没有这个键 → 0。回落到 focus_acquired_at 会让老数据沿用旧的
-            # 「一到线就开始蜜月」行为，反而把要修的场景重新引入；取 0 表示
-            # 「尚未稳线」，下一轮 _advance_phase 会在分数到线时补记。
-            steady_since=int(data.get("steady_since") or 0),
             lock_until=int(data.get("lock_until") or 0),
             last_focus_reason=str(data.get("last_focus_reason") or ""),
             emotion=str(data.get("emotion") or "calm"),
@@ -193,10 +188,8 @@ class QQGroupAttentionState:
             dormant_forever=bool(data.get("dormant_forever") or False),
             proactive_pending=bool(data.get("proactive_pending") or False),
         )
-        # 旧维度模型迁移：旧 attention_score 是四维加权分，与周期模型标量语义不同——
-        # 直接按新模型从当前值开始重新积累，相位默认 rise。
-        if not data.get("phase"):
-            st.phase = "rise"
+        # 旧维度模型（四维加权分）与相位时代（rise/fall + 蜜月）的存档都能读：
+        # 分数保留，热度不读旧值 —— 它由 `_advance_heat` 按本群时间戳重算。
         return st
 
 
@@ -221,29 +214,15 @@ class QQAttentionService:
         attention_state = state.get("group_attention_state")
         self._cache = dict(attention_state) if isinstance(attention_state, dict) else {}
         self.cleanup_stale_cache()
-        # 重启后重置相位时钟：last_decay_at/phase_started_at 是停机前的旧值，
-        # 直接用停机时长推进会把注意力一步推到极端（rise 顶满 / fall 归零）。
-        # 重置为当前时刻，让周期从干净状态重新开始。
+        # 重启后重置推进时钟：last_decay_at 是停机前的旧值，直接用停机时长推进会把
+        # 注意力一步推到极端（热聊顶满 / 凉透归零）。重置为当前时刻，从干净状态继续。
+        #
+        # 2026-09-29 起这里不再需要"补 steady_since / 重置 phase_started_at"那套迁移：
+        # 热度是**按本群最后一条消息的时刻推导**的，重启后自然重新算对。
         now = self._current_time()
         for payload in self._cache.values():
             if isinstance(payload, dict):
                 payload["last_decay_at"] = now
-                payload["phase_started_at"] = now
-                # `steady_since` 是后加的键：旧存档没有它。若不补，那些状态会
-                # **永远不进入 fall** —— `_advance_phase` 的回落判定要求它非零，
-                # 而它只在「分数从线下站上焦点线」时才被写入，一个本来就高于
-                # 焦点线的群永远不会走到那个分支。
-                #
-                # 迁移策略：分数已在线上的，把稳线时刻定义为**此刻**（重启后的
-                # 新起点）。这既给了它一个完整的蜜月积累期，也不会因为沿用旧
-                # 时间戳而立刻判 fall。
-                if not int(payload.get("steady_since") or 0):
-                    try:
-                        score = float(payload.get("attention_score") or 0.0)
-                    except (TypeError, ValueError):
-                        score = 0.0
-                    if score >= self._focus_threshold():
-                        payload["steady_since"] = now
 
     def _current_time(self) -> int:
         return int(__import__("time").time())
@@ -291,11 +270,10 @@ class QQAttentionService:
         state = QQGroupAttentionState.from_dict(
             attention_state if isinstance(attention_state, dict) else None, group_id=group_id
         )
-        # 新群：启动相位时钟，从 0 开始随时间爬升
+        # 新群：启动推进时钟，从 0 开始随时间爬升
         if not isinstance(attention_state, dict):
             now = self._current_time()
             state.last_decay_at = now
-            state.phase_started_at = now
         return state
 
     def get_state(self, group_id: str) -> QQGroupAttentionState:
@@ -347,16 +325,20 @@ class QQAttentionService:
         """批量消息计数时每条消息的注意力增益。"""
         return max(0.0, float(self._setting("attention_batch_message_gain", 0.25)))
 
-    def _honeymoon_seconds(self) -> int:
-        """夺冠后继续上升的蜜月窗口（秒）。"""
-        return max(0, int(self._setting("attention_honeymoon_seconds", 60)))
+    def _heat_warm_gap_seconds(self) -> int:
+        """本群多久没消息就算「凉下来了」（秒，默认 120，0 = 永不转凉）。
 
-    def _fall_seconds(self) -> int:
-        """进入 fall 相位至少持续多久才允许回升（秒）。"""
-        return max(0, int(self._setting("attention_fall_seconds", 30)))
+        这条取代了原来的蜜月 / fall 相位：热度的判据只有"这个群最后一条消息离现在多远"，
+        不看分数、更不看别的群。0 是"永远算热"的合法值（显式取值，不用 `or` 兜底）。
+        """
+        raw = self._setting("attention_heat_warm_gap_seconds", 120)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 120
 
     def _fall_rate(self) -> float:
-        """fall 相位回落速率（/秒）。"""
+        """凉下来之后的回落速率（/秒）。"""
         return max(0.0, float(self._setting("attention_fall_rate", 0.015)))
 
     def _consume_ratio(self) -> float:
@@ -396,10 +378,6 @@ class QQAttentionService:
 
     def _minimum_threshold(self) -> float:
         return float(self._setting("attention_min_threshold", 1.0))
-
-    def _fall_boost_attenuation(self) -> float:
-        """fall 相位里消息加成的衰减系数（0~1）：正在让位的群不会因刷屏而赖着不走。"""
-        return min(1.0, max(0.0, float(self._setting("attention_fall_boost_attenuation", 0.3))))
 
     def _at_bot_boost(self) -> float:
         """被 @ 时消息加成的倍率（最强的一路加成）。"""
@@ -598,7 +576,7 @@ class QQAttentionService:
         因此无状态、可复现，也不需要额外的老化机制。
 
         调用点必须保证 ``now`` 早于写入本条消息的 ``last_message_at``
-        （``_advance_phase`` 由 ``_apply_decay`` 在 ``update_on_message`` 更新该
+        （``_advance_heat`` 由 ``_apply_decay`` 在 ``update_on_message`` 更新该
         字段之前调用），否则间隔恒为 0、所有群都会拿到上限倍率。
         """
         last = int(state.last_message_at or 0)
@@ -638,76 +616,75 @@ class QQAttentionService:
         """单个情绪的倍率；表外情绪按 0.0（即不影响速率）。"""
         return float(self._emotion_multipliers().get(str(emotion or "calm"), 0.0))
 
-    # ── 相位推进 ──
+    # ── 热度档推进 ──
 
-    def _advance_phase(self, state: QQGroupAttentionState, now: int) -> None:
-        """按当前相位推进注意力，处理相位切换。幂等：基于 last_decay_at 差分。"""
+    def _advance_heat(self, state: QQGroupAttentionState, now: int) -> None:
+        """按**这个群自己**的热度档推进注意力。幂等：基于 last_decay_at 差分。
+
+        两个档，判据只有本群的时间戳：
+
+        - ``warm``：最近 ``attention_heat_warm_gap_seconds`` 之内有人说过话 → 增长；
+        - ``cooling``：静默超过那个窗口 → 回落（正向情绪跌得慢）；
+        - ``dormant``：休眠期间**不涨也不掉** —— 她主动开口没人接的群，分数该冻在
+          原处等被叫醒，而不是自己悄悄掉到 0。
+
+        ⚠️ 这里**不再有** rise/fall 相位、蜜月、让位、以及"到线就转回落"的切换：
+        那套东西的前提是"同一时刻只有一个群能说话"。跨群取舍删除后（2026-09-29）：
+        没有冠军可加冕，也没有对手可让位 —— 分数只回答一个问题："这个群现在还热吗？"
+        """
         last = int(state.last_decay_at or state.last_message_at or state.last_boost_at or now)
         dt = max(0, now - last)
         if dt <= 0:
             return
         state.last_decay_at = now
+        state.heat = self._heat_tier(state, now)
+        if state.heat == "dormant":
+            return
         emo = self._emotion_multiplier(state.emotion)
 
-        if state.phase == "fall":
-            # 回落：正向情绪跌得慢
+        if state.heat == "cooling":
+            # 回落：正向情绪跌得慢。
             rate = self._fall_rate() * max(0.05, 1.0 - emo)
             state.attention_score = max(0.0, state.attention_score - rate * dt)
-            # 回落满 T2 → 回升
-            if now - state.phase_started_at >= self._fall_seconds():
-                state.phase = "rise"
-                state.phase_started_at = now
-        else:
-            # 上升：正向情绪涨得快。
-            #
-            # 自然增长的上限是 **max_score 而不是焦点线**。
-            #
-            # 旧写法 `min(focus_threshold, …)` 把增长钉死在焦点线上，意味着夺冠
-            # 那一刻分数**恰好等于门槛、零余量**；而每次回复都要消耗一部分，于是
-            # 任何一次回复都会把群打到线下——使用者要的"能一直聊很久"在结构上
-            # 不可能。同时它让"分数高于焦点线"这件事只能由消息/@ 一次性 boost
-            # 造成，无法随时间积累。
-            #
-            # 改成 max_score 之后，焦点线恢复它本来的语义：**夺冠资格线**，不是
-            # 分数天花板。余量从夺冠后继续增长的时间里来。
-            #
-            # 注意：高于焦点线的分数**绝不砍掉**（旧注释保留这条约束）：
-            # min(焦点线, 高分) 会把 @bot 抢来的高注意力瞬间蒸发。
-            rate = self._rise_rate() * self._frequency_scale(state, now) * (1.0 + emo)
-            if state.attention_score < self._max_attention():
-                state.attention_score = min(
-                    self._max_attention(), state.attention_score + rate * dt,
-                )
-            # 分数不低于焦点线且夺冠计时未记录 → 记录夺冠时刻（蜜月窗口从此刻起算）。
-            # 覆盖「从低涨到线」和「本来就高于线」两种情况——旧条件 before < th
-            # 在分数本来就高于 th 时永远不成立，导致 focus_acquired_at 记不上。
-            if state.attention_score >= self._focus_threshold() and int(state.focus_acquired_at or 0) <= 0:
-                state.focus_acquired_at = now
-                # 蜜月**从「稳住」开始算，不是从「刚到线」开始**。
-                #
-                # 旧写法用同一个 focus_acquired_at 兼作蜜月起点，于是从 0 自然涨到
-                # 焦点线的群一到线就开始倒计时蜜月——它还没积累任何余量，60 秒后
-                # 就被判「蜜月结束」转入 fall。使用者要的「能一直聊很久」需要
-                # 夺冠后有一段**纯积累**的时间。
-                #
-                # 这里单独记「稳线时刻」（首次到线或跌破后再站上都算），蜜月从它算，
-                # 最少留出蜜月窗口那么长的积累期。_advance_phase 的 fall 判定读它。
-                state.steady_since = int(state.steady_since or 0) or now
-            # 到线夺冠后蜜月结束 → 回落；未到线的群继续上升不回落。
-            #
-            # 读 steady_since（稳线时刻）而不是 focus_acquired_at（夺冠身份）：
-            # 后者在第一次到线的瞬间就盖章，会让蜜月从「刚到线」起算。
-            if (
-                state.attention_score >= self._focus_threshold()
-                and state.steady_since
-                and now - state.steady_since >= self._honeymoon_seconds()
-            ):
-                state.phase = "fall"
-                state.phase_started_at = now
-            elif state.attention_score < self._focus_threshold():
-                # 跌破焦点线 → 不再算「稳住」，下次站上时重新开始积累。
-                # 不回退 focus_acquired_at：夺冠身份要留着（焦点保持逻辑依赖它）。
-                state.steady_since = 0
+            return
+
+        # 热聊中：正向情绪涨得快。
+        #
+        # 自然增长的上限是 **max_score 而不是档位线**：旧写法 `min(focus_threshold, …)`
+        # 把增长钉死在线上，意味着"刚到线那一刻分数恰好等于门槛、零余量"，任何一次
+        # 回复消耗都会把群打到线下——使用者要的"能一直聊很久"在结构上不可能。余量得
+        # 靠继续聊出来。
+        #
+        # 注意：高于档位线的分数**绝不砍掉**（`min(线, 高分)` 会把 @ 抢来的高注意力
+        # 瞬间蒸发）。
+        rate = self._rise_rate() * self._frequency_scale(state, now) * (1.0 + emo)
+        if state.attention_score < self._max_attention():
+            state.attention_score = min(
+                self._max_attention(), state.attention_score + rate * dt,
+            )
+        # 站上档位线 → 记下时刻（焦点快照/标记用；不再有任何"蜜月"含义）。
+        if state.attention_score >= self._focus_threshold() and int(state.focus_acquired_at or 0) <= 0:
+            state.focus_acquired_at = now
+
+    def _heat_tier(self, state: QQGroupAttentionState, now: int) -> str:
+        """这个群现在属于哪一档（纯函数式判据，全部来自本群自己的状态）。
+
+        - 休眠优先：`dormant_forever` 或 `dormant_until > now`；
+        - 然后是"最近有没有人说话"：窗口内 → warm，否则 cooling。
+
+        **不看分数**：分数是热度的结果，不是判据 —— 否则会绕回"到线就转档"那套
+        （那正是被删掉的相位机在做的事）。
+        """
+        if bool(state.dormant_forever) or int(state.dormant_until or 0) > now:
+            return "dormant"
+        gap = self._heat_warm_gap_seconds()
+        if gap <= 0:
+            return "warm"
+        last_message_at = int(state.last_message_at or 0)
+        if last_message_at <= 0:
+            # 从没说过话的群：没有"热"的依据，按凉处理（分数照常随时间涨不了）。
+            return "cooling"
+        return "warm" if now - last_message_at < gap else "cooling"
 
     # ── 焦点选择 ──
 
@@ -855,9 +832,20 @@ class QQAttentionService:
             candidate.last_focus_reason = "highest_attention"
         return candidate
 
-    def _normalize_state(self, state: QQGroupAttentionState) -> QQGroupAttentionState:
+    def _normalize_state(self, state: QQGroupAttentionState, now: int = 0) -> QQGroupAttentionState:
+        """钳分数 + **重算热度档**。
+
+        热度是派生量（判据只有本群最后一条消息的时刻），但它会被写进存档、给提示词与
+        界面看。放在这里重算，是为了让**任何**写入路径上的 `heat` 都与时间戳自洽 ——
+        否则"她刚回了话"这种不碰时间戳的写入会留下一个过期标签（真机表现就是
+        面板上一直显示"热聊中"，而那个群其实早就凉了）。
+
+        ``now`` 由调用方给（`_apply_decay` 用它推进用的那个时刻）；不传就取服务时钟 ——
+        两处混用会让"按 now=1010 推进出来的档位"被"按当前时钟重算"覆盖掉。
+        """
         max_attention = self._max_attention()
         state.attention_score = max(0.0, min(max_attention, float(state.attention_score)))
+        state.heat = self._heat_tier(state, int(now or self._current_time()))
         return state
 
     # ── 核心：消息更新 ──
@@ -968,11 +956,9 @@ class QQAttentionService:
         # （0.1 × 10.0 = 1.0 分/条），所以 UI 上「回复消耗比例」的标签依然成立，
         # 且与分数高低解耦。
         #
-        # **不在这里改相位**（见下方原注释保留的语义）：回落是「蜜月结束」或
-        # 「被别的群抢走焦点」的结果，由 `_advance_phase` 依时间线判定，不该由
-        # 「猫娘说了句话」触发。此前这里无条件 `phase = "fall"` 并覆盖
-        # `phase_started_at`，等于每次回复都把蜜月掐断、逼这个群重新熬满
-        # `attention_fall_seconds`（用户配置 240s→30s）。
+        # **不在这里改热度**：热度只看"这个群最近有没有人说话"，由 `_advance_heat`
+        # 依时间线判定，不该由"猫娘说了句话"触发 —— 否则她一回话就把群的静默计时
+        # 抹掉，一个已经凉了的群会因为她的自言自语一直算热。
         cost = max(0.0, self._max_attention() * self._consume_ratio())
         state.attention_score = max(0.0, state.attention_score - cost)
         state.last_focus_reason = "reply_consume"
@@ -991,13 +977,13 @@ class QQAttentionService:
         await self._persist()
         return self.get_snapshot()
 
-    # ── 相位推进（幂等）──
+    # ── 热度推进（幂等）──
 
     def _apply_decay(self, state: QQGroupAttentionState, now: int, *, is_focus: bool = False) -> QQGroupAttentionState:
         if now <= 0:
             now = self._current_time()
-        self._advance_phase(state, now)
-        return self._normalize_state(state)
+        self._advance_heat(state, now)
+        return self._normalize_state(state, now)
 
     # ── 接话反馈结算（幂等，一轮一次）──
 
@@ -1278,9 +1264,14 @@ class QQAttentionService:
         parts.append("## 当前群聊注意力状态")
 
         if this_state:
+            heat_label = {
+                "warm": "热聊中（刚还有人说话）",
+                "cooling": "凉下来了（这个群安静有一会儿了）",
+                "dormant": "休眠中（她主动开口没人接，等被叫）",
+            }.get(str(this_state.get("heat") or ""), "未知")
             parts.append(
-                f"这个群当前的注意力 {float(this_state.get('attention_score', 0)):.1f}"
-                f"（相位 {this_state.get('phase', 'rise')}）"
+                f"这个群当前的注意力 {float(this_state.get('attention_score', 0)):.1f}，"
+                f"状态：{heat_label}"
             )
         else:
             parts.append("此群暂无注意力数据。")
@@ -1402,8 +1393,9 @@ class QQAttentionService:
         state.last_focus_at = now
         if current_id != normalized_group_id or int(state.focus_acquired_at or 0) <= 0:
             state.focus_acquired_at = now
-            state.phase = "rise"
-            state.phase_started_at = now
+        # 被点名 = 这个群此刻一定"有人理她" → 热度重算（不再有"转入上升相位"这回事，
+        # 热度只看本群最后一条消息的时刻）。
+        state.heat = self._heat_tier(state, now)
         self._write_state(state)
         getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 焦点变更 → SSE 通知前端
 
@@ -1417,8 +1409,7 @@ class QQAttentionService:
             state.attention_score = max(
                 state.attention_score, self._focus_threshold() * self._wake_boost_ratio(),
             )
-            state.phase = "rise"
-            state.phase_started_at = self._current_time()
+            state.heat = self._heat_tier(state, self._current_time())
             self._write_state(state)
             self.plugin._emit_log("INFO", f"[Attention] 唤醒 boost: 群{normalized_group_id} score={state.attention_score:.1f}")
             getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力唤醒 → SSE 通知前端
@@ -1589,21 +1580,19 @@ class QQAttentionService:
         state.emotion_display_until = now + 120
 
         if emotion in _EMOTION_FORCE_FOCUS:
-            # 抢焦点：把注意力抬到焦点线之上并进入蜜月上升
+            # 抬分：把注意力顶到档位线上（跨群取舍删除后不再有"抢焦点"这回事 ——
+            # 分高的群不会因此独占说话权，她只是更愿意留在这个群）
             state.last_focus_at = now
             state.focus_acquired_at = now
             state.last_focus_reason = f"emotion:{emotion}"
             state.attention_score = max(state.attention_score, self._focus_threshold())
-            state.phase = "rise"
-            state.phase_started_at = now
-            self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 抢焦点: {emotion} score={state.attention_score:.1f}")
+            self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 抬分: {emotion} score={state.attention_score:.1f}")
         elif emotion in _EMOTION_DROP_FOCUS:
-            # 让焦点：把注意力压到目标线下并进入回落
+            # 压分：把注意力压到目标线下（"不想聊了"的表达；热度档仍然只看群里有没有人说话）
             floor = self._minimum_threshold() if emotion == "sulking" else self._focus_threshold()
             state.attention_score = min(state.attention_score, floor)
-            state.phase = "fall"
-            state.phase_started_at = now
-            self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 让焦点: {emotion} score={state.attention_score:.1f}")
+            self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 压分: {emotion} score={state.attention_score:.1f}")
+        state.heat = self._heat_tier(state, now)
 
         self._write_state(state)
         await self._persist()
@@ -1730,13 +1719,11 @@ class QQAttentionService:
             # 接话反馈：**由时间触发**的结算点（没有新消息的群也要能结算出「没人接」）。
             self._settle_feedback(state, now)
             self._write_state(state)
-        # 检查焦点是否变化，自动设置 focus_acquired_at（蜜月计时起点）
+        # 焦点身份变化（UI 快照用）—— 2026-09-29 起不再有任何"蜜月计时"跟着它跑
         new_focus_id = self._get_top_group_id()
         if new_focus_id and new_focus_id != old_focus_id:
             new_state = self._load_state(new_focus_id)
             new_state.focus_acquired_at = now
-            new_state.phase = "rise"
-            new_state.phase_started_at = now
             self._write_state(new_state)
         await self._persist()
 

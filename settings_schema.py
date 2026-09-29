@@ -128,26 +128,26 @@ ATTENTION = (
     SettingSpec("attention_batch_message_gain", "float", 0.25, saveable=True,
                 floor=0.0, description="save：批量消息计数时每条消息的注意力增益"),
     SettingSpec("attention_base_rise_rate", "float", 0.02, saveable=True,
-                floor=0.0, description="save：rise 相位每秒自然增长（0=禁用自然上升）"),
+                floor=0.0, description="save：热聊中每秒自然增长（0=禁用自然上升）"),
     SettingSpec("attention_message_boost", "float", 0.15, saveable=True,
                 floor=0.0, description="save：单条消息的注意力加成"),
     SettingSpec("attention_keyword_boost_ratio", "float", 1.8, saveable=True,
                 floor=0.0, description="save：关键词命中时的额外加成倍率"),
-    SettingSpec("attention_honeymoon_seconds", "int", 60, saveable=True,
-                floor=0, description="save：夺冠蜜月（秒）"),
-    SettingSpec("attention_fall_seconds", "int", 30, saveable=True,
-                floor=0, description="save：fall 相位最短持续（秒）"),
+    # 2026-09-29 跨群取舍删除后，rise/fall 相位 + 蜜月 + 让位整套没了：
+    # 热度只由「这个群最后一条消息离现在多远」决定（见 attention_service._heat_tier）。
+    # `attention_honeymoon_seconds` / `attention_fall_seconds` /
+    # `attention_fall_boost_attenuation` 三键退役（进 `_LEGACY_ZOMBIE_KEYS`）。
+    SettingSpec("attention_heat_warm_gap_seconds", "int", 120, saveable=True,
+                floor=0,
+                description="save：本群静默多少秒算「凉下来了」（0=永不算凉）"),
     SettingSpec("attention_fall_rate", "float", 0.015, saveable=True,
-                floor=0.0, description="save：fall 相位每秒回落量"),
+                floor=0.0, description="save：凉下来之后每秒回落量"),
     SettingSpec("attention_consume_ratio", "float", 0.10, saveable=True,
                 floor=0.0, ceiling=1.0, description="save：每次回复消耗的注意力比例"),
 )
 
 #: 本轮从硬编码提上来的注意力项。
 ATTENTION_NEW = (
-    SettingSpec("attention_fall_boost_attenuation", "float", 0.3, saveable=True,
-                floor=0.0, ceiling=1.0,
-                description="save：fall 相位里消息加成的衰减系数（已废弃：不再被消费，保留键以免重置老配置）"),
     # 锁：`@猫娘` / 唤醒词触发，期内该群独占焦点。
     # 与分数是两个独立信号——分数表达「没人叫我时我自己看哪」，锁表达
     # 「有人点名，我必须回头应对」。见 docs/attention-redesign-draft.md §2/§3。

@@ -27,8 +27,7 @@ LIVE = {
     "attention_base_rise_rate": 0.08,
     "attention_message_boost": 0.15,
     "attention_keyword_boost_ratio": 1.8,
-    "attention_honeymoon_seconds": 60,
-    "attention_fall_seconds": 30,
+    "attention_heat_warm_gap_seconds": 120,
     "attention_fall_rate": 0.015,
     "attention_consume_ratio": 0.1,
     "attention_at_bot_boost": 3.0,
@@ -84,7 +83,7 @@ def _seed(svc, gid, score, *, now):
     st = svc._load_state(gid)
     st.attention_score = score
     st.last_decay_at = now
-    st.phase_started_at = now
+    st.last_message_at = now          # 刚刚还有人说话 → 热聊档
     st.focus_acquired_at = now
     st.last_focus_at = now
     svc._write_state(st)
@@ -121,14 +120,18 @@ def test_bored_yields_focus_to_another_active_group():
 
 
 def test_bored_pushes_score_to_the_focus_line_and_enters_fall():
-    """让焦点的机制：把分数压到焦点线并进入回落相位。"""
+    """让分机制：把分数压到档位线。
+
+    （2026-09-29 之前这里还会顺带把群打成 `fall` 相位；相位机删除后没有"回落相位"
+    这个开关，压分本身 + 群自己安静下来就足以让她不再赖着 —— 冷却是按"这个群最后
+    一条消息的时刻"派生的，不能由她自己的情绪直接改写。）
+    """
     svc, clock = _service()
     _seed(svc, "A", 8.0, now=clock.now)
     _feel(svc, "A", "bored")
 
     st = svc._load_state("A")
     assert st.attention_score <= svc._focus_threshold() + 1e-6
-    assert st.phase == "fall", "bored 应进入回落相位，否则分数会自己爬回来"
 
 
 def test_bored_is_weaker_than_sulking():
@@ -166,7 +169,7 @@ def test_new_emotion_works_for_a_config_saved_before_it_existed():
     _feel(svc, "A", "bored")
     st = svc._load_state("A")
     assert st.emotion == "bored", "老配置下 bored 被 set_emotion 拒绝了"
-    assert st.phase == "fall"
+    assert st.attention_score <= svc._focus_threshold() + 1e-6, "bored 应当压分"
 
 
 def test_configured_value_still_overrides_the_builtin_default():

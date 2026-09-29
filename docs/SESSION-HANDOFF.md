@@ -5825,7 +5825,6 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 变成"提示词/模型为什么选择沉默"。
 
 ### 40.7 前端：这一轮改了哪些字、哪些控件
-
 面板（`static/napcat.html` + `i18n/zh-CN.json` + `i18n/en.json`）：
 
 | 位置 | 改动 |
@@ -5844,3 +5843,83 @@ napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 �
 **不再有任何行为后果**，纯展示 —— 留着容易让人以为还有优先级，但删它属于 §40.5 第 1 条
 （删焦点状态机）那一批，跟 `attention_*` 那批 hint 文案（`lock_seconds` / `min_threshold` /
 `wake_ratio` / `freq_max_multiplier` 里还写着"独占焦点""参与焦点竞争"）一起做。
+
+---
+
+## 41. 相位机换成热度档：warm / cooling / dormant
+
+使用者口径（2026-09-29，接着跨群取舍删除那一步）：「那现在注意力的相位策略就可以改了。」
+拍板：**改成本群自己的热度档**（三个选项里选 B），不再有蜜月、不再有让位。
+
+### 41.1 为什么相位机必须换
+
+旧的 `rise` / `fall` 相位 + 蜜月 + 让位，**前提是"同一时刻只有一个群能说话"**：
+
+| 旧机制 | 原本的作用 | 跨群取舍删除后 |
+|---|---|---|
+| `rise` | 攒分去抢焦点（夺冠资格） | 没有冠军可抢，分数只是在爬 |
+| 蜜月（`attention_honeymoon_seconds`） | 夺冠后给一段**纯积累期**，免得刚到线就被消耗打下去 | 没有"夺冠"这个时刻 |
+| `fall` + `attention_fall_seconds` | **让位**给别的群：期内不回血，免得刷屏的群赖着不走 | 没有可让的对象 |
+| `attention_fall_boost_attenuation` | fall 里把消息加成乘 0.3 | 这个键**更早就已经是死键**（消息加成不再按相位衰减，只剩一个没人调用的 accessor） |
+
+而且它制造了一个**锯齿**：分数到 4.0（焦点线）+ 蜜月结束 → 转 fall，掉 30 秒 → 又转 rise
+爬回来 —— 一个热闹的群就在 4.0 附近来回抖。起伏本身现在没有任何意义。
+
+### 41.2 现在是什么样
+
+**一条判据**：`now - last_message_at` 与本群的热聊窗口比。
+
+| 档 | 判据 | 怎么动 |
+|---|---|---|
+| `warm` 热聊中 | 窗口内有人说过话 | 增长（`attention_base_rise_rate` × 频率缩放 × 情绪），上限 `attention_max_score` |
+| `cooling` 凉下来了 | 静默 ≥ 窗口（默认 **120s**，新键 `attention_heat_warm_gap_seconds`） | 回落 `attention_fall_rate` × (1−情绪)，不低于 0 |
+| `dormant` 休眠 | `dormant_forever` 或 `dormant_until > now` | **冻住**：不涨也不掉（她主动开口没人接的群，分数该停在原处等被叫醒，而不是自己悄悄归零） |
+
+- **判据里没有分数**：分数是热度的结果，拿它当判据就绕回"到线就转档"那套。
+- **休眠优先**：一个刚好有人说话的休眠群仍然是 dormant。
+- **边界归属**：`now - last_message_at < gap` 才算 warm，恰好满窗口算 cooling（写死在
+  `_heat_tier` 一处，测试钉住 —— 含糊的话行为会随 tick 相位抖动）。
+- **`gap = 0` = 永不算凉**（显式取值，不用 `or` 兜底）。
+- **标签每次写入都重算**（`_normalize_state`）：`heat` 是派生量，但会进存档、给提示词与
+  面板看。用调用方传进来的 `now` 重算，**不用服务时钟** —— 混用会让"按 now=1010 推进出来
+  的档位"被"按当前时钟重算"覆盖（真机上表现为面板一直显示"热聊中"而那个群早凉了）。
+- **她自己的回复不算热度**：`update_on_reply` 不碰 `last_message_at`。否则她隔几分钟自言自语
+  一句就能把凉透的群一直捂成"热聊中"—— 热度是**群**的热度，不是她的。
+
+**退役的三个键**（进 `config_store._LEGACY_ZOMBIE_KEYS`，老配置的残留值下次 load/save 清掉）：
+`attention_honeymoon_seconds`、`attention_fall_seconds`、`attention_fall_boost_attenuation`。
+新增 `attention_heat_warm_gap_seconds`（int，默认 120，floor 0）。
+`attention_fall_rate` 保留（含义改成"凉下来之后的回落速率"），`attention_focus_threshold`
+（4.0）保留为**分数档位线**（只影响唤醒垫高与频率档，不再驱动任何切换）。
+
+**提示词与面板**：`get_attention_context` 改成「这个群当前的注意力 X，状态：热聊中／凉下来了
+／休眠中」；面板那一行从 `相位:上升/回落` 改成 `热度:热聊中/凉下来了/休眠`。
+
+### 41.3 证据
+
+- 全量 **1566 passed**；两道 ruff 门全过。
+- 新看门狗 `tests/test_qq_attention_heat.py`（20 条）：档位判据（窗口内/窗口外/边界/从没说话/
+  窗口=0/休眠优先/定时休眠自然醒）、三种档的动法（涨到上限 / 按 fall_rate 掉 / 冻住）、
+  情绪对回落速度的影响、写入时重算与"按传进来的 now 算"、存档往返、**相位时代的存档仍能读**
+  （分数保留、`phase="fall"` 不被当成新模型的冷却档）、旧键退役契约、提示词说"热度"不说"相位"、
+  快照暴露 `heat`。
+- 变异 `tests/verify_heat_tiers_fail_to_pass.py` **11/11**：没有"凉下来"档 → 红；边界写松 → 红；
+  没说过话的群算热聊 → 红；`gap=0` 写反 → 红；休眠不再优先 → 红；休眠群分数照掉 → 红；
+  冷却档不回落 → 红；写入不重算 → 红；忽略调用方 `now` → 红；提示词又说"相位" → 红；对照 0。
+- 改写的旧用例：`test_qq_reply_does_not_force_fall.py` → **`test_qq_reply_does_not_change_heat.py`**
+  （回复不改变热度档、不碰静默计时、冷群即使她刚回过话也照样转冷却）；
+  `test_qq_frequency_scaled_rise.py` 补两条新的核心语义（静默超过窗口 → 冷却且频率缩放不参与；
+  休眠群分数冻住）；`test_qq_attention_behavior.py` / `test_qq_bored_emotion.py` /
+  `test_qq_auto_reply_prompting.py` / `test_qq_auto_reply_focus_hold.py` 的夹具跟着换
+  （摆分数时必须一起摆 `last_message_at`，否则那个群按"从没说过话"处理）。
+
+### 41.4 边界与风险
+
+- **回复后的"惯性"变长了**：旧锯齿把分数压在 4.0 附近，现在热聊群会爬到 10，安静下来后按
+  0.015/s 掉回"在聊的线"（2.0）大约 **9 分钟**。也就是说一个刚聊过的群，隔几分钟再来一条消息
+  她仍然会接（这就是"对话惯性"），再久就落回冷却、只答点名。嫌久就把 `attention_fall_rate`
+  调大。
+- **`attention_heat_warm_gap_seconds=120` 是拍出来的**：两个人来回打字通常间隔几十秒；
+  120 秒足够覆盖"有人在想怎么回"，又不会把彻底安静下来的群算成热聊。真机跑一天再定。
+- `attention_focus_threshold`（4.0）现在只是"档位线"：它不再让任何群获得或失去说话权，
+  但仍参与唤醒垫高（`attention_wake_boost_ratio`）与频率档，所以没删。

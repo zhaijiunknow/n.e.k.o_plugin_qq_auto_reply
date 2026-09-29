@@ -23,6 +23,10 @@ PANEL_CONTROLS = {
 }
 
 #: 被冻结（撤下面板）的键：仍在 schema 与 defaults 里，仍从配置文件读取。
+#: 2026-09-29 起少了三个 —— `attention_honeymoon_seconds` / `attention_fall_seconds` /
+#: `attention_fall_boost_attenuation` 随 rise/fall 相位机一起**退役**
+#: （进 `config_store._LEGACY_ZOMBIE_KEYS`）。相位机的前提是"同一时刻只有一个群能
+#: 说话"，跨群取舍删除后热度只由「这个群最后一条消息离现在多远」决定。
 FROZEN_KEYS = (
     "attention_max_score",
     "attention_min_threshold",
@@ -30,11 +34,8 @@ FROZEN_KEYS = (
     "attention_base_rise_rate",
     "attention_message_boost",
     "attention_keyword_boost_ratio",
-    "attention_honeymoon_seconds",
-    "attention_fall_seconds",
     "attention_fall_rate",
     "attention_consume_ratio",
-    "attention_fall_boost_attenuation",
     "attention_at_bot_boost",
     "attention_question_boost",
     "attention_wake_boost_ratio",

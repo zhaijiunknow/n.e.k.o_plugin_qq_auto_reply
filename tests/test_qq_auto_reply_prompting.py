@@ -230,8 +230,7 @@ def test_rise_phase_does_not_clamp_above_focus_line():
         _qq_settings={
             "enable_group_attention": True,
             "attention_base_rise_rate": 0.02,
-            "attention_honeymoon_seconds": 60,
-            "attention_fall_seconds": 240,
+            "attention_heat_warm_gap_seconds": 120,
             "attention_fall_rate": 0.015,
             "attention_max_score": 10.0,
             "attention_focus_threshold": 4.0,
@@ -246,27 +245,27 @@ def test_rise_phase_does_not_clamp_above_focus_line():
     now = [100]
     service._current_time = lambda: now[0]
 
-    state = QQGroupAttentionState(group_id="g1", attention_score=8.0, phase="rise")
+    state = QQGroupAttentionState(group_id="g1", attention_score=8.0)
     state.last_decay_at = 90  # 10 秒前，保证 dt=10 正常推进
+    state.last_message_at = 90  # 刚刚还有人说话 → 热聊档
     service._write_state(state)
 
-    # 推进 10 秒：rise 相位不应把 8.0 砍回焦点线，且现在可以继续往上长
-    # （自然增长上限已从焦点线改为 max_score，见 _advance_phase 的注释）。
+    # 推进 10 秒：热聊档不应把 8.0 砍回档位线，且现在可以继续往上长
+    # （自然增长上限是 max_score，见 _advance_heat 的注释）。
     #
     # 期望值只断言**方向与上限**，不钉具体数值：频率缩放的 dt 组合容易手算错，
-    # 而本测试要钉的行为是「高于焦点线时不回砍、且还能继续涨」。
+    # 而本测试要钉的行为是「高于档位线时不回砍、且还能继续涨」。
     now[0] += 10
     after = service._apply_decay(service._load_state("g1"), now[0])
 
-    assert after.attention_score >= 8.0, "rise 绝不能把高分砍回焦点线"
+    assert after.attention_score >= 8.0, "热聊档绝不能把高分砍回档位线"
     assert after.attention_score > 8.0, (
-        f"rise 相位应当继续增长（上限已改为 max_score={service._max_attention()}），"
-        f"实际停在 {after.attention_score:.2f} —— 焦点线封顶会让夺冠后零余量"
+        f"热聊档应当继续增长（上限是 max_score={service._max_attention()}），"
+        f"实际停在 {after.attention_score:.2f} —— 档位线封顶会让到线后零余量"
     )
     assert after.attention_score <= service._max_attention()
     assert after.focus_acquired_at == 110  # 本来就高于线，夺冠计时已记录
-    assert after.steady_since == 110       # 同时记稳线时刻（蜜月从它起算）
-    assert after.phase == "rise"
+    assert after.heat == "warm"
 
 
 def test_zero_attention_settings_are_honored():
@@ -284,7 +283,7 @@ def test_zero_attention_settings_are_honored():
             "enable_group_attention": True,
             "attention_consume_ratio": 0,      # 禁用回复消耗
             "attention_fall_rate": 0,          # 禁用回落
-            "attention_fall_seconds": 0,       # fall 相位最短 0 秒
+            "attention_heat_warm_gap_seconds": 0,   # 永不算凉（一直 warm）
             "attention_base_rise_rate": 0,     # 禁用时间自然上升
         },
         backlog_store=None,
@@ -296,5 +295,5 @@ def test_zero_attention_settings_are_honored():
 
     assert service._consume_ratio() == 0.0
     assert service._fall_rate() == 0.0
-    assert service._fall_seconds() == 0
+    assert service._heat_warm_gap_seconds() == 0
     assert service._rise_rate() == 0.0

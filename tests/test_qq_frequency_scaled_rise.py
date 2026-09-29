@@ -25,11 +25,9 @@ BASE_CFG = {
     "attention_base_rise_rate": 0.08,
     "attention_message_boost": 0.15,
     "attention_keyword_boost_ratio": 1.8,
-    "attention_honeymoon_seconds": 60,
-    "attention_fall_seconds": 30,
+    "attention_heat_warm_gap_seconds": 120,
     "attention_fall_rate": 0.015,
     "attention_consume_ratio": 0.1,
-    "attention_fall_boost_attenuation": 0.3,
     "attention_at_bot_boost": 3.0,
     "attention_question_boost": 1.5,
     "attention_wake_boost_ratio": 0.75,
@@ -61,7 +59,7 @@ def _service(**overrides) -> QQAttentionService:
 
 
 def _state(last_message_at: int) -> QQGroupAttentionState:
-    st = QQGroupAttentionState(group_id="g1", attention_score=0.0, phase="rise")
+    st = QQGroupAttentionState(group_id="g1", attention_score=0.0)
     st.last_message_at = last_message_at
     return st
 
@@ -92,11 +90,7 @@ def test_multipliers_are_clamped():
 
 
 def test_min_multiplier_is_not_zero():
-    """冷群下限不得为 0：完全冻结会让沉寂的群永远卡在 fall 出不来。
-
-    （fall 相位的消息加成已被 attention_fall_boost_attenuation 压到 0.3，
-    那里没有第二个回血来源。）
-    """
+    """冷群下限不得为 0（否则那些群的自然增速彻底冻结）。"""
     svc = _service()
     assert svc._frequency_min_multiplier() > 0.0
     assert svc._frequency_scale(_state(1000 - 99999), 1000) > 0.0
@@ -116,13 +110,17 @@ def test_same_second_burst_takes_the_ceiling():
 
 
 def test_frequency_scales_the_rate_not_the_message_boost():
-    """端到端：同样的相位推进时长，间隔越短拿到的分数越高。
+    """端到端：同样的推进时长，间隔越短拿到的分数越高（**都在热聊窗口内**）。
 
-    同时钉住"只影响 rise 相位的速率、不动 ``attention_message_boost``"这个边界。
+    同时钉住"只影响热聊档的速率、不动 ``attention_message_boost``"这个边界。
 
-    设定：``now = t + 10``（相位推进 dt=10 秒），``last_message_at = t - gap``，
+    设定：``now = t + 10``（推进 dt=10 秒），``last_message_at = t - gap``，
     于是**发言间隔 = gap + 10**。断言里先把 ``_frequency_scale`` 的实算值也
     钉一遍，避免"间隔"和"dt"两个量再次互相污染（踩过一次，见下）。
+
+    ⚠️ 三个 gap 都必须落在 ``attention_heat_warm_gap_seconds``（本文件 120s）以内：
+    跨过那条线就是**冷却档**（分数往下掉），那时"频率缩放"根本轮不到上场 ——
+    这条边界由 `test_a_group_quiet_longer_than_the_warm_gap_cools_down` 单独钉。
     """
     svc = _service()
     t = 100_000
@@ -141,11 +139,11 @@ def test_frequency_scales_the_rate_not_the_message_boost():
 
     hot, hot_scale = advance(10)      # 间隔 20s → 1.5×
     warm, warm_scale = advance(30)    # 间隔 40s → 0.75×
-    cold, cold_scale = advance(300)   # 间隔 310s → 0.15×（下限）
+    cold, cold_scale = advance(100)   # 间隔 110s → 0.27×（仍在热聊窗口内）
 
     assert hot_scale == pytest.approx(1.5)
     assert warm_scale == pytest.approx(0.75)
-    assert cold_scale == pytest.approx(0.15)
+    assert cold_scale == pytest.approx(30 / 110)
     # 分数 = rise_rate(0.08) × scale × dt(10)
     assert hot == pytest.approx(0.08 * hot_scale * dt, rel=1e-2)
     assert warm == pytest.approx(0.08 * warm_scale * dt, rel=1e-2)
@@ -153,11 +151,53 @@ def test_frequency_scales_the_rate_not_the_message_boost():
     assert hot > warm > cold
 
 
+def test_a_group_quiet_longer_than_the_warm_gap_cools_down():
+    """静默超过热聊窗口 → 冷却档：分数往下掉，频率缩放完全不参与。
+
+    这是 2026-09-29 换掉 rise/fall 相位机之后的**核心语义**：分数只回答
+    "这个群现在还热吗"，判据只有本群最后一条消息的时刻。
+    """
+    svc = _service()
+    t = 100_000
+
+    def advance(actual_gap: int) -> tuple[float, str]:
+        st = _state(t + 10 - actual_gap)
+        st.attention_score = 5.0
+        st.last_decay_at = t
+        svc._write_state(st)
+        after = svc._apply_decay(svc._load_state("g1"), t + 10)
+        return after.attention_score, after.heat
+
+    score, heat = advance(200)          # 200 秒没人说话 > 120s 窗口
+    assert heat == "cooling"
+    # fall_rate 0.015 × 10 = 0.15，与发言间隔无关
+    assert score == pytest.approx(5.0 - 0.15, rel=1e-3)
+
+    hot_score, hot_heat = advance(5)    # 5 秒前刚有人说话
+    assert hot_heat == "warm"
+    assert hot_score > 5.0, "热聊中的群该涨分"
+
+
+def test_dormant_group_neither_rises_nor_falls():
+    """休眠的群分数**冻住**：她主动开口没人接的群不该自己悄悄掉到 0。"""
+    svc = _service()
+    t = 100_000
+    st = _state(t - 99999)
+    st.attention_score = 5.0
+    st.last_decay_at = t
+    st.dormant_forever = True
+    svc._write_state(st)
+
+    after = svc._apply_decay(svc._load_state("g1"), t + 600)
+    assert after.heat == "dormant"
+    assert after.attention_score == pytest.approx(5.0)
+
+
 def test_a_burst_of_messages_shortens_the_gap_and_raises_the_rate():
     """两个群在**同一时刻**推进相同的时间，刚说过话的那个必须涨得更快。
 
     这是"频率影响增速"最贴近现场的表述：不需要比较绝对值，只要比较同一
-    ``now`` 下间隔不同的两个群。
+    ``now`` 下间隔不同的两个群（两个间隔都落在热聊窗口内）。
     """
     svc = _service()
     t = 100_000
@@ -169,26 +209,24 @@ def test_a_burst_of_messages_shortens_the_gap_and_raises_the_rate():
         return svc._apply_decay(svc._load_state("g1"), t + 10).attention_score
 
     chatty = score_with_gap(5)      # 5 秒前刚有人说话
-    quiet = score_with_gap(600)     # 10 分钟没人说话
+    quiet = score_with_gap(100)     # 100 秒没人说话（还没到 120s 的冷却线）
     assert chatty > quiet
     assert chatty == pytest.approx(0.08 * 5.0 * 10, rel=1e-2)   # 封顶（本文件取 5.0）
-    assert quiet == pytest.approx(0.08 * 0.15 * 10, rel=1e-2)   # 下限 0.15×
+    assert quiet == pytest.approx(0.08 * (30 / 100) * 10, rel=1e-2)
 
 
-def test_frequency_has_no_effect_in_the_fall_phase():
-    """fall 相位不该被频率缩放影响 —— 那里是回落，不是"慢速上升"。"""
+def test_frequency_has_no_effect_in_the_cooling_tier():
+    """冷却档不该被频率缩放影响 —— 那里是回落，不是"慢速上升"。"""
     svc = _service()
-    for gap in (10, 300):
-        st = _state(1000 - gap)
-        st.phase = "fall"
-        st.phase_started_at = 1000
+    for gap in (200, 3000):
+        st = _state(1000 - gap)          # 都超过 120s 的热聊窗口
         st.attention_score = 5.0
         st.last_decay_at = 1000
         svc._write_state(st)
         after = svc._apply_decay(svc._load_state("g1"), 1010)
         # fall_rate 0.015 * 10 = 0.15，与频率无关
         assert after.attention_score == pytest.approx(5.0 - 0.15, rel=1e-3)
-        assert after.phase == "fall"
+        assert after.heat == "cooling"
 
 
 def test_shipped_ceiling_is_the_moderated_value():
