@@ -5766,14 +5766,44 @@ broke_ice = await self._maybe_break_ice(group_id, now)   # ← 返回的是"她�
 （进程级单飞闸 `_maintenance_owner()` 保留：它防的是**真的**启动两次，代价只有一行代码；
 标记挂 `sys` 而不是模块全局，因为重载会重新导入本模块。）
 
-**发现 2：`reload` 会掐断 NapCat 的反向 WS，而 NapCat 不会自己重连。**
-16:31:25 `OneBot client disconnected` 之后到 16:43 都没有再 `connected`，期间她每次要说话
-都是 `[Reply] … 未投递（中断：RuntimeError: No OneBot client connected）`（§39 那行漏斗
-日志正是靠这个一眼看出来的）。NapCat 进程一直活着（`NapCatWinBootMain`，15:21:59 启动），
-但它的 ws-reverse 客户端不再重试。**恢复办法：在插件界面点「启动 / 一键部署」**
-（`deploy action=ensure/one_click`）—— 使用者 16:48 点过一次就连上了，此后再 reload
-（16:52:12）2 秒内也自己接回来了。结论写在这里：**每次 reload 之后都要确认一次
-`OneBot client connected`**，别把"她没说话"当成"她不想说"。
+**发现 2：连接断掉的真正原因是我自己的同步脚本把 NapCat 删了（2026-09-29 事故）。**
+`reload` 只是表象 —— 真正动手的是 `.dsh-artifacts/sync-plugin-chain.py`：它用 robocopy
+**`/MIR`（镜像 = 目的地里多出来的文件删掉）**，排除名单只有 `.git/__pycache__/.pytest_cache/
+.ruff_cache`。而**使用者的 NapCat 就装在插件目录里**：
+
+```
+napcat_directory = <N.E.K.O>\plugin\plugins\qq_auto_reply\NapCat.Shell   # 695 个文件 / 90MB
+                  └─ 含 config\onebot11_<uin>.json（反向 WS 与 token）与 QQ 登录态
+```
+
+一次 `chain` 同步把整棵 `NapCat.Shell` 当成"仓库里没有的多余文件"删干净了 → NapCat 挂掉、
+反向 WS 再也连不上、她每次要说话都是
+`[Reply] … 未投递（中断：RuntimeError: No OneBot client connected）`。
+（§39 那行漏斗日志正是靠这个一眼看出来的：**"她没说话"和"她说了但没发出去"必须能分开**。）
+
+**修复（同一个脚本）**：
+1. **不再删除任何东西**（`/E` 而不是 `/MIR`）。这个脚本没有能力分辨"仓库里删掉的旧模块"和
+   "使用者装在这里的运行时资产"，那就不让它做这个判断 —— 代价是仓库里删掉的文件会留在目的地
+   （一个残留 `.py` 有风险，远小于删掉 90MB NapCat）；
+2. `NapCat.Shell` / `napcat` / `data` 进排除名单；
+3. 目的地里"仓库没有的顶层项"会**列出来**给人看一眼（下一个运行时目录出现时能被看见，
+   而不是在某个 `/MIR` 里被静默删掉）。
+
+**恢复**：使用者 17:00 重装 NapCat（`config\onebot11_3281414178.json` 里
+`ws://127.0.0.1:6199/ws` + token 已写回、QQ 已重新登录），17:04:29 插件启动时又自己
+`Started NapCat: …\NapCat.Shell\launcher-user.bat (pid=80988)`，17:04:31 客户端接回。
+
+**顺带记一条规矩**：以后凡是"覆盖插件目录"的动作（同步、打包、手动拷贝），先确认
+`napcat_directory` 指向哪里 —— 默认就在插件目录里。**任何带删除语义的镜像同步都不许直接
+对着插件目录跑。**
+
+**留待观察**：17:01–17:03 期间她的**文字回复**全部报
+`未投递（投递未确认：连接器没有回执（消息可能没发出去））`，而同期 `call_action`
+（`get_login_info`）与 `send_poke` 都**正常到达** NapCat（NapCat 日志里逐条可查），
+`send_group_msg` 则**一条都没到**。两者在宿主客户端里走的是不同取值方式
+（`call_action` 每次重新取 `_main_client = next(iter(self._connected_clients))`，
+`_send_text_action` 直接用缓存下来的 `self._main_client`）——高度怀疑是**缓存下来的那个
+socket 已经作废**。17:04:29 那个新进程之后还没等到下一轮真实回复，先挂在这里。
 
 ### 40.7 前端：这一轮改了哪些字、哪些控件
 
