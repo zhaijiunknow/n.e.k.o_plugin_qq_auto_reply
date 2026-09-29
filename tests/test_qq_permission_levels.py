@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from plugin.plugins.qq_auto_reply.group_permission import GroupPermissionManager
+from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from plugin.plugins.qq_auto_reply.pipeline_models import QQReplyRequest
 from plugin.plugins.qq_auto_reply.reply_decision_node import QQReplyDecisionNode
 
@@ -112,3 +113,23 @@ def test_add_group_has_no_open_probability_parameter():
     assert "normal_relay_probability" in params
     assert "open_reply_probability" not in params
     assert not hasattr(GroupPermissionManager, "get_open_reply_probability")
+
+
+def test_managers_survive_string_entries():
+    """手写配置常见 ["123456"] 字符串条目——真机炸过一次 startup
+    （'str' object has no attribute 'get'）。字符串按默认档收录、
+    空串/None 跳过，绝不让一条脏数据把整个插件炸掉。"""
+    users = PermissionManager(
+        trusted_users=["123456", {"qq": "42", "level": "admin"}, None, "", 99]
+    )
+    assert users.get_permission_level("123456") == "trusted"
+    assert users.get_permission_level("99") == "trusted"
+    assert users.get_permission_level("42") == "admin"
+    assert users.get_permission_level("777") == "none"
+
+    groups = GroupPermissionManager(
+        trusted_groups=["1048307485", {"group_id": "1", "level": "trusted"}, None, ""]
+    )
+    assert groups.get_group_level("1048307485") == "normal"
+    assert groups.get_group_level("1") == "trusted"
+    assert groups.get_group_level("2") == "none"
