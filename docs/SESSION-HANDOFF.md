@@ -6705,3 +6705,75 @@ PR #1（外部贡献者 `addsas222`）按「先合他的修复、我们在他后
 - 不带 level 的老配置（`{"group_id": "123"}`）会在**下一次保存**时以 `trusted` 落盘：
   `list_groups()` 写回的是实际档位，等于配置被就地升级一次。
 - 面板默认档与后端默认档现在同源于一个常量；前端拿不到 Python 常量，只能靠看门狗钉住。
+
+## 51. 一键部署的 Node 前置检查按平台分流；部署明细落盘（2026-10-04）
+
+> 使用者口径：「检查一下 `C:\Users\Administrator\Desktop\plugin` 中 qq 插件下载 napcat
+> 卡住的原因」→「直接改」。
+
+### 51.1 现场：不是"卡在下载"，是下载**一行都没跑**
+
+用户日志（`<logs>\plugin\N.E.K.O_Plugin_qq_auto_reply_error.log`）里 6 次 deploy
+（23:19:55 / 23:20:14 / 23:22:06 / 23:23:06 / 23:23:29 / 23:34:15）**每次都在同一秒**
+变成 `一键部署失败: 缺少 Node.js（未找到 node 可执行文件）…`。秒级失败 + 磁盘上没有任何
+新的 `.part` = 网络请求一次都没发出去。
+
+原因在 `_fetch()` 的第一步：`napcat_platform.node_available()`（`shutil.which("node")`）
+对**所有平台**都是硬门槛。
+
+用户读成"卡在下载"，是三件事叠加的结果：
+
+| # | 位置 | 现象 |
+|---|---|---|
+| 1 | `static/status.html` 点击瞬间 | 打印「开始一键部署（首次需要下载 NapCat，可能需要几分钟）…」—— 连检查都还没做 |
+| 2 | `STEP_LABELS["fetch"]` = 「获取 NapCat」 | Node 检查 / 下载 / 解包 / 校验全挂在同一个标签下，失败就呈现为"下载那一步失败" |
+| 3 | `_emit` 只走 `_emit_log`（面板内存缓冲） | 明细不落盘；事后日志只剩一句失败原因，看不出停在哪一步、试过几个源 |
+
+### 51.2 Windows 本来就不需要系统 Node
+
+`launch_spec` 在 Windows 上是 `cmd.exe /c launcher*.bat` → `NapCatWinBootMain.exe` +
+`NapCatWinBootHook.dll` 把 `loadNapCat.js` 注入 `QQ.exe`（`qqnt.json` 的 `main` 已被改成
+`./loadNapCat.js`），`napcat.mjs` 跑在 **QQ 自带的 Node 运行时**里；NapCat 官方 Windows
+教程也只要求"下载解压 + 装好 QQ + 双击 launcher.bat"。只有 POSIX 分支才是真的
+`["node", "napcat.mjs"]`。
+
+`napcat_install.py` 里那句"任何平台都需要系统装 Node"是从"zip 里没有 node.exe"推出来的
+—— 前提在 Windows 上不成立（注释已就地更正）。
+
+### 51.3 改了什么
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `napcat_platform.node_requirement()` | （不存在） | 返回 `(是否硬要求, 理由)`，判定与理由**同源**；Windows=False / 非 Windows=True |
+| `napcat_platform.needs_system_node()` | 模块 docstring 承诺过、代码里没有 | 薄封装，只取布尔量 |
+| `deploy_service._check_node()` | 内联在 `_fetch` 顶部、所有平台都 raise | 独立一步；Windows 缺 node → 降级成一行提示继续部署，非 Windows 仍硬失败 |
+| `STEP_LABELS` | `fetch` = 「获取 NapCat」 | 新增 `node` = 「检查运行环境」；`fetch` = 「下载并解包 NapCat」 |
+| `deploy_service._emit()` | 只 `_emit_log`（面板） | 同步 `logger.info("[Deploy] …")` 落盘（尽力而为，日志失败不掀翻部署） |
+| `static/status.html` | 「首次需要下载 NapCat，可能需要几分钟」 | 「先检查运行环境；需要时才下载 NapCat，那时可能要几分钟」 |
+
+### 51.4 证据
+
+- 新增 `tests/test_qq_napcat_node_requirement.py`（8 条）：平台语义、Windows 缺 node 仍
+  走到下载、Node 单独成步、进度落盘、POSIX 缺 node 拦在下载之前、页面文案。
+- 插件全量 **1601 passed**（上一轮 1593 + 8）；ruff 三道门全过。
+- 变异 5 处**全部变红**（Node 检查回到全平台硬拦 / 不再落盘 / 页面回到旧文案 / Node 并回
+  `fetch` 步 / POSIX 也不再拦），还原后 8 条全绿。
+- 改动前用 `git hash-object --path` 归一化比对确认宿主树副本 == HEAD（三处全等），
+  因此这三处文件已同步到运行副本 `plugin/plugins/qq_auto_reply`。
+
+### 51.5 给用户的即时解法（不改代码也成立）
+
+- **手动部署**：自行下载 `NapCat.Shell.zip` 解压 → 插件里把「NapCat 目录」指过去 → 再点
+  一键部署会走 `deploy()` 的"已有可用 NapCat"分支，**根本不会调用 `_fetch`**，Node
+  检查直接绕过（Windows 本来也不需要它）。
+- 或者装 Node 18+ 之后**重启 N.E.K.O.** —— `shutil.which` 读的是进程启动时的 PATH。
+
+### 51.6 同一份日志里顺带看到的两件事（未改，待定）
+
+- 那份实例每 5 秒刷一条 `[Attention] 衰减轮次异常，已跳过本轮: 'QQBacklogStore' object
+  has no attribute 'update_group_attention_state'`（`[Session] 清扫轮次异常` 同因）→
+  注意力衰减与会话清扫每轮都被跳过。**商店包 0.11.0 与当前仓库都带这个方法**，所以是那台
+  机器上的副本新旧混搭：19:47–22:10 加载的是 Steam 自带的
+  `J:\...\resources\bin\plugin\plugins`，23:06 之后切到 `.neko-plugin-installations`。
+- 23:22:38 有一次 `RuntimeError: QQ 开放平台: app_id 和 client_secret 未配置` —— 那一刻
+  连接模式是开放平台，NapCat 装好了也连不上。

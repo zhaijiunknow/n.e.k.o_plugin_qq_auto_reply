@@ -32,7 +32,11 @@ _RELEASE_BASE = f"https://github.com/NapNeko/NapCatQQ/releases/download/{NAPCAT_
 #: 资产名 → (字节数, sha256)
 PINNED_ASSETS: dict[str, tuple[int, str]] = {
     # 跨平台：含 linux/darwin/win32 的原生模块（所以 Windows 也能用），
-    # 但**不含 node.exe**，任何平台都需要系统装 Node。
+    # 但**不含 node.exe** —— POSIX 上要系统装 Node（那边是 `node napcat.mjs`）。
+    # Windows 则**不需要**：启动走 `cmd /c launcher*.bat` → `NapCatWinBootMain.exe`
+    # 把 `loadNapCat.js` 注入 `QQ.exe`，跑的是 QQ 自带的 Node 运行时
+    # （见 `napcat_platform.node_requirement`；那句"任何平台都需要系统装 Node"
+    # 是从"zip 里没有 node.exe"推出来的，前提在 Windows 上不成立）。
     #
     # 另一个候选 ``NapCat.Shell.Windows.Node.zip``（111.7 MiB）实测**不是同一个东西**：
     # 它顶层是 QQ NT 本体（wrapper.node + 一堆 DLL），外壳被塞进 ``napcat/`` 子目录 ——
@@ -72,8 +76,9 @@ def asset_name(*, windows: bool | None = None) -> str:
     """取哪个资产 —— **两个平台统一**用 ``NapCat.Shell.zip``。
 
     它是跨平台发行版（``native/`` 里同时带 linux/darwin/win32 的原生模块），
-    代价是任何平台都需要系统装 Node。``windows`` 参数保留仅为签名稳定，
-    将来若要按平台分资产，改这里一处即可。
+    代价是**非 Windows** 上要系统装 Node（那边的启动方式是 ``node napcat.mjs``；
+    Windows 走注入 QQ，用 QQ 自带的运行时，见 ``napcat_platform.node_requirement``）。
+    ``windows`` 参数保留仅为签名稳定，将来若要按平台分资产，改这里一处即可。
     """
     return "NapCat.Shell.zip"
 

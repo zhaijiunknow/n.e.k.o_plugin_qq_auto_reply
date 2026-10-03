@@ -581,7 +581,7 @@ document.getElementById('btn-deploy').addEventListener('click', async () => {
   stopLoginPoll();
   busy('btn-deploy', true);
   document.getElementById('deploy-log').innerHTML = '';
-  deployLog('开始一键部署（首次需要下载 NapCat，可能需要几分钟）…');
+  deployLog('开始一键部署（先检查运行环境；需要时才下载 NapCat，那时可能要几分钟）…');
   try {
     const r = await call('deploy', {action:'one_click',  uin: document.getElementById('uin').value.trim() },
                          { timeout: DEPLOY_TIMEOUT_MS });

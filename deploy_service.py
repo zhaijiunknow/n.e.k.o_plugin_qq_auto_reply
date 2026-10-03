@@ -19,9 +19,14 @@ from . import napcat_install, napcat_onebot_config, napcat_platform
 from .napcat_service import bundled_napcat_dir
 
 #: 步骤名 → 界面展示用的标签
+#:
+#: ``node`` 与 ``fetch`` 是**两步**：环境检查（Node）与"下载 + 解包"混在一个
+#: 「获取 NapCat」标签下时，检查失败在界面上就是"卡在下载"——真机上用户报的
+#: 正是这个（下载代码一行没跑）。
 STEP_LABELS: dict[str, str] = {
     "locate": "定位 NapCat",
-    "fetch": "获取 NapCat",
+    "node": "检查运行环境",
+    "fetch": "下载并解包 NapCat",
     "config": "写入 OneBot 配置",
     "start": "启动 NapCat",
     "qrcode": "等待登录二维码",
@@ -53,6 +58,20 @@ class QQDeployService:
             except Exception:
                 pass
         self.plugin._emit_log("INFO", f"[Deploy] {message}")
+        # 同时落盘：面板那份是**内存**缓冲（500 行、重启即失），而用户来报"卡在下载"
+        # 时我们手上只有文件日志 —— 真机上因此只剩一句 `一键部署失败: …`，看不出
+        # 停在哪一步、试过几个源、续传到多少字节。
+        self._log_to_file(f"[Deploy] {message}")
+
+    def _log_to_file(self, line: str) -> None:
+        """把部署明细也写进文件日志（尽力而为：日志失败不该掀翻部署）。"""
+        logger = getattr(self.plugin, "logger", None)
+        if logger is None:
+            return
+        try:
+            logger.info(line)
+        except Exception:
+            pass
 
     def _progress(self, emit, step: str, done: int, total: int, *,
                   phase: str = "download") -> None:
@@ -191,15 +210,31 @@ class QQDeployService:
             **self.plugin._auto_start_fields(auto),
         }
 
+    def _check_node(self, step) -> None:
+        """Node 检查 —— **单独一步**上报，且**按平台**决定它是不是硬要求。
+
+        历史上这里是所有平台的硬门槛，于是没有 node 的 Windows 用户"卡在下载
+        NapCat"：`download_asset()` 一行都没跑，界面停在「获取 NapCat」，日志里只有
+        一句 `缺少 Node.js`（真机现场，见 tests/test_qq_napcat_node_requirement.py）。
+
+        现在：Windows 上缺 node 只是**降级提示**（NapCat 跑在 QQ 自带的 Node 运行时
+        里，见 `napcat_platform.needs_system_node`）；非 Windows 缺 node 仍然是硬失败
+        —— 那边是 `node napcat.mjs`，装不上就真起不来，此时拦在下载之前才是对的。
+        """
+        ok, ver = napcat_platform.node_available()
+        required, why = napcat_platform.node_requirement()
+        if ok:
+            step("node", f"Node 就绪: {ver}")
+            return
+        if required:
+            raise RuntimeError(
+                f"缺少 Node.js（{ver}）。{why}；插件不会代为安装系统级软件包。"
+            )
+        step("node", f"未检测到系统 Node（{ver}）；{why}，继续部署")
+
     async def _fetch(self, step, emit) -> Path:
         """下载并解包到插件自带位置。"""
-        ok, ver = napcat_platform.node_available()
-        if not ok:
-            raise RuntimeError(
-                f"缺少 Node.js（{ver}）。NapCat 的发行包是 Node 程序，需要系统已安装 Node 18+；"
-                "插件不会代为安装系统级软件包。"
-            )
-        self._emit(emit, "fetch", f"Node 就绪: {ver}")
+        self._check_node(step)
 
         target = bundled_napcat_dir()
         asset = napcat_install.asset_name()
