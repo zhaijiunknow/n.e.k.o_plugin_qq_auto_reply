@@ -6889,3 +6889,76 @@ python -m pytest -o addopts="" tests/test_qq_frontend_permission_levels.py \
 - i18n 包只有 `ui.user.level_blacklist` 有键，`ui.user.level_admin` / `level_trusted` /
   `level_normal` **两个 bundle 都没有**，所以那三个标签永远走 `t()` 的内联中文兜底，英文界面
   也显示中文（`test_qq_ui_i18n_coverage` 抓不到：它只查"有 fallback 以外的缺口"）。
+
+## 53. 插件工具桥放开到 OneBot 链路（2026-10-02）
+
+> 使用者口径：「意思是接入可以调用其他插件的功能，和开放平台一样」。
+
+**这是改一条既有决策**：`plugin_tool_service.py` 头部原本写着「**通道闸**：只在开放平台挂。
+NapCat 那边"群里什么样的人都有"，多给一层工具面就多一层风险」。现在按使用者要求放开到
+全部 QQ 通道 —— 风险仍由**分档 + 名册**兜着，且**默认一个都不挂**。
+
+### 53.1 改了什么
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `plugin_tool_service.channel_allows_plugin_tools(conn)` | （不存在，判据散成三份 `media_seam.is_open_platform`） | **唯一**通道判据：认传输族 `CHANNEL ∈ {open, onebot}` 或 `mode ∈ {open_platform, napcat, napcat_forward}`；`None` → False |
+| `reply_generation_service._build_bridge_tools` | `not is_open_platform(client)` → 不挂 | 走上面的判据 |
+| `plugin_tool_followup_service.deliver` | 同一条 `is_open_platform` 闸，挡掉非开放平台 | 新增 `channel_allowed()`（与工具桥同一条判据）；理由从"当前不是开放平台通道"改成"当前通道不挂插件工具" |
+| `__init__._query_plugin_tools` | `enabled_on_this_channel = (mode == "open_platform")` | 同一个判据，界面那句"只在开放平台生效"不再撒谎 |
+| `static/open_platform.html` | `only_openplat` / `not_openplat` 两句死文案 | `channel_ok` / `channel_unsupported`（按**当前通道**说，不再写死开放平台） |
+| `i18n/{zh-CN,en}.json` | 同上两个键 | 换成 `ui.openplat.plugintools.channel_ok` / `channel_unsupported` |
+
+**没动的**：分档语义（`all` = 名册里的 admin/trusted/normal，`admin` = 只管理员，`none` = 一个
+都不给）、`MAX_MOUNTED_PLUGINS`、启动闸、非 QQ 闸、handler 只认本轮挂上去的 entry 清单。
+`qq_open_plugin_tools` 默认仍是 `{}` → `tiers()` 空 → **不挂任何工具**，所以这次放开本身是
+惰性的：不配置就等于没开。
+
+### 53.2 证据
+
+- 三条**钉着旧闸**的测试已按新决定改写，并各留一个"闸不是恒真"的反例：
+  - `test_qq_plugin_tool_bridge.py::test_the_bridge_also_arms_on_the_onebot_channel`（`mode="napcat"`
+    现在也挂上 `plugin_web_search`）；
+  - 同文件 `test_no_channel_object_means_no_bridge`、`test_an_unknown_transport_is_not_a_plugin_tool_channel`
+    （`CHANNEL="discord"` / 空对象 → False）；
+  - `test_qq_plugin_tool_followup.py::test_the_onebot_channel_also_delivers_the_result` 与
+    `test_no_channel_object_holds_the_result_back`；
+  - 界面那条从"必须写只开放平台"改成"必须写当前通道"。
+- `python -m pytest tests/test_qq_plugin_tool_bridge.py tests/test_qq_plugin_tool_followup.py -q`
+  → **147 passed**；再带 i18n/页面/设置/媒体接缝等 12 个套件 → **213 passed**。
+- `ruff check` 四个改动模块 → All checks passed。
+- 真实连接对象实测：`OneBotClient(反向)` / `OneBotClient(direction="forward")` → True；`None` → False。
+
+### 53.3 前端：两个面板共用同一页（同一天下半场，使用者：「napcat.html 补上」）
+
+做法**不是再抄一份**，而是抽出 `static/plugin-tools.js`：
+
+| 文件 | 现在负责 |
+|---|---|
+| `static/plugin-tools.js` | 页面**本体**：markup（注入进 `#page-plugintools`）+ 候选渲染 + 档位按钮 + 拖拽落点 + 自动刷新 + 回投开关。对外只交 6 个全局函数（`loadPluginTools / renderPluginTools / ptSetTier / ptSetFollowup / ptScheduleRefresh / ptStopRefresh`），候选表与定时器留在模块作用域里 |
+| `static/napcat.html`<br>`static/open_platform.html` | 各自只留四样：侧边栏 `data-page="plugintools"`、空容器 `<div class="page" id="page-plugintools">`、`switchPage` 里的 `loadPluginTools()+ptScheduleRefresh()` 与 `if(page!=='plugintools')ptStopRefresh()`、`<script src="plugin-tools.js?v=1">` |
+
+两处细节：
+
+- 两个页面都在 `let currentPage=…` 之前垫了三个**空实现**：模块在末尾才加载，而
+  `switchPage` 在初始化阶段就会被调用，不垫就会在首屏抛 `undefined`。
+- 侧边栏键从 `ui.openplat.sidebar.plugintools` 改名 `ui.shared.sidebar.plugintools`
+  （两个面板共用，名字不该再写 openplat），两个 bundle 同步改。
+
+证据：
+
+- **node + 最小 DOM 桩实跑该模块 19 项全绿**：标记注入空容器、三个落点都挂上
+  `dragover/drop`、`web_search` 进 `all` 档 / `music_pusher` 进可添加区且 `data-running="0"`、
+  卡片带两个档位按钮、计数、通道提示（`当前通道是 napcat，配置生效中（最多 8 个）`）、
+  回投开关回显、定时器起停、改档位保存的是 `qq_open_plugin_tools`。
+- `node --check`：模块 + 两个页面各 6 段 inline script 全过。
+- 页面契约测试改成**两层钉**：界面本体钉模块，接线钉**两个面板**，并新增断言
+  「页面里不许再出现 `pt-zone-available`」（防以后又抄一份）→ `163 passed`。
+
+### 53.4 边界
+
+- 开放平台与 OneBot 的能力差异（poke / ark / 表情反应）与工具桥无关：工具桥走的是宿主插件
+  API，两条通道完全一样。
+- 风险旋钮只剩**分档**：`all` 档在群里等于"名册里的人都能让她去点歌/搜网页"。建议 OneBot
+  侧先用 `admin` 档；默认配置是空的，不配就是不挂。
+

@@ -22,7 +22,9 @@
 
 * **开关闸**：`qq_open_plugin_followup_enabled`（默认开，使用者可关）；
 * **值班闸**：`plugin._running` 为假（值班已停）就不说话 —— 停着还主动发消息是越权；
-* **通道闸**：只回开放平台（与工具桥同一条闸，见 `plugin_tool_service`）；
+* **通道闸**：只在与工具桥同一条通道上回投 —— 现在这条闸对**所有 QQ 通道**都开
+  （开放平台 + OneBot 反向/正向；使用者 2026-10-02 放开），见 `plugin_tool_service.
+  channel_allows_plugin_tools`；
 * **上限闸**：同时在等的任务 ≤ `MAX_PENDING`，同一会话只留一条（避免一次涌出好几条）。
 
 另外两条是**不许撒谎**：
@@ -175,6 +177,12 @@ class QQPluginToolFollowupService:
     def enabled(self) -> bool:
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         return bool(settings.get("qq_open_plugin_followup_enabled", True))
+
+    def channel_allowed(self) -> bool:
+        """当前通道是否挂着插件工具（回投与工具桥**同一条闸**，别再各写一份）。"""
+        from .plugin_tool_service import channel_allows_plugin_tools
+
+        return channel_allows_plugin_tools(getattr(self.plugin, "qq_client", None))
 
     # ── 登记 ────────────────────────────────────────────────────────
 
@@ -472,11 +480,8 @@ class QQPluginToolFollowupService:
             return False, "开关关掉了"
         if not bool(getattr(self.plugin, "_running", False)):
             return False, "值班已停"
-        from . import media_seam
-
-        client = getattr(self.plugin, "qq_client", None)
-        if client is None or not media_seam.is_open_platform(client):
-            return False, "当前不是开放平台通道"
+        if not self.channel_allowed():
+            return False, "当前通道不挂插件工具"
         pipeline = getattr(self.plugin, "reply_pipeline", None)
         if pipeline is None:
             return False, "回复管线未就绪"

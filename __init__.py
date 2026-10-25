@@ -63,6 +63,7 @@ from .plugin_tool_followup_service import QQPluginToolFollowupService
 from .plugin_tool_service import (
     PLUGIN_TOOL_MAX_MOUNTED,
     QQPluginToolService,
+    channel_allows_plugin_tools,
     emit_bridge_log,
 )
 from .prompt_builder import QQPromptBuilder
@@ -1341,7 +1342,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         followups = getattr(self, "plugin_tool_followup_service", None)
         pending_followups = followups.snapshot() if followups is not None else []
         return Ok({
-            "enabled_on_this_channel": current == "open_platform",
+            # 通道闸对所有 QQ 通道都开（开放平台 + OneBot）：界面用这个布尔决定
+            # "配置正在生效" 还是 "这条通道挂不上工具"，别再写死 mode 比较。
+            "enabled_on_this_channel": channel_allows_plugin_tools(self.qq_client),
             "connection_mode": current,
             "tiers": tiers,
             "candidates": candidates,

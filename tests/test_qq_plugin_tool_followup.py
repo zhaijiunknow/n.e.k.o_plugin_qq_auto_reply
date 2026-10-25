@@ -531,9 +531,25 @@ def test_a_stopped_duty_holds_the_result_back(tmp_path):
     assert len(plugin.requests) == 1
 
 
-def test_a_non_open_platform_channel_holds_the_result_back(tmp_path):
-    """NapCat 那条通道上不主动说话（与工具桥同一条闸）。"""
+def test_the_onebot_channel_also_delivers_the_result(tmp_path):
+    """OneBot 通道也回投（与工具桥同一条闸；使用者 2026-10-02 把闸放开到 OneBot）。
+
+    OneBot 侧还比开放平台简单：`_conversation_target` 拿的 `sender_id` / `group_id`
+    就是 QQ 号与群号，不需要 openid 映射。
+    """
     plugin = _plugin(tmp_path, mode="napcat", poll_results=[_ok({"status": "done", "result": "结论"})])
+    _remember(plugin)
+
+    _tick_sync(plugin, 2)
+
+    assert len(plugin.requests) == 1
+    assert _service(plugin).pending_count() == 0
+
+
+def test_no_channel_object_holds_the_result_back(tmp_path):
+    """闸不是恒真：没有连接对象时不主动说话，结果留着（下次再试）。"""
+    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "结论"})])
+    plugin.qq_client = None
     _remember(plugin)
 
     _tick_sync(plugin, 2)
@@ -901,13 +917,17 @@ def test_the_new_source_kind_is_synthetic_and_skips_the_buffer():
 
 # ── 界面契约 ────────────────────────────────────────────────────────
 
-def _page_text() -> str:
-    return (_PLUGIN_DIR / "static" / "open_platform.html").read_text(encoding="utf-8")
+def _module_text() -> str:
+    """「插件」页的界面本体在两个面板共用的 `static/plugin-tools.js` 里。
+
+    2026-10-02 之前它只存在于 `open_platform.html`；放开 OneBot 通道之后两页共用一份。
+    """
+    return (_PLUGIN_DIR / "static" / "plugin-tools.js").read_text(encoding="utf-8")
 
 
 def test_the_page_has_a_switch_that_saves_the_real_key():
     """她主动说话这条路必须能一键关掉 —— 而且关的得是后端真正读的那个键。"""
-    text = _page_text()
+    text = _module_text()
     assert 'id="pt-followup-enabled"' in text, "页面上没有这个开关"
     assert "qq_open_plugin_followup_enabled" in text, "开关没有保存到后端读的那个键上"
     assert "ptSetFollowup(" in text, "开关没有接上保存函数"
@@ -915,7 +935,7 @@ def test_the_page_has_a_switch_that_saves_the_real_key():
 
 def test_the_page_shows_what_she_is_still_waiting_on():
     """否则使用者只会以为"又没下文了" —— 得能看见还在等什么。"""
-    text = _page_text()
+    text = _module_text()
     assert 'id="pt-followups"' in text, "页面上没有正在等结果那一行"
     assert "pending_followups" in text, "没有用后端给的待办清单"
     assert "followups_enabled" in text, "开关没有回显后端的当前值"

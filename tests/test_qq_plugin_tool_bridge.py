@@ -848,9 +848,29 @@ def test_configured_on_the_open_platform_arms_recall_plus_bridge():
     assert any("[PluginTool]" in msg for _lvl, msg in plugin.emitted)
 
 
-def test_the_bridge_is_open_platform_only():
-    """NapCat 上不挂插件工具（使用者定的范围）。"""
+def test_the_bridge_also_arms_on_the_onebot_channel():
+    """OneBot（反向 `napcat`）与开放平台一样挂插件工具。
+
+    **这是使用者 2026-10-02 改的决定**：原先是"只在开放平台挂"，理由是 NapCat 那边
+    "群里什么样的人都有，多给一层工具面就多一层风险"。放开之后风险仍由**分档**控制 ——
+    这里配的是 `all` 档，等于"名册里的人都能用"是显式配出来的；默认配置是空的。
+    """
     plugin = _configured_plugin(tiers={"web_search": "all"}, mode="napcat")
+    service = _generation_service(plugin)
+    session = _Session()
+
+    armed, bridge = asyncio.run(service._arm_turn_tools(
+        context=_context(), user_session=session, consent_before={},
+    ))
+
+    assert (armed, bridge) == (True, True)
+    assert [tool.name for tool in session.tools] == ["recall_memory", "plugin_web_search"]
+
+
+def test_no_channel_object_means_no_bridge():
+    """闸不是恒真：没有连接对象时一个插件工具都不挂（也是未连接时的真实状态）。"""
+    plugin = _configured_plugin(tiers={"web_search": "all"})
+    plugin.qq_client = None
     service = _generation_service(plugin)
     session = _Session()
 
@@ -860,6 +880,17 @@ def test_the_bridge_is_open_platform_only():
 
     assert bridge is False
     assert session.tools is None
+
+
+def test_an_unknown_transport_is_not_a_plugin_tool_channel():
+    """判据是传输族，不是"有连接就开"：认不出来的传输族一律不挂。"""
+    from plugin.plugins.qq_auto_reply.plugin_tool_service import channel_allows_plugin_tools
+
+    assert channel_allows_plugin_tools(None) is False
+    for channel, mode in (("open", ""), ("onebot", "napcat"), ("", "napcat_forward"), ("", "open_platform")):
+        assert channel_allows_plugin_tools(SimpleNamespace(CHANNEL=channel, mode=mode)) is True
+    assert channel_allows_plugin_tools(SimpleNamespace(CHANNEL="discord", mode="gateway")) is False
+    assert channel_allows_plugin_tools(SimpleNamespace()) is False
 
 
 def test_an_unrecognised_speaker_gets_no_tools_at_all():
@@ -967,25 +998,41 @@ def test_the_candidate_ids_are_never_qq_plugins():
 
 
 # ── 8. 界面契约（拖拽分档位）────────────────────────────────────────
+#
+# 2026-10-02：这一页从"只有开放平台面板有"变成**两个面板共用**一份实现
+# （`static/plugin-tools.js`）—— 通道闸对所有 QQ 通道都开之后，NapCat 那边也得配档位。
+# 所以下面分两层钉：
+#   · **界面本体**（markup + 行为）在共用模块里，只此一份；
+#   · **两个面板**各自只留空容器 + 侧边栏项 + 脚本标签 + switchPage 接线。
 
-_PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "open_platform.html"
+_STATIC = pathlib.Path(__file__).resolve().parents[1] / "static"
+_PANELS = ("open_platform.html", "napcat.html")
+_MODULE = _STATIC / "plugin-tools.js"
 
 
-def _page_text() -> str:
-    return _PAGE.read_text(encoding="utf-8")
+def _module_text() -> str:
+    """共用实现（markup + 行为）的唯一来源。"""
+    return _MODULE.read_text(encoding="utf-8")
 
 
-def test_the_page_has_its_own_sidebar_entry():
+def _panel_text(name: str) -> str:
+    return (_STATIC / name).read_text(encoding="utf-8")
+
+
+def test_both_panels_have_the_page_and_neither_keeps_its_own_copy():
     """独立一页（像表情包那样）：配置页里塞不下 —— 可添加的插件一多，列表底部的卡片
-    根本拖不到右侧分区去。"""
-    text = _page_text()
-    assert 'data-page="plugintools"' in text, "侧边栏没有「插件」这一项"
-    assert 'id="page-plugintools"' in text, "没有对应的页面容器"
-    assert "loadPluginTools()" in text, "切到这页不会去加载数据"
-    # 面板必须在新页里，而不是还留在配置页那一栏
-    assert text.index('id="page-plugintools"') < text.index('id="pt-zone-available"'), (
-        "拖拽区还在配置页那一栏里"
-    )
+    根本拖不到右侧分区去。两个面板都要有这一页，且**都不许自己抄一份 markup**。"""
+    module = _module_text()
+    assert 'id="pt-zone-available"' in module, "共用模块里没有拖拽区"
+    for name in _PANELS:
+        text = _panel_text(name)
+        assert 'data-page="plugintools"' in text, f"{name} 侧边栏没有「插件」这一项"
+        assert 'id="page-plugintools"' in text, f"{name} 没有对应的页面容器"
+        assert "plugin-tools.js" in text, f"{name} 没有引入共用模块"
+        assert "pt-zone-available" not in text, f"{name} 自己抄了一份 markup（该删）"
+        assert "loadPluginTools()" in text and "ptScheduleRefresh()" in text, (
+            f"{name} 切到这一页不会加载数据 / 不会起自动刷新"
+        )
 
 
 def test_available_cards_carry_tier_buttons():
@@ -994,7 +1041,7 @@ def test_available_cards_carry_tier_buttons():
     原来那个「添加」按钮是坏的（点了传空串，等于撤销一个还没加的插件，什么也不发生），
     使用者要求去掉 —— 现在两个按钮直接就是档位，语义与结果一致。
     """
-    text = _page_text()
+    text = _module_text()
     assert "ptSetTier('${pid}','${want}')" in text, "卡片上的按钮没有把档位写进去"
     assert "btn('all'" in text and "btn('admin'" in text, "卡片上没有两个档位按钮"
     assert "ui.openplat.plugintools.btn_add" not in text, "那个没用的「添加」按钮还在"
@@ -1002,7 +1049,7 @@ def test_available_cards_carry_tier_buttons():
 
 def test_the_available_list_is_scrollable_and_filterable():
     """长列表要能滚能筛，且右侧档位区 sticky（否则滚动时落点跑出视野）。"""
-    text = _page_text()
+    text = _module_text()
     assert 'id="pt-search"' in text, "没有搜索框"
     assert "max-height:46vh" in text and "overflow-y:auto" in text, "可添加列表没有自己的滚动区"
     assert "position:sticky" in text, "档位区没有 sticky"
@@ -1010,7 +1057,7 @@ def test_the_available_list_is_scrollable_and_filterable():
 
 def test_the_page_has_the_three_drop_zones():
     """可用区 + 两个档位区，各自带 data-tier（空串 = 撤销/未添加）。"""
-    text = _page_text()
+    text = _module_text()
     for zone, tier in (("pt-zone-available", ""), ("pt-zone-all", "all"), ("pt-zone-admin", "admin")):
         assert f'id="{zone}"' in text, f"缺拖拽区 {zone}"
         assert f'id="{zone}"' in text and f'data-tier="{tier}"' in text, (
@@ -1020,23 +1067,26 @@ def test_the_page_has_the_three_drop_zones():
 
 def test_cards_are_draggable_and_the_drop_saves_the_tier():
     """卡片要 draggable，落点要真的调 ptSetTier（拖完即保存）。"""
-    text = _page_text()
+    text = _module_text()
     assert 'draggable="true"' in text, "卡片不可拖"
     assert "dragstart" in text and "text/plain" in text, "拖拽没有携带 plugin_id"
     assert "ptSetTier(pid" in text, "落点没有把 pid 交给保存逻辑"
     assert "qq_open_plugin_tools" in text, "保存没有带上那个设置键"
 
 
-def test_the_page_reports_when_the_channel_is_not_the_open_platform():
-    """配置只在开放平台生效 —— 别的通道下界面必须说出来，而不是让人以为配了没用。"""
-    text = _page_text()
+def test_the_page_reports_which_channel_the_tools_are_live_on():
+    """通道闸对所有 QQ 通道都开，界面仍要把**当前通道**写出来 —— 否则换通道之后
+    没人知道配置还在生效（2026-10-02 放开 OneBot 时顺手把那条"只在开放平台生效"的
+    死文案换成了按通道说的两句话）。"""
+    text = _module_text()
     assert "enabled_on_this_channel" in text, "没有按通道提示生效范围"
-    assert "not_openplat" in text
+    assert "channel_ok" in text, "生效中那句没了"
+    assert "channel_unsupported" in text, "挂不上那句没了"
 
 
 def test_cards_are_green_while_running_and_grey_while_stopped():
     """使用者 17:3x 定：**在跑 = 绿卡、没在跑 = 灰卡**，一眼看出来哪些挂了工具。"""
-    text = _page_text()
+    text = _module_text()
 
     assert "var(--success-tint-strong)" in text and "var(--success-border)" in text, "没有绿卡那套色"
     assert "border-left:3px solid var(--success)" in text, "绿卡没有明显的绿色左边条"
@@ -1049,15 +1099,18 @@ def test_the_page_refreshes_itself_so_the_cards_do_not_go_stale():
     """使用者 17:3x 的原话：「插件已经启动了，但是卡片还是显示未启动」。
 
     以前这页只在进页时读一次；状态是在别处（插件管理）改的，于是卡片会一直停在旧值。
-    现在进页起定时器、离开就停。
+    现在进页起定时器、离开就停 —— 定时器住在共用模块，接线在两个面板各自的 switchPage。
     """
-    text = _page_text()
+    module = _module_text()
 
-    assert "ptScheduleRefresh" in text and "ptStopRefresh" in text, "没有自动刷新那对函数"
-    assert "setInterval(" in text, "没有定时器"
-    assert "ptScheduleRefresh()}" in text, "切到插件页没起定时器"
-    assert "if(page!=='plugintools')ptStopRefresh()" in text, "离开插件页没停定时器"
-    assert "document.hidden" in text, "后台标签页里还在轮询"
+    assert "function ptScheduleRefresh" in module and "function ptStopRefresh" in module, "没有自动刷新那对函数"
+    assert "setInterval(" in module, "没有定时器"
+    assert "document.hidden" in module, "后台标签页里还在轮询"
+    assert "currentPage === 'plugintools'" in module, "定时器不认当前页（别的页也会被一起轮询）"
+    for name in _PANELS:
+        text = _panel_text(name)
+        assert "ptScheduleRefresh()}" in text, f"{name} 切到插件页没起定时器"
+        assert "if(page!=='plugintools')ptStopRefresh()" in text, f"{name} 离开插件页没停定时器"
 
 
 def test_the_plugin_tools_query_asks_for_a_real_refresh():

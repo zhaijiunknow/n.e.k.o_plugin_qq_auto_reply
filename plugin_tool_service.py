@@ -10,10 +10,12 @@
 的 `tool_definitions=self.tool_registry.all()`）；QQ 这条会话只挂了自己那一个。
 这一步就是把这个缺口补上，并**按分级**决定谁能用哪个插件。
 
-## 四道闸（使用者定的）
+## 四道闸
 
-* **通道闸**：只在开放平台挂。NapCat 那边"群里什么样的人都有"，多给一层工具面就多
-  一层风险；
+* **通道闸**：**所有 QQ 通道都挂**（开放平台 + OneBot 反向/正向）。原先是"只在开放平台
+  挂"—— 理由是 NapCat 那边"群里什么样的人都有"，多给一层工具面就多一层风险；
+  2026-10-02 使用者决定放开到 OneBot 链路。真正的约束仍是下面的分档与名册，而且
+  **放开通道本身不改任何行为**：`qq_open_plugin_tools` 默认是空的，不配就等于不挂；
 * **启动闸**：只带**已经启动**的插件 —— 没启动的挂上去，模型点到只会拿到一个错误；
 * **非 QQ 闸**：排除自己与 `qq*` 家族（让她"通过调用别的插件"再回到 QQ 发送链路是
   自指）；
@@ -49,6 +51,26 @@ from typing import Any, Callable
 TIER_ALL = "all"
 TIER_ADMIN = "admin"
 VALID_TIERS = (TIER_ALL, TIER_ADMIN)
+
+#: 允许挂插件工具的通道。``CHANNEL`` 是连接对象的**传输族**标记
+#: （``OneBotClient.CHANNEL == "onebot"``，开放平台是 ``"open"``）；``mode`` 是它下面的
+#: 细分方向。两个都认：真连接对象带 ``CHANNEL``，测试桩常常只有 ``mode``。
+PLUGIN_TOOL_CHANNELS = ("open", "onebot")
+PLUGIN_TOOL_MODES = ("open_platform", "napcat", "napcat_forward")
+
+
+def channel_allows_plugin_tools(conn: Any) -> bool:
+    """这个连接所在的通道能不能挂插件工具。
+
+    通道闸从「只在开放平台」放开到**全部 QQ 通道**（使用者 2026-10-02：OneBot 链路也
+    要能调别的插件，与开放平台一致）。判断只看传输族，不看权限 —— 谁能用哪个插件由
+    ``tiers`` + 名册决定（见模块说明的权限闸）。没有连接对象时一律不挂。
+    """
+    if conn is None:
+        return False
+    channel = str(getattr(conn, "CHANNEL", "") or "").strip().lower()
+    mode = str(getattr(conn, "mode", "") or "").strip().lower()
+    return channel in PLUGIN_TOOL_CHANNELS or mode in PLUGIN_TOOL_MODES
 
 #: 一次挂几个插件工具的上限。工具定义**每轮都进 system 段**（没有 prompt caching），
 #: 所以这是个预算闸而不是功能闸：超出的按 id 排序截断。

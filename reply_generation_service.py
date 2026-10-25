@@ -564,16 +564,15 @@ class QQReplyGenerationService:
 
     async def _build_bridge_tools(self, context: Any) -> tuple[list[tuple[dict[str, Any], str]], list[Any]]:
         """把「白名单 ∧ 已启动 ∧ 这个人有权用」的插件变成工具定义。"""
-        from . import media_seam
         from .pipeline_models import KIND_PLUGIN_TOOL_RESULT
-        from .plugin_tool_service import QQPluginToolService
+        from .plugin_tool_service import QQPluginToolService, channel_allows_plugin_tools
 
         if str(getattr(context, "source_kind", "") or "") == KIND_PLUGIN_TOOL_RESULT:
             # 结果回投那一轮**不再挂插件工具**：这一轮的任务是把已经到手的结果说出去，
             # 而挂上工具就等于"一个异步结果可以生出下一个异步任务"，会跑成环。
             return [], []
         client = getattr(self.plugin, "qq_client", None)
-        if client is None or not media_seam.is_open_platform(client):
+        if not channel_allows_plugin_tools(client):
             return [], []
         service = self.plugin.plugin_tool_service
         tiers = service.tiers()
