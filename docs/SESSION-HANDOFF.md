@@ -6777,3 +6777,115 @@ PR #1（外部贡献者 `addsas222`）按「先合他的修复、我们在他后
   `J:\...\resources\bin\plugin\plugins`，23:06 之后切到 `.neko-plugin-installations`。
 - 23:22:38 有一次 `RuntimeError: QQ 开放平台: app_id 和 client_secret 未配置` —— 那一刻
   连接模式是开放平台，NapCat 装好了也连不上。
+
+## 52. 「编辑群聊」一打开级别显示成普通群 → 只想改概率，顺手把群降级了（2026-10-02）
+
+> 使用者口径：「点击编辑群聊卡片之后默认进去设置页面信任等级会变成另一个选择而不是按照
+> 已有的设置显示设置，导致如果只是想改概率的话会不小心设置成别的信任等级」。
+
+### 52.1 根因：同一个 `select` 里两个 `selected`，浏览器取**最后一个**
+
+`static/napcat.html` 的 `showGroupModal` 把两个选项的选中标记各拼了一次：
+
+| 选项 | 选中条件 |
+|---|---|
+| 信任群 | `level==='trusted'` |
+| 普通群 | `!level \|\| level==='trusted'` |
+
+`||level==='trusted'` 本意是「新增时默认 trusted」的回退，位置却落在**普通群**那一项上。
+于是打开一个 `trusted` 群时两项都带 `selected` —— HTML 的规则是**多个 `selected` 取最后一个**
+（`selected` 的"脏值"语义就是这么定的），界面显示成「普通群」。
+
+后果不止是显示：保存时 `level` 直接读下拉框的值，而 `group_add` 是**整条覆盖**
+（`GroupPermissionManager.add_group` 每次都重建条目），于是「只改转发概率」= 顺手把
+`trusted` 降成 `normal`（`normal` = 只有被 @ 才按概率转发，等于把这个群静音了）。
+
+**用户弹窗（`showUserModal`）没有被这个缺陷波及** —— 它四个条件互斥（admin/trusted/normal/
+blacklist 各判一次），实测四档各只有 1 个 `selected`、显示都对，包括 `blacklist`。所以那处改动
+是**收敛成单一生成器 + 消掉隐患**，不是修 bug：唯一能出错的是「档位是个不认识的值」，那时
+0 个 `selected` → 浏览器回退到第一项 = 「管理员」，等于点开编辑就提权（当前 `PermissionManager`
+会把未知值归一成 `trusted`，所以现实里到不了）。一致化之后未知值一律回落 `trusted`。
+
+### 52.2 改了什么
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `static/napcat.html` | 选项字符串在各弹窗各拼一次 `' selected'` | 新增 `levelOptionsHtml(options,cur,def)` —— **唯一**生成器，按唯一 value 匹配，**最多一个** `selected`；`cur` 为空/未知（含 legacy `open`）按 `def` 兜底 |
+| `showGroupModal` | 内联拼两个 `<option>`，回退条件落在**普通群**那项 | 调生成器，`def='trusted'`（与后端 `DEFAULT_GROUP_LEVEL` 同源） |
+| `showUserModal` | 内联拼四个 `<option>`（本就没坏），另用原始 `level` 判 `admin` | 调生成器；`lvl` 归一化后同时喂下拉与「管理员隐藏昵称」 |
+
+后端**一行未动**：`group_add` 语义不变，显式 `normal` 仍是唯一的降级入口。
+
+### 52.3 证据
+
+**行为级**（`node` 抽出生成器跑 10 组输入；并把旧写法的字符串按 `select` 语义复算）：
+
+| 输入 | 修好后 selected 数 / 显示 | 旧写法 selected 数 / 浏览器显示 |
+|---|---|---|
+| 群 `trusted` | 1 / trusted | **2 / normal** ← 缺陷复现 |
+| 群 `normal` | 1 / normal | **0 / trusted** ← 反方向同样错（浏览器回退到第一项） |
+| 群 空 / undefined / `open` / `TRUSTED` | 1 / trusted | 1 / normal |
+| 用户 `admin`/`trusted`/`normal`/`blacklist` | 各 1 / 同名 | 各 1 / 同名（**旧写法本来就对**） |
+
+旧写法在 `level='normal'` 时一个 `selected` 都没有 —— 浏览器回退到第一个选项，
+所以**普通群点开会显示成「信任群」**，保存即被升档（开始参与注意力竞争）。两个方向都是静默的。
+
+**测试**（在宿主树 `D:\NekoClaw\N.E.K.O\plugin\plugins\qq_auto_reply` 里跑，两份副本
+`.py` 只有 `test_qq_frontend_permission_levels.py` 一处差异 = 本次改动）：
+
+```
+python -m pytest -o addopts="" tests/test_qq_frontend_permission_levels.py \
+    tests/test_qq_no_reply_strategy.py tests/test_qq_attention_panel_surface.py -q
+→ 23 passed
+```
+
+其中 `test_panel_javascript_parses` 真的跑了（`node v24.13.1` 在场、无 skip）—— 压成一行的
+弹窗代码引号没错位。新增/改写的看门狗：
+
+- `test_level_dropdowns_emit_exactly_one_selected_option`（新）：生成器体内只允许**一处**
+  `' selected'`，且 `showGroupModal` / `showUserModal` 体内**一处手写都不许有**。
+- `test_modals_feed_the_current_level_into_the_dropdown`（新）：下拉的 `cur` 必须是该条目
+  **现有**档位（`],level,'trusted')` / `]],lvl,'trusted')`）。
+- `test_group_modal_defaults_to_trusted_in_napcat_panel`（改写）：选项现在运行时生成，默认档
+  改断言生成器的第三个实参；原来的 `(!level||level==='trusted')` 断言钉的正是缺陷写法，已删。
+
+**全量套件**：`83 failed, 1571 passed` —— 与本次改动无关，全是既有环境/代码漂移：
+`No module named 'zmq'`（`plane_bridge`）、`QQAttentionService` 缺
+`note_proactive_speech`（`test_qq_icebreaker_*` / `test_qq_reply_does_not_force_fall`）、
+`test_qq_official_bind` / `test_qq_voice_degradation` 的缺依赖。失败文件里**没有一个**读
+`static/`（唯一命中的 `static` 是某个 `tmp_path / "static"`）。
+
+同步：跑测试前把 `static/napcat.html` 与这条测试一起同步到了运行副本，两份文件逐字节相同
+（SHA-256 一致、CRLF、无 BOM）。注意 pwsh 是 **5.1**，`Set-Content -Encoding utf8` 会写 BOM ——
+本次同步中途踩过，已用 `UTF8Encoding($false)` 抹掉。
+
+### 52.4 边界
+
+- `static/open_platform.html` 的 `mg-level` 是**新增专用**（那一页没有编辑入口），静态
+  `selected` 本来就只有一个，不动。
+- 用户弹窗的 `mu-level` 一并交给同一个生成器，但**它不是缺陷实例**（见 52.1 末段），
+  改它的收益是"未知档位不再回落成管理员"。
+
+### 52.5 顺带核对：用户黑名单（`level=blacklist`）现状
+
+使用者 2026-10-02 追问「黑名单做了吗」。这块是 2026-09-27 就落地的前作，本次**没有动它**，
+只核对了四处接线都在、且与这次下拉改动兼容：
+
+| # | 位置 | 事实 |
+|---|---|---|
+| 1 | `PermissionManager.VALID_LEVELS` | 含 `blacklist` —— 不会像未知值那样被归一成 `trusted`（那等于拉黑变信任） |
+| 2 | `permission.is_blacklisted()` | `is_trusted` / `is_admin` 对黑名单恒 False（拉黑不残留特权） |
+| 3 | `message_dispatcher.handle_message` **最前面** | 群消息 / 私聊 / 戳一戳 / 入群通知一律不进管线；位置在 backlog 记录与 enrichment 之前（否则黑名单的话会被「回溯补回」喂给她） |
+| 4 | 控制台「信任用户」表 | 管理入口就是那张表的级别下拉；`list_users()` 不过滤黑名单，所以随时能改回别的档 |
+
+测试：`test_qq_user_blacklist.py` + `test_qq_poke_storm.py` +
+`test_qq_auto_reply_attention_gate.py` + `test_qq_outbound_guard.py` +
+`test_qq_attachment_files.py` → **96 passed**。
+
+顺带发现两个**既有**的展示层缺口（未改，等使用者点头）：
+
+- 用户表里只有 `blacklist` 显示中文（「黑名单（不处理其消息）」），admin/trusted/normal 显示
+  原始英文 id —— 同一列里两种风格。
+- i18n 包只有 `ui.user.level_blacklist` 有键，`ui.user.level_admin` / `level_trusted` /
+  `level_normal` **两个 bundle 都没有**，所以那三个标签永远走 `t()` 的内联中文兜底，英文界面
+  也显示中文（`test_qq_ui_i18n_coverage` 抓不到：它只查"有 fallback 以外的缺口"）。

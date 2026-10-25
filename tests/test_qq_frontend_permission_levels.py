@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import pathlib
 
+from _ui_source import fn_body
+
 PLUGIN_DIR = pathlib.Path(__file__).resolve().parents[1]
 
 #: 前端文件里**不允许**再出现的两种写法（都是"提供 open 级别"的历史形态）。
@@ -56,8 +58,54 @@ def test_group_modal_defaults_to_trusted_in_napcat_panel():
     napcat = (PLUGIN_DIR / "static/napcat.html").read_text(encoding="utf-8")
     assert "showGroupModal('','trusted',null,null)" in napcat, "新增群聊的默认档还是普通群"
     assert "showGroupModal('','normal'" not in napcat
-    assert "(!level||level==='trusted')" in napcat, "群弹窗的选中回退没跟着默认档走"
-    assert 'value="normal"' in napcat, "显式选择普通群的入口不能删"
+    # 选项现在由 levelOptionsHtml 在运行时生成，静态文本里没有 <option> 可查 ——
+    # 「默认档」就落在它的第三个实参上。
+    body = fn_body(napcat, "showGroupModal") or ""
+    assert body, "找不到 showGroupModal"
+    assert "levelOptionsHtml(" in body, "群弹窗的级别下拉没走唯一生成器"
+    assert "],level,'trusted')" in body, "群弹窗的选中回退没跟着默认档走"
+    assert "['normal'" in body, "显式选择普通群的入口不能删"
+
+
+# ── 编辑弹窗必须回显**现有**档位（2026-10-02 真机） ─────────────────
+#
+# 现象：点「信任群聊」某行的「编辑」，级别下拉显示成「普通群」，不是这个群真实的档位。
+# 根因是 HTML 的 selected 规则 —— 同一个 select 里**多个 selected 取最后一个**：老代码
+# 给 trusted 标了一次 selected，又在「级别为空或等于 trusted」时给 normal 标了一次，
+# 于是 trusted 群一打开就是 normal。用户只想改转发概率，一保存就把群降级了
+# （`group_add` 整条覆盖，level 一起写回去；normal 群 = 只有被 @ 才按概率转发）。
+#
+# 不变量：级别下拉只经 `levelOptionsHtml` 生成，它按**唯一 value** 匹配，最多一个 selected。
+
+
+def test_level_dropdowns_emit_exactly_one_selected_option():
+    text = (PLUGIN_DIR / "static/napcat.html").read_text(encoding="utf-8")
+    helper = fn_body(text, "levelOptionsHtml") or ""
+    assert helper, "napcat.html 里没有 levelOptionsHtml —— 级别下拉又散回各弹窗手写了"
+    assert helper.count("' selected'") == 1, (
+        "生成器里出现了不止一处 selected 拼接 —— 多出来的那个会把真实档位盖掉"
+    )
+    for fn in ("showGroupModal", "showUserModal"):
+        body = fn_body(text, fn) or ""
+        assert body, f"找不到 {fn}"
+        assert "levelOptionsHtml(" in body, f"{fn} 的级别下拉没走唯一生成器"
+        assert "' selected'" not in body, (
+            f"{fn} 又手写 selected：同一个 select 里多个 selected 时最后一个胜出"
+        )
+
+
+def test_modals_feed_the_current_level_into_the_dropdown():
+    """回显的输入必须是**该条目现有的级别**（群用 level，用户用同一套归一化后的 lvl）。
+
+    这两处接线对了，「只改概率」就不会顺带改档：提交的 `level` 正是下拉回显出来的那个值。
+    """
+    text = (PLUGIN_DIR / "static/napcat.html").read_text(encoding="utf-8")
+    group = fn_body(text, "showGroupModal") or ""
+    assert "],level,'trusted')" in group, "群弹窗没把现有档位喂给下拉 —— 编辑时必然显示错档"
+    user = fn_body(text, "showUserModal") or ""
+    assert "]],lvl,'trusted')" in user, "用户弹窗没把现有档位喂给下拉"
+    for value in ("admin", "trusted", "normal", "blacklist"):
+        assert f"['{value}'" in user, f"用户弹窗丢了 {value} 这一档"
 
 
 def test_group_modal_defaults_to_trusted_in_open_platform_panel():
