@@ -527,6 +527,26 @@ MISC = (
     # （`icebreaker_dormant_enabled` / `icebreaker_dormant_seconds`）与破冰话题表
     # （`proactive_topics`）—— 休眠的唯一触发源就是"她主动开口没人接"。
     # 五个键全部进 `config_store._LEGACY_ZOMBIE_KEYS`。见 docs/SESSION-HANDOFF.md §42。
+    # ── 主动搭话：管理员私聊，**有由头**才开口（2026-10-02 使用者：「先做 A」）──
+    # A = 她自己在私聊里说过要交代的事（"晚点告诉你"/"明天给你看"/"等我查一下"）到点了，
+    # 把**她当时那句话**当由头交回给她，由她决定要不要主动说。判据是**内容**；
+    # 时间只负责"到期"和"刹车"（静音时段 / 每日上限 / 最小间隔）。
+    # 与上面已删除的主动破冰不是一回事：那套是拿"群静默 1800 秒"当理由。
+    # 范围只到管理员私聊；群聊不走这条路。见 `proactive_initiative_service`。
+    SettingSpec("proactive_initiative_enabled", "bool", False, saveable=True,
+                description="save：允许她在管理员私聊里主动搭话（有由头才开口）"),
+    SettingSpec("proactive_initiative_quiet_start_hour", "int", 23, saveable=True,
+                floor=0, ceiling=23,
+                description="save：主动搭话静音时段的起始小时（含；与结束小时相同=不静音）"),
+    SettingSpec("proactive_initiative_quiet_end_hour", "int", 8, saveable=True,
+                floor=0, ceiling=23,
+                description="save：主动搭话静音时段的结束小时（不含）"),
+    SettingSpec("proactive_initiative_max_per_day", "int", 2, saveable=True,
+                floor=0, ceiling=12,
+                description="save：主动搭话每天最多几次（0=不发）"),
+    SettingSpec("proactive_initiative_min_gap_seconds", "int", 10800, saveable=True,
+                floor=0, ceiling=86400,
+                description="save：两次主动搭话之间至少隔多少秒"),
     # ── 回复缓冲开关 ──
     # 群聊与私聊**各自独立**开关，默认都开（与历史行为一致）。
     # 关掉的那一类不再排队等待，每条消息各自判定并立即投递。

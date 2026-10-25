@@ -151,6 +151,12 @@ class QQAttentionGateService:
         now = int(attention._current_time())
         for group_id in self._maintenance_groups(attention):
             await self._maybe_push_digest(group_id, now)
+        # 这条循环同时给**管理员私聊**的主动搭话当心跳（`proactive_initiative_service`，
+        # 2026-10-02）。它判的是"她说过的那件事到期没有"，不是"群静默了多久" —— 与上面
+        # 已删除的破冰不是一回事。放在群循环之后：群记忆摘要关乎正确性，主动消息晚一轮无妨。
+        initiative = getattr(self.plugin, "proactive_initiative_service", None)
+        if initiative is not None:
+            await initiative.tick()
 
     def _maintenance_groups(self, attention: Any) -> list[str]:
         """本服务要照看的群清单（注意力账本里出现过的群）。"""

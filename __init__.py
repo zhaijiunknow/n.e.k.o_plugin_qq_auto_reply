@@ -66,6 +66,7 @@ from .plugin_tool_service import (
     channel_allows_plugin_tools,
     emit_bridge_log,
 )
+from .proactive_initiative_service import QQProactiveInitiativeService
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
 from .relay_service import QQRelayService
@@ -199,6 +200,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.voice_reply_service = QQVoiceReplyService(self)
         self.runtime_ops_service = QQRuntimeOpsService(self)
         self.proactive_message_service = QQProactiveMessageService(self)
+        # 管理员私聊的「有由头」主动搭话（2026-10-02 使用者选 A）。发送仍走
+        # `proactive_message_service`，本服务只负责"什么时候开口"与"由头从哪来"。
+        self.proactive_initiative_service = QQProactiveInitiativeService(self)
         self.handler_runtime_service = QQHandlerRuntimeService(self)
         self.message_dispatcher = QQMessageDispatcher(self)
         self.session_bootstrap_service = QQSessionBootstrapService(self)
@@ -235,9 +239,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 留着只会让每个读取点都写一句恒真的分支。见 docs/SESSION-HANDOFF.md §24。
         # NapCat 进程/启动错误状态由连接层 napcat_service 自持，插件不再持有。
         self._proactive_task: Optional[asyncio.Task] = None
-        self._last_proactive_enabled = False
-        self._last_proactive_send_at = 0.0
-        self._last_proactive_greeting_at = 0.0
+        # `_last_proactive_enabled` / `_last_proactive_send_at` / `_last_proactive_greeting_at`
+        # 三个字段是更早那版"主动问候"的残骸：全仓库只写不读（2026-10-02 清掉）。
+        # 主动搭话的真实状态由 `proactive_initiative_service` 自持并落盘。
         self._backlog_summary_threshold = 10
         self._backlog_notify_cooldown_seconds = 900
         self._backlog_issue_notify_threshold = 1
@@ -1307,6 +1311,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._query_bots(kw)
         if action == "plugin_tools":
             return await self._query_plugin_tools(kw)
+        if action == "proactive_initiative":
+            # 主动搭话（管理员私聊）的状态视图：开关/静音时段/今日已开口/待说的由头。
+            # 判定与"为什么还不会开口"由服务自己算，界面只显示 —— 别在两处各写一份判据。
+            return Ok(self.proactive_initiative_service.snapshot())
         return Err(SdkError(
             f"BAD_ACTION: query 不支持 {action!r}"
             f"（可选 dashboard/buffer/logs/prompt_editor/group_prompts/"

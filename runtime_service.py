@@ -73,6 +73,13 @@ class QQRuntimeService:
         }
         entry["summary"] = self._build_entry_summary(entry)
         self._store_recent_trace_entry(entry)
+        # 主动搭话（管理员私聊）的登记点：这一轮她有没有留下"晚点告诉你"这类承诺。
+        # 选这里是**单漏斗**：私聊/群聊/主动/回投所有回合都会经过 `record_pipeline_outcome`，
+        # 而"只认管理员私聊的非合成轮"这个筛选条件放在服务里（`note_turn`）。
+        # best effort —— 它不许影响已经发出去的那一轮。
+        initiative = getattr(self.plugin, "proactive_initiative_service", None)
+        if initiative is not None:
+            initiative.note_turn(source=source, request=request, outcome=outcome)
 
     def record_manual_trace(
         self,
