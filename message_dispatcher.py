@@ -491,8 +491,18 @@ class QQMessageDispatcher:
             name = ""
             if qq == sender_id:
                 name = str(sender.get("card") or sender.get("nickname") or "").strip()
-            if not name and getattr(self.plugin, "permission_mgr", None):
-                name = str(self.plugin.permission_mgr.get_nickname(qq) or "").strip()
+            # 三个来源都必须**可缺省**：测试里的假 permission_mgr / enricher 常常
+            # 只实现被测到的那个方法（全仓 25 个测试用裸 SimpleNamespace），
+            # 直接 ``.get_nickname()`` 会让它们全红。缺能力就跳过这一级。
+            if not name:
+                get_nickname = getattr(
+                    getattr(self.plugin, "permission_mgr", None), "get_nickname", None,
+                )
+                if callable(get_nickname):
+                    try:
+                        name = str(get_nickname(qq) or "").strip()
+                    except Exception:
+                        name = ""
             if not name and enricher is not None:
                 try:
                     name = str(
@@ -521,7 +531,9 @@ class QQMessageDispatcher:
         if not store or gate is None:
             return ""
         attention = getattr(self.plugin, "attention_service", None)
-        since = attention.get_last_focus_at(group_id) if attention else 0
+        # 同理可缺省：假 attention 只实现被测到的那几个方法。
+        get_last_focus_at = getattr(attention, "get_last_focus_at", None)
+        since = get_last_focus_at(group_id) if callable(get_last_focus_at) else 0
         limit = int(
             (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                 "retroactive_review_max_messages", 30,
