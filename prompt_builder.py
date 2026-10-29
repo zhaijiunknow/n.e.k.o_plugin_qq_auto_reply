@@ -94,6 +94,7 @@ class QQPromptBuilder:
         mentions_other_user: bool = False,
         mentions_all: bool = False,
         addressee: "addressing.AddresseeVerdict | None" = None,
+        member_labels: dict[str, str] | None = None,
     ) -> str:
         if is_group and not group_facing:
             return self.plugin._build_group_turn_message(
@@ -109,6 +110,7 @@ class QQPromptBuilder:
                 mentions_all=mentions_all,
                 first_reply_after_own_speech=self._is_first_reply_after_her_own_speech(group_id),
                 addressee=addressee,
+                member_labels=dict(member_labels or {}),
             )
         return message
 

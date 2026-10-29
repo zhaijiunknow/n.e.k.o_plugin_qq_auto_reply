@@ -260,6 +260,9 @@ class QQReplyPipelineRunner:
             quoted_message_id=getattr(request, "quoted_message_id", "") or "",
             mentions_other_user=getattr(request, "mentions_other_user", False),
             mentions_all=getattr(request, "mentions_all", False),
+            # 本轮涉及的人 → 可读名字（发言人 / 被 @ / 被引用）。提示词层据此
+            # 把「@ 了谁」说成人名，并给她的 `<at>` 段一个能填的号码。
+            member_labels=dict(getattr(request, "member_labels", {}) or {}),
             # 「谁在跟谁说话」的结论（门控算好的那份）。请求里没有结论时它是 None，
             # 提示词层据此退回改动前的 6 个标签 —— 见 `addressing.verdict_from_request`。
             addressee=addressing.verdict_from_request(request),

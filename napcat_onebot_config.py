@@ -4,9 +4,16 @@ NapCat 把每个登录账号的网络配置放在 ``config/onebot11_<uin>.json``
 而 QQ 号在扫码登录前拿不到。所以"什么时候写"由调用方决定（预置：先问号再启动；或后置：
 登录后补写再重启），本模块只负责"写对"。
 
-写入一律**读-合并-写**，且只认领 ``name == CALLBACK_NAME`` 那一条：用户的 http 服务、
+写入一律**读-合并-写**，且只认领我们自己的那两条：用户的 http 服务、
 其它 WS 条目、插件配置、超时设置都原样保留。一次部署动作不该把用户既有的网络配置抹掉
 ——那些条目可能正连着他自己的别的服务。
+
+⚠️ ``name`` 不是"给人看的标签"，它是 **NapCat 的 adapter id**：``napcat.mjs`` 里
+``NetworkManager.registerAdapter(e) { this.adapters.set(e.name, e) }`` —— 所有类型的
+adapter（httpServers / httpSseServers / httpClients / websocketServers /
+websocketClients / plugin_manager）共用**同一个 Map**，key 就是 ``name``。所以反向
+条目和正向条目**必须取不同的名字**；同名时后注册的会把先注册的顶掉，被顶掉的那个
+adapter 连 ``open()`` 都不会被调用（``openAllAdapters()`` 只遍历 Map 里的幸存者）。
 """
 
 from __future__ import annotations
@@ -19,9 +26,20 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-#: 我们那条连接在 NapCat 配置里的名字。合并按名字认领，所以重复部署是幂等的。
-#: 反向条目和正向条目各在自己数组里用这个名字，互不冲突。
+#: 反向那条连接在 NapCat 配置里的名字（= adapter id，见模块 docstring）。
+#: 合并按名字认领，所以重复部署是幂等的。
 CALLBACK_NAME = "neko"
+
+#: 正向那条连接的名字 —— **必须与 ``CALLBACK_NAME`` 不同**。
+#:
+#: 老版本两条都用 ``CALLBACK_NAME``，当时的注释写着"各在自己数组里用这个名字，互不
+#: 冲突"。**那句是错的**：NapCat 两个数组注册进同一个 ``networkManager``，key 就是
+#: ``name``，而 ``InitOneBot`` 先注册 websocketServers、再注册 websocketClients，
+#: 于是反向把正向顶掉 —— 正向那条 WS 服务器（默认 ``127.0.0.1:3001``）从头到尾
+#: **没被打开过**，切到正向模式永远连不上，而反向（默认模式）一切正常，所以这个
+#: 故障一直藏得很好。``merge()`` 会把老配置里叫 ``CALLBACK_NAME`` 的**服务器**条目
+#: 就地改名成这个值，存量安装不需要手工清。
+FORWARD_NAME = "neko-forward"
 
 #: 插件反向 WS 服务端监听的路径（与静态引导里给用户的示例一致）。
 REVERSE_PATH = "/ws"
@@ -269,7 +287,7 @@ def build_server_entry(host: str, port: int, token: str = "") -> dict[str, Any]:
     """正向：NapCat 开 WS **服务器**，插件主动拨过去。"""
     return {
         "enable": True,
-        "name": CALLBACK_NAME,
+        "name": FORWARD_NAME,
         "host": str(host or "127.0.0.1"),
         "port": int(port or 3001),
         "reportSelfMessage": False,
@@ -284,25 +302,35 @@ def build_server_entry(host: str, port: int, token: str = "") -> dict[str, Any]:
 # ── 合并与写入 ──────────────────────────────────────────────
 
 def _merge_entry(entries: Iterable[Any], entry: dict[str, Any],
-                 fields: tuple[str, ...]) -> list[Any]:
+                 fields: tuple[str, ...],
+                 names: tuple[str, ...]) -> list[Any]:
     """按 ``name`` 认领同一条目并就地更新，找不到就追加。
 
+    ``names`` 是"算我们的"名字集合：第一条给出的是**写进去的名字**，其余是历史遗留名
+    ——命中遗留名就地改名（存量配置的自愈路径）。
+
     保留用户在同名条目上多写的键（只覆盖我们关心的字段），也保留其它条目不动。
+
+    ⚠️ 与我们同名的**重复**条目一律丢掉，不像别的名字那样保留。名字就是 NapCat 的
+    adapter id，留一条重复的等于让 id 撞回去（后注册的顶掉先注册的，被顶掉的连
+    ``open()`` 都不会被调用）—— 这个函数的存在意义就是保证"我们恰好占一个 id"。
     """
+    ours = tuple(dict.fromkeys(n for n in names if n))
+    target_name = ours[0] if ours else str(entry.get("name") or "")
+    wanted = set(ours) or {target_name}
     out: list[Any] = []
     replaced = False
     for item in entries:
-        if isinstance(item, dict) and str(item.get("name") or "") == CALLBACK_NAME:
-            if not replaced:
-                merged = dict(item)
-                for k in fields:
-                    if k in entry:
-                        merged[k] = entry[k]
-                out.append(merged)
-                replaced = True
-            # 同名重复条目只认领第一条，其余原样留下（用户自己复制的，不该被我们吃掉）
-            else:
-                out.append(item)
+        if isinstance(item, dict) and str(item.get("name") or "") in wanted:
+            if replaced:
+                continue  # 我们自己的同名重复条目：丢，否则 id 仍然撞
+            merged = dict(item)
+            for k in fields:
+                if k in entry:
+                    merged[k] = entry[k]
+            merged["name"] = target_name
+            out.append(merged)
+            replaced = True
         else:
             out.append(item)
     if not replaced:
@@ -318,8 +346,11 @@ def merge(config: dict[str, Any], *, reverse_url: str, forward_host: str,
     两种角色。两条都配好后，用户在 N.E.K.O 里切模式**不需要重配 NapCat、也不用重启
     它** —— 只写当前模式那一条的话，每次切模式都得把整套部署重跑一遍。
 
-    只认领 ``name == CALLBACK_NAME`` 的条目；用户自己加的其它条目一律原样保留
-    （那可能连着他自己的别的服务）。
+    （这条能力此前是**假的**：两条同名，正向那条根本没被 NapCat 打开。见
+    ``FORWARD_NAME``。）
+
+    只认领我们自己那两条（反向 ``CALLBACK_NAME``、正向 ``FORWARD_NAME`` 及其遗留名）；
+    用户自己加的其它条目一律原样保留（那可能连着他自己的别的服务）。
     """
     import copy
 
@@ -336,10 +367,13 @@ def merge(config: dict[str, Any], *, reverse_url: str, forward_host: str,
     network["websocketClients"] = _merge_entry(
         list(network.get("websocketClients") or []),
         build_client_entry(reverse_url, token), _CLIENT_FIELDS,
+        (CALLBACK_NAME,),
     )
     network["websocketServers"] = _merge_entry(
         list(network.get("websocketServers") or []),
         build_server_entry(forward_host, forward_port, token), _SERVER_FIELDS,
+        # 遗留名放在后面：老版本把正向条目也写成 CALLBACK_NAME，命中就地改名
+        (FORWARD_NAME, CALLBACK_NAME),
     )
     return out
 

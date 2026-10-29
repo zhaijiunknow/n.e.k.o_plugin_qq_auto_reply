@@ -79,6 +79,7 @@ class QQAutoReplyPromptingMixin:
         mentions_other_user: bool = False,
         mentions_all: bool = False,
         addressee: "addressing.AddresseeVerdict | None" = None,
+        member_labels: dict[str, str] | None = None,
     ) -> str:
         return self.prompt_builder.build_prompt_message(
             is_group=is_group,
@@ -94,6 +95,7 @@ class QQAutoReplyPromptingMixin:
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
             addressee=addressee,
+            member_labels=member_labels,
         )
 
     @staticmethod
@@ -234,9 +236,16 @@ class QQAutoReplyPromptingMixin:
         return queued
 
     @staticmethod
-    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_reply_to_bot: bool = False, quoted_message_id: str = "", mentions_other_user: bool = False, mentions_all: bool = False, first_reply_after_own_speech: bool = False, addressee: "addressing.AddresseeVerdict | None" = None) -> str:
+    def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "", is_reply_to_bot: bool = False, quoted_message_id: str = "", mentions_other_user: bool = False, mentions_all: bool = False, first_reply_after_own_speech: bool = False, addressee: "addressing.AddresseeVerdict | None" = None, member_labels: dict[str, str] | None = None) -> str:
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
         is_at_bot = (str(group_scene_mode or "").strip() == "directed_user")
+        # 本轮涉及的人 → 可读名字。空 dict 时下面每一处都退化成改动前的样子。
+        labels = {
+            str(qq).strip(): str(name).strip()
+            for qq, name in (member_labels or {}).items()
+            if str(qq).strip() and str(name).strip()
+        }
+        aim_target = str(getattr(addressee, "target_id", "") or "").strip()
         # 构建定向提示：明确告诉模型这条消息是冲谁来的
         #
         # 判据分两层：**显式指向**（@ 你 / 引用你 / 引用别人 / @ 别人 / @全体）优先，
@@ -251,7 +260,9 @@ class QQAutoReplyPromptingMixin:
         # `quoted_sender_id`，此前没人读）；② 文本里是不是叫了她的名字。所以有结论时
         # 优先用它的措辞，只有结论为 None（开放平台通道 / 合成轮 / 旁路）时才落到下面
         # 这套老标签 —— 老标签一行都没删，是那种情况下的正确行为。
-        rich_hint = addressing.aim_label(addressee)
+        rich_hint = addressing.aim_label(
+            addressee, target_label=labels.get(aim_target, ""),
+        )
         if rich_hint:
             hint = f"【{rich_hint}】"
         elif is_at_bot:
@@ -273,6 +284,7 @@ class QQAutoReplyPromptingMixin:
             f"发言人: {user_title}（QQ: {sender_id}）\n"
             f"群号: {str(group_id or '').strip()}\n"
             f"{hint}\n"
+            f"{_render_people_block(labels=labels, sender_id=sender_id, aim_target=aim_target)}"
             f"消息:\n{message}"
         )
 
@@ -390,3 +402,38 @@ class QQAutoReplyPromptingMixin:
             group_facing=group_facing,
             group_scene_mode=group_scene_mode,
         )
+
+
+def _render_people_block(
+    *, labels: dict[str, str], sender_id: str, aim_target: str,
+) -> str:
+    """把"本轮涉及的人"渲染成人名清单（空 labels 返回空串）。
+
+    用途有两个，缺一不可：
+
+    1. **@ 别人时说得出是谁**。此前 ``addressing.aim_label`` 拿不到名字，
+       一律渲染成"对方在跟别人说话" —— 模型既不知道谁在跟谁说话，也不知道
+       被 @ 的是不是自己刚聊过的那个人。
+    2. **她 @ 别人时有号可填**。她的 ``<at>`` 段要写裸 QQ 号
+       （``reply_postprocess_node`` 只从 ``<at>`` 的文本里读），而提示词里
+       此前只有当前发言人一个号 —— 想 @ 那个刚叫她的人也没有号可用。
+
+    "不确定号码就别 @" 这句是**有意的保守指令**：宁可让她不 @，也不要她
+    把别人的号编出来（发出去就是 @ 到陌生人）。
+    """
+    if not labels:
+        return ""
+    rows: list[str] = []
+    for qq, name in labels.items():
+        if qq == sender_id:
+            role = "发言人"
+        elif aim_target and qq == aim_target:
+            role = "本条消息指向的人"
+        else:
+            role = "本条消息里被 @ / 被引用的人"
+        rows.append(f"- {role}: {name}（QQ: {qq}）")
+    return (
+        "本条消息涉及的人:\n"
+        + "\n".join(rows)
+        + "\n（要 @ 谁，就在回复里写 <at>对方的QQ号</at>；不确定号码就不要 @。）\n"
+    )

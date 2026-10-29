@@ -446,6 +446,140 @@ class QQMessageDispatcher:
                 return nick
         return f"QQ用户{uid}"
 
+    async def _resolve_member_labels(
+        self,
+        message: dict[str, Any],
+        *,
+        sender_id: str,
+        mentioned_user_ids: list[str] | None = None,
+        quoted_sender_id: str = "",
+    ) -> dict[str, str]:
+        """本条消息涉及的人 → 可读名字（``{QQ: 名字}``）。
+
+        解析顺序：发言人自己的 ``sender.card``/``nickname`` → 备注昵称
+        （``permission_mgr.get_nickname``，本地免费）→ 问一次群成员资料
+        （``enricher._resolve_at_nickname``，NapCat 侧有缓存）。
+
+        **解析不到的名字不加键**：提示词宁可只说"别人"，也不能编一个名字
+        —— 编出来的名字她真的会拿去称呼人。空 dict 即"这轮没有名字可用"，
+        提示词逐字退化成改动前的样子。
+        """
+        self_id = ""
+        if isinstance(message, dict):
+            self_id = str(message.get("self_id") or "").strip()
+        if not self_id:
+            self_id = str(
+                getattr(self.plugin, "self_id", "")
+                or getattr(self.plugin, "_self_id", "")
+                or ""
+            ).strip()
+        ids: list[str] = []
+        for raw in (sender_id, *(mentioned_user_ids or []), quoted_sender_id):
+            qq = str(raw or "").strip()
+            # "all" 是 @全体成员 的伪 id；她自己不用被列进"涉及的人"。
+            if not qq or qq == "all" or qq == self_id or qq in ids:
+                continue
+            ids.append(qq)
+        if not ids:
+            return {}
+        sender = message.get("sender") if isinstance(message, dict) else None
+        sender = sender if isinstance(sender, dict) else {}
+        enricher = getattr(self.plugin, "enricher", None)
+        labels: dict[str, str] = {}
+        # 一轮最多问 4 个人：这是个热路径，别让它变成 8 次串行网络调用。
+        for qq in ids[:4]:
+            name = ""
+            if qq == sender_id:
+                name = str(sender.get("card") or sender.get("nickname") or "").strip()
+            if not name and getattr(self.plugin, "permission_mgr", None):
+                name = str(self.plugin.permission_mgr.get_nickname(qq) or "").strip()
+            if not name and enricher is not None:
+                try:
+                    name = str(
+                        await enricher._resolve_at_nickname(qq, message) or ""
+                    ).strip()
+                except Exception:
+                    name = ""
+            if name:
+                labels[qq] = name
+        return labels
+
+    async def _build_at_backlog_tail(
+        self, group_id: str, *, current_message_id: str = "",
+    ) -> str:
+        """她被人 @ 时，把这个群人此前的未审阅发言拼成一段前文。
+
+        与 ``[RetroReview]`` 用同一套原料（``backlog_store`` + 注意力的
+        ``last_focus_at``）与同一个格式化函数，差别只在**触发条件**：回溯挂在
+        焦点切换上，而 @ 不锁焦点 —— 被 @ 因此成了唯一从不补前文的入口。
+
+        喂过的消息**就地标已审**（回溯也是这条规矩）：不标的话，下一次真正的
+        回溯会把它们当成"没看过"再答一遍。
+        """
+        store = getattr(self.plugin, "backlog_store", None)
+        gate = getattr(self.plugin, "attention_gate_service", None)
+        if not store or gate is None:
+            return ""
+        attention = getattr(self.plugin, "attention_service", None)
+        since = attention.get_last_focus_at(group_id) if attention else 0
+        limit = int(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "retroactive_review_max_messages", 30,
+            ) or 30
+        )
+        try:
+            unreviewed = await store.get_unreviewed_messages_since(
+                group_id, since_timestamp=since, limit=limit,
+            )
+        except Exception as exc:
+            self.plugin.logger.warning(
+                f"[@上下文] 读取 backlog 失败: {type(exc).__name__}: {exc}"
+            )
+            return ""
+        # 这条 @ 自己刚进 backlog：不能把它当前文重复一遍。
+        current = str(current_message_id or "").strip()
+        unreviewed = [
+            item for item in (unreviewed or [])
+            if str(item.get("message_id") or "").strip() != current
+        ]
+        if not unreviewed:
+            return ""
+        try:
+            summary = gate._build_ignored_summary(unreviewed)
+        except Exception as exc:
+            self.plugin.logger.warning(
+                f"[@上下文] 前文渲染失败: {type(exc).__name__}: {exc}"
+            )
+            return ""
+        if not summary:
+            return ""
+        reviewed_ids = {
+            str(item.get("message_id") or "").strip()
+            for item in unreviewed
+            if str(item.get("message_id") or "").strip()
+        }
+        backlog_service = getattr(self.plugin, "backlog_service", None)
+        if reviewed_ids and backlog_service:
+            try:
+                await backlog_service.mark_group_reviewed_payload(
+                    group_id, message_ids=reviewed_ids,
+                )
+            except Exception as exc:
+                # 标记失败不拦这一轮：最多是同一批前文下次再喂一遍，
+                # 比"因为她被 @ 了却没上下文"轻得多。
+                self.plugin.logger.warning(
+                    f"[@上下文] 标记已审失败: {type(exc).__name__}: {exc}"
+                )
+        self.plugin._emit_log(
+            "INFO",
+            f"[@上下文] 群 {group_id} 被 @，带上 {len(unreviewed)} 条前文",
+        )
+        return (
+            "【前文】在你被 @ 之前，这个群里还在聊这些（你当时没太关注）：\n"
+            f"{summary}\n"
+            "以上只是背景。只需要针对下面这条 @ 你的消息回应。\n"
+        )
+
     def _is_gate_bypassed_synthetic(self, source: str) -> bool:
         """这一轮的合成来源是不是"脚本已判完、不必再过门控"的那几种。"""
         return str(source or "") in self.GATE_BYPASS_SYNTHETIC_SOURCES
@@ -918,6 +1052,15 @@ class QQMessageDispatcher:
             ]
             mentions_other_user = bool(message.get("mentions_other_user", False))
             mentions_all = bool(message.get("mentions_all", False))
+            # 本轮涉及的人 → 可读名字（发言人 / 被 @ 的人 / 被引用的人）。
+            # 提示词层用它把「对方在跟别人说话」说成人名，并让她的 `<at>`
+            # 有号可填。解析不到就是空 dict —— 逐字退化成改动前的行为。
+            member_labels = await self._resolve_member_labels(
+                message,
+                sender_id=sender_id,
+                mentioned_user_ids=mentioned_user_ids,
+                quoted_sender_id=quoted_sender_id,
+            )
             message_timestamp = int(message.get("timestamp") or 0)
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=True, group_id=group_id)
             if session_key in self.plugin._user_sessions:
@@ -963,6 +1106,7 @@ class QQMessageDispatcher:
                 mentioned_user_ids=mentioned_user_ids,
                 mentions_other_user=mentions_other_user,
                 mentions_all=mentions_all,
+                member_labels=member_labels,
                 message_timestamp=message_timestamp,
                 forward_sub_count=fwd_count,
                 reply_context=reply_context,
@@ -1073,6 +1217,7 @@ class QQMessageDispatcher:
         mentioned_user_ids: Optional[list[str]] = None,
         mentions_other_user: bool = False,
         mentions_all: bool = False,
+        member_labels: Optional[dict[str, str]] = None,
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
         reply_context: str = "",
@@ -1173,6 +1318,23 @@ class QQMessageDispatcher:
                     await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
         group_scene_mode = "directed_user" if is_at_bot else "shared_context"
+        # ── 被 @ 的那一轮：把这个人 @ 她之前群里的发言一并带上 ──
+        #
+        # 回溯（`run_retroactive_review`）只挂在**焦点切换**上，而 @ 不锁焦点
+        # （`test_normal_group_at_bot_replies_without_locking_focus`）—— 于是被 @
+        # 时反而是唯一一个**从不**补前文的入口：非焦点群里有人 @ 她，她手上只有
+        # 那一句，backlog 里前面几十条一条都没进 prompt。
+        #
+        # 合成轮（入群欢迎/回溯总结等）自己就是脚本组装的前文，不在此列。
+        if is_at_bot and not synthetic_source and group_id:
+            backlog_tail = await self._build_at_backlog_tail(
+                group_id, current_message_id=current_message_id,
+            )
+            if backlog_tail:
+                reply_context = (
+                    f"{backlog_tail}\n{reply_context}".strip()
+                    if reply_context else backlog_tail
+                )
         # 插话抑制已退役：它只在 neko_scene 下可达，而「该不该接」现在由
         # reply_necessity 的必要性判定统一负责（见 docs/SESSION-HANDOFF.md §12）。
         group_memory_enabled = group_memory_at_receipt
@@ -1193,6 +1355,7 @@ class QQMessageDispatcher:
             mentioned_user_ids=list(mentioned_user_ids or []),
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
+            member_labels=dict(member_labels or {}),
             reply_context=reply_context,
             reply_message_id="",
             at_user_id="",

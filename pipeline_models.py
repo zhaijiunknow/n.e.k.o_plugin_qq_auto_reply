@@ -151,6 +151,15 @@ class QQReplyRequest:
     mentioned_user_ids: list[str] = field(default_factory=list)
     mentions_other_user: bool = False
     mentions_all: bool = False
+    #: 本轮涉及的人 → 可读名字（``{QQ: 名字}``）：发言人、被 @ 的人、被引用的人。
+    #:
+    #: 原料在接收边界就有（``sender.card``/``nickname``、备注昵称、以及连接器
+    #: 解析 @ 段时的成员昵称），但此前**没有一个消费者**：提示词里只有当前发言人
+    #: 带名字，其余一律被 ``addressing.aim_label`` 折叠成"别人"。后果有两个：
+    #: ①别人 @ 她时她看不出前因；②她的 ``<at>`` 段要填裸 QQ 号，而她没有
+    #: 任何人的号 —— 等于永远 @ 不对人。空 dict = 一个名字都没解析到，
+    #: 提示词退化成改动前的逐字行为。
+    member_labels: dict[str, str] = field(default_factory=dict)
     #: 「谁在跟谁说话」的结论（`addressing.AddresseeVerdict` 的三个字段）。
     #: 空 `addressee_kind` = **没有结论**（开放平台通道 / 合成轮 / 旁路调用），
     #: 提示词层据此退回改动前的 6 个标签 —— 刻意不是"另有一份实现"。
@@ -250,6 +259,8 @@ class QQReplyContext:
     current_message_id: str = ""
     force_reply: bool = False
     source_kind: str = ""
+    #: 与 `QQReplyRequest.member_labels` 同源（本轮涉及的人 → 可读名字）。
+    member_labels: dict[str, str] = field(default_factory=dict)
     # 轮次构建时刻的 group_member_memory_enabled 快照：成员发言入 bucket
     # 与否绑定发言时刻的授权状态——生成期间才切 ON 的轮不得回溯收集。
     member_memory_enabled: bool = False

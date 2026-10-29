@@ -127,6 +127,7 @@ class QQReplyContextNode:
         quoted_message_id: str = "",
         mentions_other_user: bool = False,
         mentions_all: bool = False,
+        member_labels: dict[str, str] | None = None,
         addressee: "addressing.AddresseeVerdict | None" = None,
         reply_context: str = "",
         force_reply: bool = False,
@@ -417,6 +418,7 @@ class QQReplyContextNode:
             quoted_message_id=quoted_message_id,
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
+            member_labels=dict(member_labels or {}),
             addressee=addressee,
         )
         traces.append(
@@ -489,6 +491,7 @@ class QQReplyContextNode:
             current_message_id=current_message_id,
             force_reply=force_reply,
             source_kind=source_kind,
+            member_labels=dict(member_labels or {}),
             member_memory_enabled=member_memory_snapshot,
             group_speaker_permission_level_at_receipt=(
                 group_speaker_permission_level_at_receipt
