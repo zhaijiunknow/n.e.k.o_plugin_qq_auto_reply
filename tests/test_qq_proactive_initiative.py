@@ -214,7 +214,7 @@ def test_blocked_reasons_are_ordered_and_shared_with_the_send_path(tmp_path):
     assert service.blocked_reason() == ""
 
 
-def test_quiet_hours_block_and_cross_midnight(tmp_path, monkeypatch, patch_module_clock):
+def test_quiet_hours_block_and_cross_midnight(tmp_path, monkeypatch):
     from plugin.plugins.qq_auto_reply import proactive_initiative_service as pis
 
     plugin = _plugin(
@@ -240,12 +240,12 @@ def test_quiet_hours_block_and_cross_midnight(tmp_path, monkeypatch, patch_modul
     assert service.blocked_reason(at_3am) == "静音时段"
 
     # 时钟只在本模块内伪造（全局换 stdlib time 会被 plugin/conftest 的守卫拦下）
-    patch_module_clock(monkeypatch, pis, time=lambda: at_3am)
+    monkeypatch.setattr(pis, "time", SimpleNamespace(time=lambda: at_3am))
     asyncio.run(service.tick())
     assert plugin.sent == [], "静音时段还发消息"
 
     # 白天同样的状态就会发
-    patch_module_clock(monkeypatch, pis, time=lambda: at_noon)
+    monkeypatch.setattr(pis, "time", SimpleNamespace(time=lambda: at_noon))
     service._last_admin_activity_at = 0.0
     asyncio.run(service.tick())
     assert len(plugin.sent) == 1

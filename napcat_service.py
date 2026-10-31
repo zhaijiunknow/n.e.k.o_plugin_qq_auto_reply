@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
-from . import napcat_onebot_config, napcat_platform
+from . import napcat_integrity, napcat_onebot_config, napcat_platform
 
 
 def bundled_napcat_dir() -> Path:
@@ -360,6 +360,14 @@ class QQNapcatService:
                 return
             self._set_startup_error(self._build_missing_launcher_error())
             return
+        ok, detail = await asyncio.to_thread(
+            napcat_integrity.check_installation, launcher.parent, launcher=launcher,
+        )
+        if not ok:
+            self._set_startup_error(f"NapCat 完整性检查未通过: {detail}。请修复或重新安装 NapCat。")
+            self._emit_log("ERROR", self.get_startup_error())
+            return
+        self._emit_log("INFO", f"NapCat {detail}")
         # 启动前补一次自动登录账号：扫过码但没点过「补写 OneBot 配置」的用户，
         # 账号配置其实已经躺在 config/ 里了 —— 这里按目录扫出来记上，下次启动
         # 就能快速登录。幂等，所以每次启动跑一遍无妨。

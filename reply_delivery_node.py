@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from . import media_seam
@@ -30,6 +31,8 @@ class QQReplyDeliveryNode:
             return None
 
         blocks = plan.blocks
+        if self.plugin._get_reply_mode() == "text":
+            blocks = [self._record_as_text(block) if block.record else block for block in blocks]
         first_text = ""
         # 判据分两条线：承载正文的块（文本/语音/按钮降级/卡片）决定
         # delivered——记忆里存的那一行就是正文；装饰块（poke/表情包）发不
@@ -70,14 +73,16 @@ class QQReplyDeliveryNode:
                 # 并进正文等于凭空多送一段用户没要求的文字（`delivered_blocks_text`
                 # 对 record 块的 keyboard 排除逻辑与此保持一致）。
                 text = self._compose_text(block)
+                text_sent = False
                 if text:
                     if i == 0:
                         first_text = text
                     content_attempted = True
-                    if not await self._send_text(plan, block, text, keyboard=""):
+                    text_sent = await self._send_text(plan, block, text, keyboard="")
+                    if not text_sent:
                         content_sent = False
                 content_attempted = True
-                if not await self._send_record(plan, block):
+                if not await self._send_record(plan, block, text_already_sent=text_sent):
                     content_sent = False
                 continue
 
@@ -110,6 +115,9 @@ class QQReplyDeliveryNode:
                     for part in str(block.keyboard).split("|")
                     if part.strip()
                 ) or str(block.keyboard)
+                if not self._outbound_allowed(plan.target_type, plan.target_id, labels):
+                    content_sent = False
+                    continue
                 if self._supports_keyboard():
                     # 内容不能是空白：开放平台 sender 会 strip 后判空直接
                     # 返回 None，连带按钮 payload 都不构造——既没按钮也没
@@ -189,6 +197,13 @@ class QQReplyDeliveryNode:
         )
 
     @staticmethod
+    def _record_as_text(block: QQMessageBlock) -> QQMessageBlock:
+        parts = list(dict.fromkeys(
+            part.strip() for part in (block.text, block.record) if part.strip()
+        ))
+        return replace(block, text="\n".join(parts), record="")
+
+    @staticmethod
     def _compose_text(block: QQMessageBlock) -> str:
         """组合文字 + emoji + at + reply 为最终文本。
 
@@ -226,6 +241,21 @@ class QQReplyDeliveryNode:
             parts.append(f"[CQ:face,id={block.emoji}]")
         return "".join(parts)
 
+    def _outbound_allowed(self, target_type: str, target_id: str, text: str, *, kind: str = "reply") -> bool:
+        if target_type != "group":
+            return True
+        guard = getattr(self.plugin, "outbound_guard_service", None)
+        if guard is None:
+            return True
+        verdict = guard.check(group_id=target_id, text=text, kind=kind)
+        if not verdict.blocked:
+            return True
+        reason = f"内容安全：命中黑名单词 {verdict.detail!r}" if verdict.reason == "blacklist" \
+            else f"重复过滤：{verdict.detail}"
+        self.plugin.logger.warning(f"出站内容被拦截（{reason}）: {text[:40]!r}")
+        self.plugin._emit_log("WARN", f"[Outbound] 拦截（{reason}）: {text[:20]}")
+        return False
+
     async def _send_text(
         self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str,
         *, keyboard: str = "",
@@ -241,16 +271,6 @@ class QQReplyDeliveryNode:
         # 出站守门（内容安全 + 重复过滤）：**群发**的最后一道闸，语音分支也算
         # （它发的是同一段文本的 TTS）。被拦 = 当作未投递，不写 mention、不清
         # 未投递标 —— 与"她本来就没说"在记账上一致。
-        if plan.target_type == "group":
-            guard = getattr(self.plugin, "outbound_guard_service", None)
-            if guard is not None:
-                verdict = guard.check(group_id=plan.target_id, text=text)
-                if verdict.blocked:
-                    reason = f"内容安全：命中黑名单词 {verdict.detail!r}" if verdict.reason == "blacklist" \
-                        else f"重复过滤：{verdict.detail}"
-                    self.plugin.logger.warning(f"出站内容被拦截（{reason}）: {text[:40]!r}")
-                    self.plugin._emit_log("WARN", f"[Outbound] 拦截（{reason}）: {text[:20]}")
-                    return False
         mode = self.plugin._get_reply_mode()
         if mode == "voice":
             # voice-only 模式：走 TTS 发送语音——确认结果一路传播（开放
@@ -265,6 +285,8 @@ class QQReplyDeliveryNode:
                 )
                 if labels:
                     voice_text = voice_text + "\n" + labels
+            if not self._outbound_allowed(plan.target_type, plan.target_id, voice_text):
+                return False
             if plan.target_type == "group":
                 return bool(await self.plugin._deliver_group_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
             return bool(await self.plugin._deliver_private_reply(plan.target_id, voice_text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure))
@@ -289,6 +311,12 @@ class QQReplyDeliveryNode:
                 )
                 if labels:
                     text = text + "\n" + labels
+            # 官方按钮也会显示文案；检查最终内容，不能只检查追加选项前的正文。
+            guarded_text = text
+            if keyboard and self._supports_keyboard():
+                guarded_text += "\n" + " / ".join(part.strip() for part in str(keyboard).split("|") if part.strip())
+            if not self._outbound_allowed(plan.target_type, plan.target_id, guarded_text):
+                return False
             if keyboard and self._supports_keyboard():
                 # keyboard 只有开放平台的 segments 接口承载：带按钮的文本
                 # 块走它。NapCat 不支持按钮，走普通文本（内容照发，按钮
@@ -304,7 +332,7 @@ class QQReplyDeliveryNode:
             result = await self.plugin.qq_client.send_message(plan.target_id, text)
         # 两个平台的文本发送现在都有回执：开放平台失败吞异常返回 None，
         # NapCat 走 echo 往返（超时返回 None）。显式 None = 未确认送达。
-        return result is not None
+        return self._confirm_platform_result(result)
 
     @staticmethod
     def _ends_with_question(blocks: list[QQMessageBlock]) -> bool:
@@ -474,6 +502,14 @@ class QQReplyDeliveryNode:
         client = self.plugin.qq_client
         if not client:
             return False
+        for node in nodes:
+            content = (node.get("data") or {}).get("content", [])
+            text = content if isinstance(content, str) else "".join(
+                str((segment.get("data") or {}).get("text") or "")
+                for segment in content if segment.get("type") == "text"
+            )
+            if not self._outbound_allowed(target_type, target_id, text, kind="forward"):
+                return False
         try:
             if target_type == "group":
                 result = await client.send_group_forward_msg(target_id, nodes)
@@ -539,8 +575,16 @@ class QQReplyDeliveryNode:
         fallbacks silently count as delivered."""
         return bool(result)
 
-    async def _send_record(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
+    async def _send_record(self, plan: QQDeliveryPlan, block: QQMessageBlock, *, text_already_sent: bool = False) -> bool:
         if not block.record:
+            return False
+        # 模型标签不能覆盖用户选择；也覆盖排队期间从语音切换到文本的情况。
+        if self.plugin._get_reply_mode() == "text":
+            text_block = replace(block, text=block.record, record="")
+            return await self._send_text(plan, text_block, self._compose_text(text_block))
+        # 同块文字+语音允许表达同一句；仅复用本块已确认发送的相同文字检查。
+        checked = text_already_sent and block.text.strip() == block.record.strip()
+        if not checked and not self._outbound_allowed(plan.target_type, plan.target_id, block.record):
             return False
         try:
             file_uri, _ = await self.plugin.voice_reply_service.synthesize_reply_voice_file(block.record)

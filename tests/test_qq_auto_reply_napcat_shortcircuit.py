@@ -119,6 +119,11 @@ def test_ensure_started_finds_bundled_napcat_without_config(monkeypatch, tmp_pat
     monkeypatch.setattr(napcat_platform, "is_windows", lambda: True)
 
     (tmp_path / "launcher-user.bat").write_text("@echo off", encoding="utf-8")
+    for name in ("napcat.mjs", "package.json", "loadNapCat.js", "NapCatWinBootMain.exe", "NapCatWinBootHook.dll"):
+        (tmp_path / name).write_text("fixture", encoding="utf-8")
+    for name in ("native", "node_modules"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "fixture").write_text("fixture", encoding="utf-8")
     monkeypatch.setattr(ns, "bundled_napcat_dir", lambda: tmp_path)
 
     launched: list = []

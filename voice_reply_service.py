@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import random
+import re
 import time
 import wave
 from pathlib import Path
@@ -149,7 +150,7 @@ class QQVoiceReplyService:
                 _build_step_tts_create_data,
             )
             from utils.config_manager import get_config_manager
-            from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE
+            from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE, is_stepfun_tts_voice
 
             config_manager = get_config_manager()
 
@@ -258,7 +259,14 @@ class QQVoiceReplyService:
                     return audio_data, "audio/wav"
 
             free_voice_ids = set((get_free_voices() or {}).values())
-            if voice_id in free_voice_ids:
+            # free_voices 是当前区域的展示目录，不包含所有仍可用的旧版音色。
+            # 旧 StepFun 预置音色仍走免费协议，不能落入默认的百炼分支。
+            legacy_free_voice = (
+                provider in ("", "free", "free_intl")
+                and bool(voice_id)
+                and is_stepfun_tts_voice(voice_id)
+            )
+            if voice_id in free_voice_ids or legacy_free_voice:
                 tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
                 headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
                 lang_hint = None
@@ -513,7 +521,26 @@ class QQVoiceReplyService:
             text_segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
         if str(at_user_id or "").strip():
             text_segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
-        text_segments.append({"type": "text", "data": {"text": f" {normalized_text}" if at_user_id else normalized_text}})
+        # 上游可能传入 _compose_text 生成的 CQ 字符串；OneBot 不会解析
+        # text 段中的 CQ 码。只展开插件生成的修饰，正文保留为 text。
+        raw_text = f" {normalized_text}" if at_user_id else normalized_text
+        offset = 0
+        for match in re.finditer(r"\[CQ:(reply,id|at,qq|face,id)=([^\],]+)\]", raw_text):
+            if match.start() > offset:
+                text_segments.append({"type": "text", "data": {"text": raw_text[offset:match.start()]}})
+            kind, key = match.group(1).split(",")
+            value = match.group(2).replace("&#44;", ",").replace("&#91;", "[").replace("&#93;", "]").replace("&amp;", "&")
+            segment = {"type": kind, "data": {key: value}}
+            if segment not in text_segments:
+                text_segments.append(segment)
+            if kind == "reply" and not reply_message_id:
+                reply_message_id = value
+            elif kind == "at" and not at_user_id:
+                at_user_id = value
+            offset = match.end()
+        if offset < len(raw_text):
+            text_segments.append({"type": "text", "data": {"text": raw_text[offset:]}})
+        speech_text = "".join(seg["data"]["text"] for seg in text_segments if seg["type"] == "text").strip()
         if mode == "text":
             return self._confirm_send(
                 await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard),
@@ -546,7 +573,7 @@ class QQVoiceReplyService:
                     await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard),
                 )
         try:
-            file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
+            file_uri, _ = await self.synthesize_reply_voice_file(speech_text)
             voice_ok = self._confirm_send(
                 await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id),
             )

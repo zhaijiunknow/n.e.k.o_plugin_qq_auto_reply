@@ -138,6 +138,7 @@ def test_a_voice_reply_is_not_logged_as_zero_characters(caplog):
     语音（`reply_mode=both`）或表情/poke。日志要按块里**真正有什么**说。
     """
     node, _client = _node()
+    node.plugin._get_reply_mode = lambda: "both"
     plan = QQDeliveryPlan(
         target_type="group", target_id=GROUP,
         blocks=[QQMessageBlock(record="file:///tmp/x.amr")],

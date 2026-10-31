@@ -24,6 +24,8 @@ from typing import Callable, Iterable
 
 import httpx
 
+from . import napcat_integrity
+
 #: 钉死的版本与校验和（sha256 与字节数取自 GitHub 官方 Releases API，
 #: 2026-09-11 抓取）。升级版本时两个值必须一起换。
 NAPCAT_VERSION = "v4.18.19"
@@ -313,6 +315,7 @@ def extract_zip(zip_path: Path | str, target_dir: Path | str,
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True, exist_ok=True)
+    backup = None
 
     try:
         with zipfile.ZipFile(src) as z:
@@ -332,8 +335,22 @@ def extract_zip(zip_path: Path | str, target_dir: Path | str,
                 if progress:
                     progress(idx, total)
 
+        # 重装/升级只替换程序；保留账号配置、缓存、日志及用户启动参数。
+        if final.is_dir():
+            for old in final.iterdir():
+                if napcat_integrity.is_program_file(old.name) or old.name == napcat_integrity.MANIFEST:
+                    continue
+                dest = staging / old.name
+                if old.is_symlink():
+                    raise RuntimeError(f"用户数据目录包含符号链接，无法自动保留: {old.name}")
+                if old.is_dir():
+                    shutil.copytree(old, dest, dirs_exist_ok=True, symlinks=True)
+                else:
+                    shutil.copy2(old, dest)
+
+        napcat_integrity.write_manifest(staging, [i.filename for i in infos])
+
         # 提升：旧目录先挪走（不是直接删 —— 删了就没法回滚），再改名，最后清掉旧的。
-        backup = None
         if final.exists():
             backup = final.with_name(f"{final.name}.old-{uuid.uuid4().hex[:12]}")
             os.replace(final, backup)
@@ -342,5 +359,7 @@ def extract_zip(zip_path: Path | str, target_dir: Path | str,
             shutil.rmtree(backup, ignore_errors=True)
         return final
     except Exception:
+        if backup is not None and backup.exists() and not final.exists():
+            os.replace(backup, final)
         shutil.rmtree(staging, ignore_errors=True)
         raise

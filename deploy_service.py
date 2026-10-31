@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import napcat_install, napcat_onebot_config, napcat_platform
+from . import napcat_install, napcat_integrity, napcat_onebot_config, napcat_platform
 from .napcat_service import bundled_napcat_dir
 
 #: 步骤名 → 界面展示用的标签
@@ -155,7 +155,11 @@ class QQDeployService:
             napcat_dir = svc.get_napcat_directory()
             launcher = napcat_platform.find_launcher(napcat_dir) if napcat_dir else None
         if launcher is not None and not force:
-            step("locate", f"已有可用 NapCat: {napcat_dir}")
+            step("locate", f"正在检查已安装 NapCat 的完整性: {napcat_dir}")
+            ok, detail = await asyncio.to_thread(napcat_integrity.check_installation, napcat_dir, launcher=launcher)
+            if not ok:
+                raise RuntimeError(f"NapCat 完整性检查未通过: {detail}。请修复或重新安装 NapCat。")
+            step("locate", f"已有 NapCat: {napcat_dir}；{detail}")
         else:
             step("locate", "未发现可用 NapCat，准备下载")
             napcat_dir = await self._fetch(step, emit)

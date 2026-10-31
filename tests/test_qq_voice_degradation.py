@@ -36,6 +36,91 @@ from plugin.plugins.qq_auto_reply.voice_reply_service import QQVoiceReplyService
 WAV_BYTES = b"RIFF....WAVEfake-audio"
 
 
+def test_legacy_free_voice_missing_from_ui_catalog_uses_free_tts(tmp_path, monkeypatch):
+    import base64
+    import io
+    import json
+    import wave
+
+    from main_logic.tts_client.workers import free
+
+    service = _service(tmp_path, monkeypatch, voice_id="qingchunshaonv")
+    monkeypatch.setattr(vrs, "get_free_voices", lambda: {"new": "new-voice"})
+    monkeypatch.setattr(free, "_adjust_free_tts_url", lambda url: url)
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes(b"\x00\x00" * 24)
+    events = iter([
+        {"type": "tts.connection.done", "data": {"session_id": "test"}},
+        {"type": "tts.response.audio.delta", "data": {"audio": base64.b64encode(wav.getvalue()).decode()}},
+        {"type": "tts.response.done"},
+    ])
+    sent = []
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def recv(self):
+            return json.dumps(next(events))
+
+        async def send(self, message):
+            sent.append(json.loads(message))
+
+    def connect(url, **kwargs):
+        assert url == "wss://www.lanlan.tech/tts"
+        return Socket()
+
+    monkeypatch.setattr(vrs.websockets, "connect", connect)
+    audio, mime = asyncio.run(service.synthesize_reply_voice_audio("你好"))
+    assert audio == wav.getvalue()
+    assert mime == "audio/wav"
+    assert "qingchunshaonv" in json.dumps(sent[0])
+
+
+@pytest.mark.parametrize("failure", ["synthesis", "unconfirmed", "unsupported"])
+def test_voice_fallback_expands_cq_modifiers(monkeypatch, failure):
+    from unittest.mock import AsyncMock
+
+    client = SimpleNamespace(
+        supports_voice=failure != "unsupported",
+        send_group_message_segments=AsyncMock(return_value="mid"),
+        send_group_record=AsyncMock(return_value=None),
+    )
+    service = QQVoiceReplyService(SimpleNamespace(
+        qq_client=client,
+        _validate_outbound_message=lambda text: text,
+        _get_reply_mode=lambda: "voice",
+        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+    ))
+    synth = AsyncMock(return_value=("file:///voice.wav", "audio/wav"))
+    if failure == "synthesis":
+        synth.side_effect = RuntimeError("TTS failed")
+    monkeypatch.setattr(service, "synthesize_reply_voice_file", synth)
+    assert asyncio.run(service.deliver_group_reply(
+        "123", "[CQ:reply,id=456][CQ:at,qq=789]你好[CQ:face,id=14]",
+        fallback_to_text_on_voice_failure=True,
+    ))
+    assert client.send_group_message_segments.call_args.args[1] == [
+        {"type": "reply", "data": {"id": "456"}},
+        {"type": "at", "data": {"qq": "789"}},
+        {"type": "text", "data": {"text": "你好"}},
+        {"type": "face", "data": {"id": "14"}},
+    ]
+    if failure == "unsupported":
+        synth.assert_not_called()
+    else:
+        synth.assert_awaited_once_with("你好")
+    if failure == "unconfirmed":
+        assert client.send_group_record.call_args.kwargs == {"reply_message_id": "456", "at_user_id": "789"}
+
+
 class _FakeConfigManager:
     """只提供合成链在"走到守卫之前"会碰到的那些方法。"""
 
@@ -147,6 +232,7 @@ def _node(client, synth):
 
     plugin = SimpleNamespace(
         qq_client=client,
+        _get_reply_mode=lambda: "both",
         voice_reply_service=SimpleNamespace(synthesize_reply_voice_file=synth),
         logger=SimpleNamespace(info=_record("info"), warning=_record("warning")),
         _emit_log=lambda *a, **k: None,

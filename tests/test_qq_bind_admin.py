@@ -16,7 +16,7 @@ from plugin.plugins.qq_auto_reply import qq_official_bind as bind
 from plugin.plugins.qq_auto_reply.permission import PermissionManager
 
 
-def _plugin(*, openid: str = "OPENID_OF_SCANNER"):
+def _plugin(monkeypatch, *, openid: str = "OPENID_OF_SCANNER"):
     async def _poll(session):
         return {"status": "completed", "appid": "1903565393",
                 "secret": "s", "user_openid": openid}
@@ -38,21 +38,21 @@ def _plugin(*, openid: str = "OPENID_OF_SCANNER"):
     p._restart_auto_reply_runtime = _restart
     p._auto_start_fields = QQAutoReplyPlugin._auto_start_fields
 
-    bind.poll_bind_result = _poll
+    monkeypatch.setattr(bind, "poll_bind_result", _poll)
 
     # ⚠️ 必须打桩：真实的 verify_credentials 会去 POST 腾讯的取 token 接口，
     # 失败还重试 3 轮 —— 不打桩的话这几个用例会真的发网络请求，慢且看天吃饭。
     async def _verify(appid, secret, **kw):
         return {"ok": True, "attempts": 1, "expires_in": 0, "error": ""}
 
-    bind.verify_credentials = _verify
+    monkeypatch.setattr(bind, "verify_credentials", _verify)
     return p
 
 
 # ── 扫码者成为管理员 ────────────────────────────────────────
 
-async def test_scanner_becomes_admin():
-    p = _plugin()
+async def test_scanner_becomes_admin(monkeypatch):
+    p = _plugin(monkeypatch)
 
     r = await p.deploy(action="bind_poll")
 
@@ -61,9 +61,9 @@ async def test_scanner_becomes_admin():
     assert [u["qq"] for u in p.permission_mgr.list_users()] == ["OPENID_OF_SCANNER"]
 
 
-async def test_scanning_again_does_not_duplicate():
+async def test_scanning_again_does_not_duplicate(monkeypatch):
     """同一个号再扫一次（例如换机器人）不该在名单里堆两条。"""
-    p = _plugin()
+    p = _plugin(monkeypatch)
 
     await p.deploy(action="bind_poll")
     p._qq_bind_session = bind.BindSession(task_id="t2", bind_key="k", qrcode="")
@@ -72,9 +72,9 @@ async def test_scanning_again_does_not_duplicate():
     assert len(p.permission_mgr.list_users()) == 1
 
 
-async def test_existing_trust_list_is_not_wiped():
+async def test_existing_trust_list_is_not_wiped(monkeypatch):
     """名单里已有别人时，只加扫码者，不动其他人。"""
-    p = _plugin()
+    p = _plugin(monkeypatch)
     p.permission_mgr.add_user("111", "trusted")
 
     await p.deploy(action="bind_poll")
@@ -85,10 +85,10 @@ async def test_existing_trust_list_is_not_wiped():
 
 # ── 平台没给 openid 时不能把绑定拖垮 ────────────────────────
 
-async def test_missing_openid_still_completes_the_bind():
+async def test_missing_openid_still_completes_the_bind(monkeypatch):
     """平台没回 openid（或改了字段名）→ 不设管理员，但绑定本身照常成功 ——
     凭据已经拿到了，不该因为这一条把整次绑定判失败。"""
-    p = _plugin(openid="")
+    p = _plugin(monkeypatch, openid="")
 
     r = await p.deploy(action="bind_poll")
 
@@ -97,9 +97,9 @@ async def test_missing_openid_still_completes_the_bind():
     assert p.permission_mgr.list_users() == []
 
 
-async def test_invalid_openid_is_logged_not_raised():
+async def test_invalid_openid_is_logged_not_raised(monkeypatch):
     """空白/非法 openid 走 add_user 的 False 分支，只记日志。"""
-    p = _plugin(openid="   ")
+    p = _plugin(monkeypatch, openid="   ")
 
     r = await p.deploy(action="bind_poll")
 

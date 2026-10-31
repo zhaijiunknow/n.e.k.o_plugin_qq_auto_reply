@@ -87,7 +87,7 @@ def _delivery_node(*, needs_attention: bool = False):
         logger=SimpleNamespace(warning=lambda *a, **k: None, info=lambda *a, **k: None),
         _emit_log=lambda *a, **k: None,
         _mask_token=lambda t: t,
-        _get_reply_mode=lambda: "text",
+        _get_reply_mode=lambda: "both",
         i18n=SimpleNamespace(t=lambda key, default=None: default or key),
     )
     return QQReplyDeliveryNode(plugin), client

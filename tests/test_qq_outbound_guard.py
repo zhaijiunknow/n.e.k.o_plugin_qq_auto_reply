@@ -16,8 +16,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
 from plugin.plugins.qq_auto_reply.outbound_guard_service import QQOutboundGuardService
+from plugin.plugins.qq_auto_reply.pipeline_models import QQDeliveryPlan, QQMessageBlock
 from plugin.plugins.qq_auto_reply.repeat_echo_service import QQRepeatEchoService
 from plugin.plugins.qq_auto_reply.reply_delivery_node import QQReplyDeliveryNode
 
@@ -226,6 +229,70 @@ def test_delivery_private_is_not_guarded():
     plugin.qq_client.send_message = _send_message  # type: ignore[attr-defined]
     plan = SimpleNamespace(target_type="private", target_id="820040531", fallback_to_text_on_voice_failure=True)
     assert asyncio.run(node._send_text(plan, None, "你这个傻逼")) is True
+
+
+def test_record_cannot_bypass_blacklist_or_duplicate_filter():
+    plugin = _DeliveryPlugin(_guard())
+    plugin._get_reply_mode = lambda: "both"
+    synth = AsyncMock(return_value=("file:///test.wav", "audio/wav"))
+    plugin.voice_reply_service = SimpleNamespace(synthesize_reply_voice_file=synth)
+    plugin.qq_client.send_group_record = AsyncMock(return_value="mid")
+    node = QQReplyDeliveryNode(plugin)
+    plan = QQDeliveryPlan(target_type="group", target_id=GROUP)
+    assert not asyncio.run(node._send_record(plan, QQMessageBlock(record="你这个傻逼")))
+    synth.assert_not_called()
+    assert asyncio.run(node._send_record(plan, QQMessageBlock(record="正常语音内容")))
+    assert not asyncio.run(node._send_record(plan, QQMessageBlock(record="正常语音内容")))
+    assert synth.await_count == 1
+
+
+def test_same_block_text_and_voice_are_not_false_duplicates():
+    plugin = _DeliveryPlugin(_guard())
+    plugin._get_reply_mode = lambda: "both"
+    plugin.voice_reply_service = SimpleNamespace(
+        synthesize_reply_voice_file=AsyncMock(return_value=("file:///test.wav", "audio/wav")),
+    )
+    plugin.qq_client.send_group_record = AsyncMock(return_value="mid")
+    plan = QQDeliveryPlan(target_type="group", target_id=GROUP,
+                          blocks=[QQMessageBlock(text="正常语音内容", record="正常语音内容")])
+    assert asyncio.run(QQReplyDeliveryNode(plugin).deliver(plan)).delivered
+    plugin.qq_client.send_group_record.assert_awaited_once()
+
+
+def test_forward_checks_every_node_before_sending():
+    plugin = _DeliveryPlugin(_guard())
+    plugin.qq_client.send_group_forward_msg = AsyncMock(return_value="mid")
+    node = QQReplyDeliveryNode(plugin)
+    nodes = node.build_forward_nodes([
+        {"sender_id": "1", "text": "正常内容"},
+        {"sender_id": "2", "text": "你这个傻逼"},
+    ])
+    assert not asyncio.run(node.send_forward(target_type="group", target_id=GROUP, nodes=nodes))
+    plugin.qq_client.send_group_forward_msg.assert_not_called()
+
+
+@pytest.mark.parametrize("receipt", [None, False, "", {}])
+def test_text_without_a_receipt_is_not_delivered(receipt):
+    plugin = _DeliveryPlugin(_guard())
+    plugin.qq_client.send_group_message = AsyncMock(return_value=receipt)
+    plan = QQDeliveryPlan(target_type="group", target_id=GROUP)
+    assert not asyncio.run(QQReplyDeliveryNode(plugin)._send_text(plan, QQMessageBlock(), "正常内容"))
+
+
+@pytest.mark.parametrize("mode,text", [("text", ""), ("text", "正文"), ("voice", "正文")])
+@pytest.mark.parametrize("official", [False, True])
+def test_keyboard_labels_are_checked_before_sending(mode, text, official):
+    plugin = _DeliveryPlugin(_guard())
+    plugin._get_reply_mode = lambda: mode
+    plugin.qq_client.needs_attention = not official
+    plugin.qq_client.send_group_message_segments = AsyncMock(return_value="mid")
+    plugin._deliver_group_reply = AsyncMock(return_value=True)
+    plan = QQDeliveryPlan(target_type="group", target_id=GROUP,
+                          blocks=[QQMessageBlock(text=text, keyboard="滚|正常")])
+    assert not asyncio.run(QQReplyDeliveryNode(plugin).deliver(plan)).delivered
+    assert not plugin.qq_client.sent
+    plugin.qq_client.send_group_message_segments.assert_not_called()
+    plugin._deliver_group_reply.assert_not_called()
 
 
 class _EchoAttention:
