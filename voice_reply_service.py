@@ -45,6 +45,34 @@ try:
 except (ImportError, ModuleNotFoundError):
     read_legacy_voice_id = None
 
+# 角色卡把音色存成 {provider: "free", ref: "qingchunshaonv"}，本插件只取 ref，
+# 再拿它去 free_voices 目录比对；新版目录只剩 voice-tone-*，StepFun 原生预设
+# （如"青春少女" = qingchunshaonv）不在其中，会被误判成非免费音色而落到百炼
+# CosyVoice（那边没有这些音色，语音合成直接失败）。
+# 因此这里把 StepFun 原生预设也视作免费线路音色，由 lanlan.tech 中转合成。
+_STEPFUN_PRESET_VOICES = frozenset({
+    "elegantgentle-female",
+    "livelybreezy-female",
+    "qingchunshaonv",
+    "wenrounansheng",
+    "linjiameimei",
+    "cixingnansheng",
+})
+
+
+def _is_stepfun_preset_voice(voice_id) -> bool:
+    """voice_id 是否为 StepFun 原生预设音色（"青春少女"=qingchunshaonv 等）。"""
+    vid = str(voice_id or "").strip()
+    if not vid:
+        return False
+    try:
+        from utils.tts.providers.stepfun import is_stepfun_tts_voice
+        if is_stepfun_tts_voice(vid, "free"):
+            return True
+    except Exception:
+        pass
+    return vid.casefold() in _STEPFUN_PRESET_VOICES
+
 
 class QQVoiceReplyService:
     def __init__(self, plugin: Any):
@@ -258,7 +286,9 @@ class QQVoiceReplyService:
                     return audio_data, "audio/wav"
 
             free_voice_ids = set((get_free_voices() or {}).values())
-            if voice_id in free_voice_ids:
+            # StepFun 原生预设音色（如 "青春少女" = qingchunshaonv）不在 free_voices
+            # 目录里，但同样走免费线路；否则会误落百炼 CosyVoice。
+            if voice_id in free_voice_ids or _is_stepfun_preset_voice(voice_id):
                 tts_url = _adjust_free_tts_url("wss://www.lanlan.tech/tts")
                 headers = {"Authorization": f"Bearer {audio_api_key or ''}"}
                 lang_hint = None
