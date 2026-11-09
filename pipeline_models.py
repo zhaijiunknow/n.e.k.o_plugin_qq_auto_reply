@@ -261,6 +261,10 @@ class QQReplyContext:
     login_nickname: str | None
     # One explicit-request preflight per turn, shared with direct fallback.
     memory_preflight_status: str = ""
+    # One private-video preflight per turn; raw results stay out of human history.
+    video_preflight_status: str = ""
+    video_preflight_result: str = ""
+    video_preflight_token: str = ""
     memory_recall_failed: bool = False
     current_message_id: str = ""
     force_reply: bool = False

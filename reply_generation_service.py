@@ -26,6 +26,7 @@ from .plugin_tool_turn_guard import (
 )
 from .session_bootstrap_service import MAX_TOOL_ITERATIONS
 from .topic_source_service import capture_topic_sources, topic_source_prompt
+from .video_preflight import ensure_private_video_analysis, video_preflight_instruction
 
 #: 表情包收集工具名。与 ``sticker_lab_service.build_save_definition`` 里的一致。
 STICKER_SAVE_TOOL_NAME = "save_sticker"
@@ -81,12 +82,14 @@ class QQReplyGenerationService:
             )
             try:
                 set_call_type("conversation")
+                await ensure_private_video_analysis(self.plugin, context)
                 await self._ensure_explicit_memory_recall(context)
                 fb_prompt, fb_recalled = self._sanitize_for_live_consent(
                     context, context.system_prompt, context.recalled_memory_text,
                 )
                 fb_prompt += preflight_instruction(getattr(context, "memory_preflight_status", ""), has_memory=bool(fb_recalled))
                 fb_prompt += topic_source_prompt(self.plugin, context)
+                fb_prompt += video_preflight_instruction(self.plugin, context)
                 # 与主会话路径对偶：清洗只保证"调用发起时"的授权，调用期间
                 # 撤销的话返回文本里仍带着那些内容。
                 consent_before = self._consent_dependency_snapshot(context)
@@ -388,10 +391,12 @@ class QQReplyGenerationService:
             # 生成前最后一道复检（集中在一处，读点/构建后/锁内三段窗口
             # 共用同一判据）：共享会话锁与附件排队可能让本轮等很久，其间
             # 任一授权被撤销，已注入 prompt 的对应段都不得用于生成。
+            await ensure_private_video_analysis(self.plugin, context)
             await self._ensure_explicit_memory_recall(context)
             turn_system_prompt, turn_recalled_text = self._sanitize_for_live_consent(
                 context, context.system_prompt, context.recalled_memory_text,
             )
+            turn_system_prompt += video_preflight_instruction(self.plugin, context)
             # 生成前的依赖快照：模型已经读到 scoped/跨群内容后，撤销才落
             # 下的话，回复本身仍带着那些内容——生成结束要再比一次。
             consent_before = self._consent_dependency_snapshot(context)
@@ -435,6 +440,7 @@ class QQReplyGenerationService:
                 always_refresh=(
                     bool(topic_prompt)
                     or bool(getattr(context, "memory_preflight_status", ""))
+                    or bool(getattr(context, "video_preflight_status", ""))
                     or context.is_group
                     or bool(getattr(context, "companion_section", ""))
                     or bool(getattr(context, "cross_session_section", ""))
@@ -463,6 +469,11 @@ class QQReplyGenerationService:
                 return None
 
             try:
+                video_token = getattr(context, "video_preflight_token", "")
+                if video_token and not consent_enabled(self.plugin, video_token):
+                    # Tool mounting awaited after the prompt snapshot; fail closed before the model reads it.
+                    video_preflight_instruction(self.plugin, context)
+                    return ""
                 if armed_bridge_tools:
                     # Tool policy belongs to this turn's system instructions, never
                     # the human row that is later exported to persistent memory.
@@ -883,6 +894,9 @@ class QQReplyGenerationService:
             emit_bridge_log(self.plugin, 
                 "INFO", f"[PluginTool] 本次未挂载: {'、'.join(skipped)}（未启动 / 档位不符）",
             )
+        if getattr(context, "video_preflight_status", ""):
+            # Preflight owns this turn's one-video budget, including failure/fallback.
+            mounted = [(row, tier) for row, tier in mounted if row["plugin_id"] != "video_reader"]
         return mounted, [
             QQPluginToolService.build_tool_definition(self.plugin.plugin_tool_service, row, tier)
             for row, tier in mounted
@@ -1297,6 +1311,9 @@ class QQReplyGenerationService:
         depends on the switch too."""
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         snapshot: dict = {}
+        video_token = getattr(context, "video_preflight_token", "")
+        if video_token and getattr(context, "video_preflight_status", "") == "complete":
+            snapshot[video_token] = True
         private_token = getattr(context, "group_private_memory_token", "")
         if private_token and getattr(context, "used_group_private_memory", False):
             snapshot[private_token] = True
