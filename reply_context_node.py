@@ -7,6 +7,10 @@ from utils.config_manager import get_config_manager
 from .emotion_service import build_emotion_section
 from .group_identity import build_group_identity_section, speaker_permission
 from .group_private_memory import capture_private_memory_token, private_memory_token_live
+from .owner_private_context import (
+    capture_owner_private_token,
+    owner_private_token_live,
+)
 from .pipeline_models import QQPipelineStageTrace, QQReplyContext, is_synthetic_source
 
 if TYPE_CHECKING:
@@ -110,6 +114,31 @@ class QQReplyContextNode:
         self.plugin.logger.info("跨群上下文已在生成前撤除（授权已关闭）")
         return system_prompt, False
 
+    def _strip_owner_private_sections(
+        self, system_prompt: str, *sections: str,
+    ) -> str:
+        """Drop the owner-private disclosure sections (each one, if composed).
+
+        Called after the login/bootstrap/recall awaits: the section is composed
+        before them, so an opt-out that lands meanwhile must remove the text
+        instead of shipping it inside a prompt built a moment earlier.
+        """
+        separator = "\n\n"
+        stripped_any = False
+        for section_text in sections:
+            if not section_text or section_text not in system_prompt:
+                continue
+            for candidate in (
+                separator + section_text, section_text + separator, section_text,
+            ):
+                if candidate in system_prompt:
+                    system_prompt = system_prompt.replace(candidate, "", 1)
+                    stripped_any = True
+                    break
+        if stripped_any:
+            self.plugin.logger.info("主人私聊 → 群 的记忆段已在生成前撤除（授权已关闭）")
+        return system_prompt
+
     async def build(
         self,
         *,
@@ -176,6 +205,14 @@ class QQReplyContextNode:
             permission_at_receipt=group_speaker_permission_level_at_receipt,
             member_at_receipt=member_memory_snapshot,
             participant_at_receipt=bool(participant_memory_at_receipt),
+            synthetic=is_synthetic_source(source_kind),
+        ) if is_group else ""
+        # 主人私聊 → 群 的只读能力：和上面那条私聊记忆 token 各自独立
+        # （那条跟群记忆开关绑定，这条由两个跨域披露开关决定）。同样在任何
+        # await 之前铸造，名字里只有真实发言人。
+        owner_private_token = capture_owner_private_token(
+            self.plugin, sender_id=sender_id,
+            permission_at_receipt=group_speaker_permission_level_at_receipt,
             synthetic=is_synthetic_source(source_kind),
         ) if is_group else ""
         receipt_permission = (
@@ -384,6 +421,7 @@ class QQReplyContextNode:
             use_memory_context=should_use_memory_context,
             participant_memory=participant_memory_snapshot,
             group_private_memory_token=group_private_memory_token,
+            owner_private_token=owner_private_token,
             address_user_by_name=address_user_by_name,
             group_facing=effective_group_facing,
             shared_group_session=shared_group_session,
@@ -496,6 +534,30 @@ class QQReplyContextNode:
             system_prompt,
             getattr(instruction_bundle, "cross_session_section", ""),
         )
+        # 主人私聊 → 群 的两段：token 复检同时覆盖"开关关掉了"与"发言人不再
+        # 是主人"两件事（token 每次都重新查名册）。两段各撤各的，但撤的时候
+        # 一起判——token 失效就意味着这条路径整条不再授权。
+        owner_private_section = getattr(instruction_bundle, "owner_private_section", "")
+        owner_longterm_section = getattr(instruction_bundle, "owner_longterm_section", "")
+        if not owner_private_token_live(self.plugin, owner_private_token):
+            system_prompt = self._strip_owner_private_sections(
+                system_prompt, owner_private_section, owner_longterm_section,
+            )
+            owner_private_section = ""
+            owner_longterm_section = ""
+        else:
+            # 开关可能只关了一个：按各自的键分别撤。
+            settings_now = getattr(self.plugin, "_qq_settings", {}) or {}
+            if not settings_now.get("cross_domain_owner_memory", False):
+                system_prompt = self._strip_owner_private_sections(
+                    system_prompt, owner_private_section, "",
+                )
+                owner_private_section = ""
+            if not settings_now.get("cross_domain_owner_longterm_memory", False):
+                system_prompt = self._strip_owner_private_sections(
+                    system_prompt, "", owner_longterm_section,
+                )
+                owner_longterm_section = ""
         deepchat = getattr(self.plugin, "deepchat_service", None)
         if deepchat is not None and not is_synthetic_source(source_kind):
             try:
@@ -592,5 +654,8 @@ class QQReplyContextNode:
                 core_memory_alive
                 and getattr(instruction_bundle, "used_member_subject", False)
             ),
+            owner_private_token=owner_private_token,
+            owner_private_section=owner_private_section,
+            owner_longterm_section=owner_longterm_section,
             traces=traces,
         )

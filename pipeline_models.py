@@ -226,6 +226,10 @@ class QQInstructionBundle:
     cross_session_section: str = ""
     # core memory 是否消费了只读的私聊背景（须另行复检发言人权限）。
     used_group_private_memory: bool = False
+    # 主人私聊 → 群 的两段原文（仅主人本人在群里发言时可能非空）。两个
+    # 开关各自成段、各自可撤：只关掉长期记忆不该连最近聊到的几句一起丢。
+    owner_private_section: str = ""
+    owner_longterm_section: str = ""
     # core memory 段是否含群成员域：member 撤权时整段撤除。
     used_member_subject: bool = False
 
@@ -288,6 +292,11 @@ class QQReplyContext:
     cross_session_section: str = ""
     # 核心记忆或工具结果已消费私聊背景：生成与投递均复检 token。
     used_group_private_memory: bool = False
+    # 主人私聊 → 群 的只读令牌（名字里只有真实发言人；权限与开关每次复检）。
+    owner_private_token: str = ""
+    # 上面两段的原文（与 bundle 同源）：撤销时按原文从 prompt 摘除。
+    owner_private_section: str = ""
+    owner_longterm_section: str = ""
     # core memory 段是否含群成员域：member 撤权时连同混合域召回撤除。
     used_member_subject: bool = False
     # 本轮上下文的唯一标识：投递钩子的幂等键。绝不能用 id(context)——

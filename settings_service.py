@@ -1172,6 +1172,11 @@ class QQSettingsService:
         private_buffer_enabled = kwargs.get("private_buffer_enabled")
         if private_buffer_enabled is not None:
             self.plugin._qq_settings["private_buffer_enabled"] = bool(private_buffer_enabled)
+        gallery_dir = kwargs.get("gallery_dir")
+        gallery_dir_before = self.plugin._qq_settings.get("gallery_dir", "")
+        if gallery_dir is not None:
+            # 必须在落盘之前归一：写盘序列化的就是此刻的 _qq_settings。
+            self._apply_gallery_dir(gallery_dir)
         group_memory_before = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
@@ -1225,6 +1230,11 @@ class QQSettingsService:
             "group_member_memory_enabled",
             "private_participant_memory_enabled",
             "allow_cross_group_context",
+            # 主人私聊跨域披露的两个开关同属授权族：写盘失败时运行时的"开"
+            # 是一个从未落盘的授权，而已经说出去的话收不回来。关掉照旧立刻
+            # 生效——多关一会儿只是保守。
+            "cross_domain_owner_memory",
+            "cross_domain_owner_longterm_memory",
             # 取证开关同属采集授权：打开后每条消息都会把发送者 ID 落进
             # **持久**日志文件，而写盘失败的授权是从未成立的授权——落下的
             # 行不会跟着回滚。关掉照旧立刻生效（多关一会儿只是保守）。
@@ -1375,8 +1385,18 @@ class QQSettingsService:
                     self.plugin._qq_settings.pop(key, None)
                 else:
                     self.plugin._qq_settings[key] = value
+            # 目录没落盘：运行时也必须回到旧目录，否则这一进程里图库读到的是
+            # 一个磁盘上并不存在的配置。
+            if gallery_dir is not None:
+                self.plugin._qq_settings["gallery_dir"] = gallery_dir_before
         if success:
             self.plugin._emit_log("INFO", "设置已保存到磁盘" + (" (需重启自动回复以应用新连接)" if self.plugin._running else ""))
+        if success and gallery_dir is not None:
+            # 目录换了要让图库在下次访问时重载索引（store 每次读路径是动态的，
+            # 缓存的 _items 不是）。失败的保存不触发——那次的目录没生效。
+            service = getattr(self.plugin, "gallery_service", None)
+            if service is not None:
+                service.note_root_changed()
         if self.plugin.qq_client:
             self.plugin.qq_client.onebot_url = self.plugin._qq_settings.get("onebot_url", self.plugin.qq_client.onebot_url)
             self.plugin.qq_client.token = self.plugin._qq_settings.get("token", self.plugin.qq_client.token)
@@ -1386,6 +1406,26 @@ class QQSettingsService:
             "persisted": success,
             "reconnect_required": bool(self.plugin._running),
         }
+
+    def _apply_gallery_dir(self, raw: Any) -> None:
+        """Normalize the image inventory directory; refuse relative paths.
+
+        A relative path resolves against the host's working directory, so the
+        same value would point somewhere else after a restart — scattering the
+        library instead of moving it. Existing files are **not** moved: the old
+        inventory stays where it is, so a mistyped path is recoverable by
+        clearing the field again.
+        """
+        from pathlib import Path
+
+        text = str(raw or "").strip().strip('"').strip("'")
+        if not text:
+            self.plugin._qq_settings["gallery_dir"] = ""
+            return
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            raise ValueError("图库目录必须是绝对路径")
+        self.plugin._qq_settings["gallery_dir"] = str(path)
 
     def _apply_plain_settings(self, kwargs: dict[str, Any]) -> None:
         """写回 ``settings_schema`` 里没标 handler 的键：按 kind 归一 + 钳制。

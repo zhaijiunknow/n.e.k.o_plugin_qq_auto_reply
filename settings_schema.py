@@ -646,6 +646,42 @@ MISC = (
     # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
     SettingSpec("allow_cross_group_context", "bool", False, saveable=True,
                 description="save：允许跨群实时话题上下文", handler="consent_opt_in"),
+    # ── 主人私聊 → 群（跨域披露，两个独立开关）──
+    # 与上面几个采集授权键不同，这里不采集任何东西：它只把主人**私聊**里
+    # 已有的内容读进群聊轮的提示词。但仍按 consent 处理，因为写盘失败时
+    # 运行时的"开"是一个从未落盘的授权，回滚只能收回本地状态、收不回已经
+    # 说出去的回复。两个开关各自成段、各自可撤：只想带"最近说过什么"、
+    # 不想带旧事的用户可以只开前一个。
+    SettingSpec("cross_domain_owner_memory", "bool", False, saveable=True,
+                description="save：群里带上主人私聊的最近几句（仅主人本人在群里发言时）",
+                handler="consent_opt_in",
+                ui=UIInput("cfg-cross-owner-memory", kind="checkbox",
+                           label="ui.memory.cross_owner_private")),
+    SettingSpec("cross_domain_owner_context_rounds", "int", 8, saveable=True,
+                floor=2, ceiling=40,
+                description="save：带上多少条私聊消息（双向合计）",
+                ui=UIInput("cfg-cross-owner-rounds", kind="number", min=2, max=40, step=1,
+                           label="ui.memory.cross_owner_rounds")),
+    SettingSpec("cross_domain_owner_longterm_memory", "bool", False, saveable=True,
+                description="save：群里带上主人私聊的长期记忆（仅主人本人在群里发言时）",
+                handler="consent_opt_in",
+                ui=UIInput("cfg-cross-owner-longterm", kind="checkbox",
+                           label="ui.memory.cross_owner_longterm")),
+    SettingSpec("cross_domain_owner_longterm_max_chars", "int", 1200, saveable=True,
+                floor=200, ceiling=4000,
+                description="save：长期记忆段的最大字符数（按行截断）",
+                ui=UIInput("cfg-cross-owner-longterm-chars", kind="number",
+                           min=200, max=4000, step=100,
+                           label="ui.memory.cross_owner_longterm_chars")),
+    # ── 存储 ──
+    # 图库与表情包共用一份清单（sticker.json + sticker/），一起搬到用户指定
+    # 的目录。默认空串 = 留在数据目录下，行为与旧版完全一致。只认绝对路径：
+    # 相对路径会随宿主工作目录漂移，图就散在谁也找不到的地方。
+    SettingSpec("gallery_dir", "str", "", saveable=True,
+                description="save：图库与表情包的存储目录（绝对路径；空=数据目录）",
+                handler="gallery_dir",
+                ui=UIInput("cfg-gallery-dir", kind="text",
+                           label="ui.memory.gallery_dir")),
     # ── 提示词覆盖 ──
     # 提示词编辑器覆盖值（locale → layer_id → text）
     SettingSpec("prompt_overrides", "dict", {},

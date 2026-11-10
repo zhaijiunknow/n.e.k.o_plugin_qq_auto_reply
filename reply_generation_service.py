@@ -12,6 +12,7 @@ from .companion_context_service import consent_enabled
 from .gallery_service import AVATAR_TOOL_NAME, BROWSE_TOOL_NAME
 from .memory_recall_preflight import explicit_memory_query, memory_promise_only_reply, preflight_instruction
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS, RECALL_TOOL_NAME
+from .owner_private_context import owner_private_token_live
 from .pipeline_models import (
     QQModelResult,
     QQPipelineStageTrace,
@@ -1300,6 +1301,16 @@ class QQReplyGenerationService:
         private_token = getattr(context, "group_private_memory_token", "")
         if private_token and getattr(context, "used_group_private_memory", False):
             snapshot[private_token] = True
+        # 主人私聊 → 群 的两段：撤权/关开关都会让回复"引用过私聊"这件事
+        # 失去依据，所以两段各自记一笔它们所依赖的键。
+        if getattr(context, "owner_private_section", ""):
+            snapshot["cross_domain_owner_memory"] = bool(
+                settings.get("cross_domain_owner_memory", False)
+            )
+        if getattr(context, "owner_longterm_section", ""):
+            snapshot["cross_domain_owner_longterm_memory"] = bool(
+                settings.get("cross_domain_owner_longterm_memory", False)
+            )
         token = getattr(context, "companion_token", "")
         if token and getattr(context, "companion_section", ""):
             snapshot[token] = True
@@ -1417,6 +1428,21 @@ class QQReplyGenerationService:
             system_prompt = self._strip_section_text(
                 system_prompt, getattr(context, "cross_group_section", "") or "",
             )
+        # 主人私聊 → 群 的两段：生成前最后一次复检。token 失效（开关关了
+        # 或发言人不再是主人）时两段一起撤；只有单边开关关掉时各撤各的。
+        owner_section = getattr(context, "owner_private_section", "") or ""
+        owner_longterm = getattr(context, "owner_longterm_section", "") or ""
+        if owner_section or owner_longterm:
+            if not owner_private_token_live(
+                self.plugin, getattr(context, "owner_private_token", "") or "",
+            ):
+                system_prompt = self._strip_section_text(system_prompt, owner_section)
+                system_prompt = self._strip_section_text(system_prompt, owner_longterm)
+            else:
+                if not settings.get("cross_domain_owner_memory", False):
+                    system_prompt = self._strip_section_text(system_prompt, owner_section)
+                if not settings.get("cross_domain_owner_longterm_memory", False):
+                    system_prompt = self._strip_section_text(system_prompt, owner_longterm)
         return system_prompt, recalled_text
 
     @staticmethod

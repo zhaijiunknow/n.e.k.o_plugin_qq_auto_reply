@@ -81,8 +81,14 @@ class QQGalleryService:
 
     # ── 路径 ────────────────────────────────────────────────
 
+    def note_root_changed(self) -> None:
+        """Reload the index on the next start after ``gallery_dir`` changed."""
+        self._loaded = False
+
     def root_dir(self) -> Path:
-        return Path(self.plugin.data_path()) / "gallery"
+        # ``gallery_dir`` moves the whole image inventory (shared with the
+        # sticker store); the feed directory follows it.
+        return self.store.root / "gallery"
 
     def blobs_dir(self) -> Path:
         d = self.store.directory
