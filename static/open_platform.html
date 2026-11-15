@@ -102,12 +102,12 @@ body{display:flex;height:100vh;overflow:hidden}
     <img src="assets/paw.png?v=1" alt="" class="tb-paw" draggable="false" onerror="this.style.display='none'">
     <div id="topbar-tabs"></div>
     <div class="tb-spacer"></div>
-    <a class="tb-switch" id="btn-back-index" href="index.html" data-nav="index.html" style="text-decoration:none;margin-right:8px" data-i18n="ui.shared.topbar.back_index" title="返回接入方式选择">← 返回首页</a>
+    <a class="tb-switch" id="btn-back-index" href="index.html" data-nav="index.html" style="text-decoration:none;margin-right:8px" data-i18n="ui.shared.topbar.back_index" title="返回首页">← 返回首页</a>
     <span class="tb-status" style="margin-left:10px"><span class="dot" id="conn-dot" style="background:var(--danger)"></span><span id="conn-text" data-i18n="ui.shared.topbar.disconnected">未连接</span></span>
 </div>
 <div id="content">
 <!-- [stable-no-onebot-ui] 已接入 OneBot 的老用户：后端照跑，这里只提示一句（显示与否由 onebot-legacy.js 决定） -->
-<div id="onebot-legacy-note" role="status" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:var(--radius);background:var(--warning-tint);color:var(--warning-on-tint);font-size:12px;line-height:1.7"></div>
+<div id="onebot-legacy-note" role="status" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:var(--radius);background:var(--warning-tint);color:var(--warning-on-tint);font-size:12px;line-height:1.7"><span></span> <button type="button" class="btn btn-ghost btn-sm" id="btn-switch-openplat" style="margin-left:6px" onclick="doSwitchToOpenPlatform()">改用 QQ 开放平台</button></div>
 <div class="page active" id="page-status-overview">
     <div class="card"><div class="card-title" data-i18n="ui.shared.status.title">连接状态</div>
         <div style="display:flex;gap:20px;flex-wrap:wrap">
@@ -320,8 +320,10 @@ function syncGroupMemoryDeps(){var g=document.getElementById('cfg-group-memory')
 document.getElementById('cfg-group-memory').addEventListener('change',syncGroupMemoryDeps);
 /* [stable-no-onebot-ui] 已接入 OneBot 的老用户进这页时，不许把连接方式改成开放平台 —— 那会让
    下次启动连不上 QQ。keepOneBot 为真时：bootstrap / 保存 / 启动都不带 qq_connection_mode，
-   于是这里的启动、停止与通用设置照样对 OneBot 生效。要改用开放平台，走扫码绑定。 */
+   于是这里的启动、停止与通用设置照样对 OneBot 生效。要改用开放平台，走扫码绑定，
+   或点提示条上的「改用 QQ 开放平台」（doSwitchToOpenPlatform，先确认）。 */
 function modeArgs(){return state.keepOneBot?{}:{qq_connection_mode:MODE}}
+async function doSwitchToOpenPlatform(){let r=await OneBotLegacy.switchToOpenPlatform(call);if(r.message)toast(r.message,r.switched);await loadDashboard()}
 function applyDashboard(d){state.keepOneBot=OneBotLegacy.inUse(d);OneBotLegacy.renderNote(document.getElementById('onebot-legacy-note'),d,!0);let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];state.identityScope=d.identity_scope||{};applySettings(s);updateStatusBar();updateGuide();renderUsers();renderIdentityScope()}
 // 降级必须可见（设计文档 §2.15.4.3）：actor_scope 为 per_conversation 时才有
 // 「群内 ID 认领」这回事——napcat 下 ID 是真实 QQ 号，跨群本来就是同一个。

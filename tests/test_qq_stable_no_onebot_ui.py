@@ -49,7 +49,7 @@ def _visible(html: str) -> str:
     return re.sub(r"<(script|style)\b.*?</\1>", "", html, flags=re.S)
 
 
-# ── 1. 首页：只有开放平台两张卡 + 一句给老用户的话 ─────────────────────
+# ── 1. 首页：只有开放平台两张卡，居中 ─────────────────────────────────
 
 def test_index_has_no_onebot_or_legacy_entry():
     for target in ("napcat.html", "old.html"):
@@ -63,14 +63,33 @@ def test_index_still_reaches_both_open_platform_pages():
         assert f'data-nav="{target}"' in INDEX, f"首页通往 {target} 的入口不见了"
 
 
-def test_index_copy_does_not_offer_onebot_deployment():
-    note = re.search(r'<p[^>]*id="onebot-channel-note"[^>]*>(.*?)</p>', INDEX, re.S)
-    assert note, "首页给 OneBot 老用户的那句提示不见了"
-    assert "测试版" in note.group(1) and "继续" in note.group(1), "提示要说清两件事：界面在测试版、已接入的照常运行"
+def test_index_copy_does_not_mention_onebot_at_all():
+    """首页不提 OneBot（使用者 2026-11-15：那句"管理界面在测试版"省略）。
 
-    rest = _visible(INDEX.replace(note.group(0), ""))
-    for banned in ("NapCat", "SnowLuma", "OneBot", "一键部署", "自动下载"):
-        assert banned not in rest, f"首页（提示那句之外）还写着「{banned}」"
+    给老用户的提示只在接入页和控制台里、并且只在 OneBot 真的在用时才出现。
+    """
+    body = _visible(INDEX)
+    for banned in ("NapCat", "SnowLuma", "OneBot", "一键部署", "自动下载", "测试版", "接入方式"):
+        assert banned not in body, f"首页还写着「{banned}」"
+    assert "onebot-channel-note" not in INDEX
+
+
+def test_index_title_is_not_a_mode_picker_any_more():
+    """只剩一种接入方式，标题不能还叫「QQ 接入方式」；语言包里的值会盖掉页面上的字，要一起改。"""
+    assert re.search(r'<h1 data-i18n="ui\.index\.title">QQ 集成</h1>', INDEX)
+    for name, expected in (("zh-CN.json", "QQ 集成"), ("en.json", "QQ Integration")):
+        bundle = json.loads((PLUGIN / "i18n" / name).read_text(encoding="utf-8"))
+        assert bundle["ui.index.title"] == expected, f"{name} 的首页标题还是旧的"
+
+
+def test_index_cards_are_laid_out_as_two_centered_columns():
+    """layout.css 给首页排三列，两张卡会靠左空出一列 —— 首页自己改成两列并居中。"""
+    style = re.sub(r"/\*.*?\*/", "", "\n".join(re.findall(r"<style>(.*?)</style>", INDEX, re.S)), flags=re.S)
+    rule = re.search(r"body\.home-layout \.wrap\s*\{([^}]*)\}", style)
+    assert rule, "首页没有覆写 .wrap 的列数"
+    declarations = rule.group(1).replace(" ", "")
+    assert "grid-template-columns:repeat(2," in declarations and "justify-content:center" in declarations
+    assert len(re.findall(r'<a class="card"', INDEX)) == 2, "卡片数和两列的排法对不上了"
 
 
 # ── 2. 开放平台控制台：没有回 OneBot 的入口 ───────────────────────────
@@ -133,6 +152,21 @@ def test_status_title_never_says_one_click_deploy():
     )
 
 
+def test_trust_list_and_sticker_upload_wait_for_the_open_platform_connection():
+    """信任名单与表情包上传：扫完码、开放平台连上之后才显示。
+
+    脚本原有的判据还认"OneBot 部署完成"，于是已接入 OneBot 的老用户一打开这页就看到这两张卡。
+    """
+    style = re.sub(r"/\*.*?\*/", "", _STYLE, flags=re.S).replace(" ", "")
+    for card in ("#trust-list-card", "#sticker-upload-card"):
+        assert f'#sec-openplat:not([data-connected="true"])~{card}' in style, f"{card} 没有挂在「已连上」这个标记上"
+    assert ("document.getElementById('sec-openplat').dataset.connected = "
+            "String(!OneBotLegacy.isOneBotMode(d) && deploymentReady(d));") in STATUS
+    # 兄弟选择器要成立：两张卡必须排在 #sec-openplat 之后、且是同一层。
+    order = [STATUS.index(marker) for marker in ('<div id="sec-openplat"', 'id="trust-list-card"', 'id="sticker-upload-card"')]
+    assert order == sorted(order)
+
+
 @pytest.mark.parametrize("page", ["status.html", "open_platform.html"])
 def test_pages_load_what_the_legacy_handling_needs(page):
     html = (STATIC / page).read_text(encoding="utf-8")
@@ -144,8 +178,7 @@ def test_pages_load_what_the_legacy_handling_needs(page):
 
 def test_new_copy_exists_in_both_bundles():
     keys = set(re.findall(r"'(ui\.stable\.[a-z_]+)'", LEGACY_JS))
-    keys |= {"ui.index.bind.title", "ui.index.bind.desc1", "ui.index.bind.desc2", "ui.index.onebot_note",
-             "ui.status.flow_title"}
+    keys |= {"ui.index.bind.title", "ui.index.bind.desc1", "ui.index.bind.desc2", "ui.status.flow_title"}
     assert len(keys) >= 10, "没从 onebot-legacy.js 里认出文案键 —— 正则跟文件对不上了"
     for name in ("zh-CN.json", "en.json"):
         bundle = json.loads((PLUGIN / "i18n" / name).read_text(encoding="utf-8"))
@@ -317,6 +350,97 @@ def test_the_real_apply_dashboard_refreshes_the_legacy_state_first():
     assert "state.keepOneBot=OneBotLegacy.inUse(d)" in head
     assert "OneBotLegacy.renderNote(document.getElementById('onebot-legacy-note'),d,!0)" in head
     assert 'id="onebot-legacy-note"' in OPENPLAT and 'id="onebot-legacy-note"' in STATUS
+
+
+def test_an_onebot_user_can_still_switch_to_the_open_platform_on_purpose():
+    """老用户必须有一条**不扫码**也能改用开放平台的路。
+
+    真机反馈（2026-11-15 23:06）：在控制台填了 AppID / 密钥、点保存、点启动，连上的还是
+    OneBot —— 「不被悄悄改掉」做到了，「想改却改不了」也一起发生了。提示条上的按钮就是这条路：
+    先确认，再关后端、切连接方式；原来在跑就按开放平台重新拉起来，拉不起来要如实说。
+    """
+    _node(r"""
+const assert = require('node:assert/strict');
+let answer, calls, dashboard, behaviour;
+globalThis.UIConfirm = {ask: async () => answer};
+async function call(entry, args) {
+  calls.push(entry + ':' + args.action + (args.mode ? '=' + args.mode : '') + (args.backend ? '=' + args.backend : ''));
+  if (args.action === 'dashboard') return dashboard;
+  if (behaviour[args.action] instanceof Error) throw behaviour[args.action];
+  return behaviour[args.action] || {};
+}
+const RUNNING = {settings:{qq_connection_mode:'napcat', onebot_backend:'snowluma'}, runtime:{auto_reply_running:true}};
+const IDLE = {settings:{qq_connection_mode:'napcat'}, runtime:{deployment_complete:true}};
+function reset(d, yes, b) { dashboard = d; answer = yes; calls = []; behaviour = b || {}; }
+(async () => {
+  // 取消：什么都不发。
+  reset(RUNNING, false);
+  let r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.deepEqual([r.switched, r.message, calls], [false, '', []]);
+
+  // 在跑 + 凭据可用：关后端 → 切连接方式（服务端顺手重连成功）。
+  reset(RUNNING, true, {set_mode: {status:'reconnected', restarted:true}});
+  r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.deepEqual(calls, ['query:dashboard', 'runtime:backend_stop=snowluma', 'runtime:set_mode=open_platform']);
+  assert.equal(r.switched, true);
+  assert.match(r.message, /重新启动/);
+
+  // 后端不归插件管（手动 / 远程启动）：backend_stop 报错不拦切换。
+  reset(RUNNING, true, {backend_stop: Error('NOT_MANAGED'), set_mode: {restarted:true}});
+  r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.equal(r.switched, true);
+  assert.ok(calls.includes('runtime:set_mode=open_platform'));
+
+  // 在跑 + 没填凭据：重连失败，再试一次启动也失败 —— 连接方式已经切了，但要说清没启动。
+  reset(RUNNING, true, {set_mode: {status:'reconnect_failed', restarted:false}, start: Error('no credentials')});
+  r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.deepEqual(calls.slice(-2), ['runtime:set_mode=open_platform', 'runtime:start']);
+  assert.equal(r.switched, true);
+  assert.match(r.message, /没有启动/);
+
+  // 没在跑：只切连接方式，不顺手把自动回复拉起来。
+  reset(IDLE, true, {set_mode: {status:'saved', restarted:false}});
+  r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.deepEqual(calls, ['query:dashboard', 'runtime:backend_stop=napcat', 'runtime:set_mode=open_platform']);
+  assert.equal(r.message, OneBotLegacy.text('manual_switch_done'));
+
+  // 切换本身失败：如实报，不说成功。
+  reset(RUNNING, true, {set_mode: Error('DEPLOY_BUSY')});
+  r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.equal(r.switched, false);
+  assert.match(r.message, /切换失败.*DEPLOY_BUSY/);
+
+  // 没有确认框可用（脚本没加载）：宁可不动。
+  delete globalThis.UIConfirm;
+  reset(RUNNING, true);
+  r = await OneBotLegacy.switchToOpenPlatform(call);
+  assert.deepEqual([r.switched, calls], [false, []]);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+
+def test_refreshing_the_note_keeps_its_switch_button():
+    """面板每 5 秒刷新一次提示条：文案只能写进第一个子元素，不能把按钮一起抹掉。"""
+    _node(r"""
+const assert = require('node:assert/strict');
+const label = {textContent:''}, button = {textContent:'x'};
+const note = {style:{}, textContent:'KEEP', firstElementChild: label, querySelector: sel => sel === 'button' ? button : null};
+const DEPLOYED = {settings:{qq_connection_mode:'napcat'}, runtime:{deployment_complete:true}};
+OneBotLegacy.renderNote(note, DEPLOYED, true);
+assert.equal(note.textContent, 'KEEP');
+assert.match(label.textContent, /测试版/);
+assert.equal(button.textContent, OneBotLegacy.text('manual_switch'));
+""")
+    for name, html in (("status.html", STATUS), ("open_platform.html", OPENPLAT)):
+        note = re.search(r'<div id="onebot-legacy-note"[^>]*>(.*?)</div>', html, re.S)
+        assert note, f"{name} 没有提示条"
+        assert re.match(r'\s*<span></span>\s*<button[^>]*id="btn-switch-openplat"', note.group(1)), (
+            f"{name} 的提示条应当是「文案 span + 改用开放平台按钮」"
+        )
+    assert "getElementById('btn-switch-openplat').addEventListener('click'" in STATUS
+    assert "OneBotLegacy.switchToOpenPlatform(call)" in STATUS
+    assert 'onclick="doSwitchToOpenPlatform()"' in OPENPLAT
+    assert "OneBotLegacy.switchToOpenPlatform(call)" in _one_line_function(OPENPLAT, "doSwitchToOpenPlatform")
 
 
 # ── 6. 后端能力不动：OneBot 的入口还在 ────────────────────────────────

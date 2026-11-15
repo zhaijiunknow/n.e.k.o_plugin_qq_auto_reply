@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title data-i18n="ui.index.title">QQ 接入方式</title>
+<title data-i18n="ui.index.title">QQ 集成</title>
 <link rel="stylesheet" href="theme.css?v=6">
 <style>
 /* 首页不要底图，纯白即可（使用者拍板）。用与 status.html 同样的做法：在**本页**
@@ -31,13 +31,18 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
 /* 猫娘标记：直接用本体的 logo 图（来源见 static/assets/README.md），不再手画 SVG。
    装饰性元素、不带文案，所以不需要 i18n 键。 */
 .mascot { display:block; margin:0 auto 12px; width:72px; height:72px; object-fit:contain; }
+/* [stable-no-onebot-ui] 稳定版只有两张卡：layout.css 给首页排的是三列，两张卡会靠左空出一列。
+   改成两列并整体居中；窄屏的单列规则在 layout.css 里，这里只管宽屏，不去盖它。 */
+@media (min-width:851px) {
+  body.home-layout .wrap { grid-template-columns:repeat(2, minmax(0, 280px)); justify-content:center; }
+}
 </style>
 <link rel="stylesheet" href="layout.css?v=2">
 </head>
 <body class="home-layout">
 <div style="max-width:900px;width:100%;padding:0 16px;">
     <img class="mascot" src="assets/neko-logo.png?v=1" alt="" aria-hidden="true" draggable="false" onerror="this.style.display='none'">
-    <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
+    <h1 data-i18n="ui.index.title">QQ 集成</h1>
     <p class="sub" data-i18n="ui.index.subtitle">首次使用从扫码绑定开始；已绑定机器人可直接进入控制台。</p>
     <div class="wrap">
         <!-- [stable-no-onebot-ui] 稳定版首页只有开放平台这两张卡。
@@ -66,8 +71,6 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
         </a>
 
     </div>
-    <!-- [stable-no-onebot-ui] 给已接入 OneBot 的老用户的一句话：后端照跑，管理界面在测试版。 -->
-    <p class="sub" id="onebot-channel-note" style="margin:24px 0 0" data-i18n="ui.index.onebot_note">OneBot（NapCat / SnowLuma）的管理界面在测试版中提供；已接入的 OneBot 连接在本版本会继续按原配置运行。</p>
 </div>
 <script src="i18n.js?v=3"></script>
 <script src="nav.js?v=1"></script>
