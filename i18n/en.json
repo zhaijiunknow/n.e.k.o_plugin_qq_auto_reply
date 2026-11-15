@@ -735,7 +735,6 @@
   "ui.status.disconnected": "Disconnected",
   "ui.status.error": "Error",
   "ui.status.flow_napcat": "Flow: enter the bot QQ number → deploy and write the config → scan with that account to log in → auto-reply.<b>Remember to set your own QQ number as admin in the trust list below</b> — only an admin counts as the owner; everyone else is just a friend.",
-  "ui.status.flow_openplat": "Flow: scan to bind → credentials are written and auto-reply starts; <b>whoever scans becomes the admin automatically</b>. Other people's group openids do not match QQ numbers — merge their identity manually to treat them as the same person.",
   "ui.status.groups": "Trusted Groups",
   "ui.status.loading": "Loading",
   "ui.status.napcat_pid": "NapCat PID",
@@ -803,5 +802,8 @@
   "ui.stable.switch_confirm": "OneBot (NapCat / SnowLuma) is currently in use. Once binding completes, the plugin switches to the QQ Open Platform and stops the OneBot connection. Continue?",
   "ui.stable.switch_ok": "Continue",
   "ui.stable.switch_cancelled": "Cancelled. The OneBot connection is unchanged.",
-  "ui.stable.state_unknown": "Could not read the current connection state. Refresh and try again."
+  "ui.stable.state_unknown": "Could not read the current connection state. Refresh and try again.",
+  "ui.status.flow_openplat.lead": "Flow: scan to bind → credentials are written and auto-reply starts; ",
+  "ui.status.flow_openplat.admin": "whoever scans becomes the admin automatically",
+  "ui.status.flow_openplat.tail": ". Other people's group openids do not match QQ numbers — merge their identity manually to treat them as the same person."
 }

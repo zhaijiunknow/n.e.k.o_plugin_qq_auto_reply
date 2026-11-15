@@ -160,6 +160,33 @@ def test_the_unknown_attribute_scanner_works():
     ]
 
 
+def test_no_bundle_value_written_through_data_i18n_carries_markup():
+    """`i18n.js` 用 `textContent` 写文案：语言包的值里带标签会被**原样印成尖括号**。
+
+    真机上就是这么露出来的（2026-11-15）：接入页的流程提示里出现了
+    `<b>扫码的人会自动成为管理员</b>` 这串字 —— 页面上的回落文本带 `<b>` 能正常加粗，
+    语言包一加载就被换成了纯文本。要加粗的部分得是页面上一个单独的元素，语言包只放纯文字。
+    """
+    used: set[str] = set()
+    for path in STATIC.glob("*.html"):
+        used |= set(re.findall(r'data-i18n="([^"]+)"', path.read_text(encoding="utf-8")))
+    assert len(used) > 100, "没扫到 data-i18n 键，解析器失配了"
+    for loc, bundle in _bundles().items():
+        offenders = sorted(key for key in used if re.search(r"<[a-zA-Z/]", str(bundle.get(key, ""))))
+        assert not offenders, f"i18n/{loc}.json: 这些键会把标签印成文字: {offenders}"
+
+
+def test_the_open_platform_flow_hint_bolds_through_its_own_element():
+    status = (STATIC / "status.html").read_text(encoding="utf-8")
+    hint = re.search(r'<span id="mode-hint-openplat"([^>]*)>(.*?)</span></span>', status, re.S)
+    assert hint, "找不到开放平台的流程提示"
+    assert "data-i18n=" not in hint.group(1), "外层不能挂 data-i18n —— 会把里面的 <b> 整个抹成纯文本"
+    assert re.search(r'<b data-i18n="ui\.status\.flow_openplat\.admin">[^<]+</b>', hint.group(2))
+    for loc, bundle in _bundles().items():
+        for part in ("lead", "admin", "tail"):
+            assert bundle.get(f"ui.status.flow_openplat.{part}"), f"i18n/{loc}.json 缺 flow_openplat.{part}"
+
+
 def test_bundles_have_the_same_key_set():
     """两个语种的键集合必须一致 —— 少一个就是某个语种下静默缺文案。"""
     bundles = _bundles()
