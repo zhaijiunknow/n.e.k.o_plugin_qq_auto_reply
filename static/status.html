@@ -116,8 +116,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
    已接入 OneBot 的老用户打开这页时，这两张卡不该先冒出来。 */
 #sec-openplat:not([data-connected="true"]) ~ #trust-list-card,
 #sec-openplat:not([data-connected="true"]) ~ #sticker-upload-card { display:none !important; }
-/* 已接入 OneBot 的老用户看到的那句提示（显示与否由 onebot-legacy.js 决定）。 */
-#onebot-legacy-note { margin-top:12px; padding:10px 12px; border-radius:var(--radius-md); background:var(--warning-tint); color:var(--warning-on-tint); font-size:12px; line-height:1.7; }
 </style>
 <link rel="stylesheet" href="layout.css?v=2">
 </head>
@@ -168,8 +166,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
       <!-- 加粗的那半句单独一个元素：i18n.js 用 textContent 写文案，语言包里带 <b> 会被原样印出来。 -->
       <span id="mode-hint-openplat" style="display:none"><span data-i18n="ui.status.flow_openplat.lead">流程：扫码绑定 → 自动写入凭据并启动自动回复，</span><b data-i18n="ui.status.flow_openplat.admin">扫码的人会自动成为管理员</b><span data-i18n="ui.status.flow_openplat.tail">。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。</span></span>
     </div>
-    <!-- [stable-no-onebot-ui] 已接入 OneBot 的老用户：后端照跑，这里只提示一句 -->
-    <div id="onebot-legacy-note" role="status" style="display:none"><span></span> <button type="button" class="ghost" id="btn-switch-openplat" style="margin-left:6px;padding:4px 10px;font-size:12px">改用 QQ 开放平台</button></div>
   </div>
 
   <!-- NapCat / OneBot 那一套：部署 + 登录二维码。开放平台模式下整块隐藏 -->
@@ -294,7 +290,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 <script src="onebot-backend.js?v=4"></script>
 <script src="backend-controls.js?v=1"></script>
 <script src="ui-confirm.js?v=1"></script>
-<script src="onebot-legacy.js?v=1"></script>
+<script src="onebot-legacy.js?v=2"></script>
 <script src="ui-sse.js?v=3"></script>
 <script>
 const P = 'qq_auto_reply', RUNS = '/runs';
@@ -520,9 +516,9 @@ async function loadDashboardState() {
   const webui = document.getElementById('backend-webui');
   updateBackendConsoleLink(webui,st.onebot_backend||'napcat',(d.runtime||{}).backend_webui_url,false,call);
   const openplat = applyMode(st.qq_connection_mode || 'napcat');
-  /* [stable-no-onebot-ui] 已接入 OneBot 的老用户看到一句提示；自启卡只对他们用 OneBot 的说法
-     （全新安装的缺省连接方式也是 OneBot，但那不是他们选的，照开放平台的说法写）。 */
-  OneBotLegacy.renderNote(document.getElementById('onebot-legacy-note'), d);
+  /* [stable-no-onebot-ui] 自启卡只对已接入 OneBot 的老用户用 OneBot 的说法（全新安装的缺省
+     连接方式也是 OneBot，但那不是他们选的，照开放平台的说法写）。给老用户的提示不在这页：
+     它是首页的一次性弹窗（onebot-legacy.js 的 announceOnce）。 */
   const openplatCopy = openplat || !OneBotLegacy.inUse(d);
   const nativeLogin = backend.loginMethod === 'native_qq';
   renderSnowLumaSetup(document.getElementById('snowluma-setup'),nativeLogin);
@@ -616,15 +612,6 @@ async function startBind() {
 }
 
 document.getElementById('btn-bind').addEventListener('click', startBind);
-
-/* [stable-no-onebot-ui] 提示条上的「改用 QQ 开放平台」：不扫码也能切（手填 AppID / 密钥的人）。 */
-document.getElementById('btn-switch-openplat').addEventListener('click', async (e) => {
-  e.target.disabled = true;
-  const r = await OneBotLegacy.switchToOpenPlatform(call);
-  e.target.disabled = false;
-  if (r.message) { if (r.switched) { showErr(''); bindStatus(r.message); } else showErr(r.message); }
-  await load();
-});
 
 /* 自启开关。与缓冲开关同一写法：无论成败都重新 load()，失败时勾选会退回真实值。 */
 document.getElementById('autostart').addEventListener('change', async (e) => {

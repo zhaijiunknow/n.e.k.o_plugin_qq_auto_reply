@@ -797,7 +797,6 @@
   "ui.index.bind.desc2": "自动写入凭据并启动自动回复",
   "ui.status.flow_title": "接入流程",
   "ui.stable.onebot_note": "检测到已接入的 OneBot（NapCat / SnowLuma）：它会继续按原配置运行。本版本不提供 OneBot 的部署、连接配置与登录界面，需要时请安装测试版。",
-  "ui.stable.onebot_note_console": "这里的启动、停止与通用设置对它同样生效。",
   "ui.stable.switch_confirm": "当前正在使用 OneBot（NapCat / SnowLuma）。扫码绑定完成后会改用 QQ 开放平台，并停止 OneBot 连接。继续吗？",
   "ui.stable.switch_ok": "继续扫码",
   "ui.stable.switch_cancelled": "已取消，OneBot 连接保持不变",
@@ -806,10 +805,12 @@
   "ui.status.flow_openplat.admin": "扫码的人会自动成为管理员",
   "ui.status.flow_openplat.tail": "。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。",
   "ui.stable.manual_switch": "改用 QQ 开放平台",
-  "ui.stable.manual_switch_confirm": "当前正在使用 OneBot（NapCat / SnowLuma）。切换后会停止 OneBot 连接和插件拉起的后端进程，改用 QQ 开放平台；本版本的界面里没有切回 OneBot 的入口。继续吗？",
-  "ui.stable.manual_switch_ok": "切换",
   "ui.stable.manual_switch_done": "已改用 QQ 开放平台",
   "ui.stable.manual_switch_started": "，自动回复已按开放平台重新启动",
   "ui.stable.manual_switch_not_started": "，但自动回复没有启动：请先扫码绑定或填写 AppID 与密钥，再点启动",
-  "ui.stable.manual_switch_failed": "切换失败："
+  "ui.stable.manual_switch_failed": "切换失败：",
+  "ui.stable.popup_switch_hint": "开放平台控制台里的启动、停止与通用设置对它同样生效。\n\n也可以现在改用 QQ 开放平台：会停止 OneBot 连接和插件拉起的后端进程，且本版本的界面里没有切回 OneBot 的入口。",
+  "ui.stable.popup_keep": "继续使用 OneBot",
+  "ui.stable.popup_go_bind": "去扫码绑定",
+  "ui.stable.popup_close": "关闭"
 }

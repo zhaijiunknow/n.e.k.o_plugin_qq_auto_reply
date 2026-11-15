@@ -36,6 +36,10 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
 @media (min-width:851px) {
   body.home-layout .wrap { grid-template-columns:repeat(2, minmax(0, 280px)); justify-content:center; }
 }
+/* [stable-no-onebot-ui] 已接入 OneBot 的老用户弹窗（ui-confirm.js）。首页没有别的页那套按钮样式，
+   弹窗里的两个按钮在这里给。 */
+#ui-confirm-overlay .btn { padding:8px 16px; border-radius:var(--radius-md); border:1px solid var(--border); background:var(--card-bg); color:var(--text-primary); font-size:13px; cursor:pointer; }
+#ui-confirm-overlay .btn-primary { background:var(--primary); border-color:var(--primary); color:#fff; }
 </style>
 <link rel="stylesheet" href="layout.css?v=2">
 </head>
@@ -74,8 +78,16 @@ h1 { font-size:22px; color:var(--text-primary); text-align:center; margin-bottom
 </div>
 <script src="i18n.js?v=3"></script>
 <script src="nav.js?v=1"></script>
+<script src="ui-confirm.js?v=1"></script>
+<script src="onebot-legacy.js?v=2"></script>
 <script>
 function t(key,fallback){return window.I18n&&typeof window.I18n.t==='function'?window.I18n.t(key,fallback):(fallback||key)}
+/* [stable-no-onebot-ui] 插件每次启动后第一次打开首页：OneBot 在用就弹一次窗（说明 + 可选改用
+   开放平台）。等语言包就绪再弹，免得英文界面先出一版中文。 */
+(function () {
+    function announce() { OneBotLegacy.announceOnce(OneBotLegacy.run, window.localStorage, Nav.go); }
+    if (window.I18n && I18n._ready) { announce(); } else { window.addEventListener('i18n-ready', announce, { once: true }); }
+})();
 /* 卡片跳转由 nav.js 接管：每张卡片带 data-nav，点击时**追加此刻的时间戳**再跳。
    这些静态页的响应头是 public,max-age=3600（强缓存 1 小时），以前靠手写 ?v=N
    击穿 —— 那个数散落在三处、忘了改就看到旧页面。现在改成运行时生成，从 index 进

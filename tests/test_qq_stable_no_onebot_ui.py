@@ -12,8 +12,9 @@
 1. **OneBot 的入口不出现** —— 首页的 OneBot 卡与旧版控制中心、开放平台页侧栏的
    「OneBot 控制台」、接入页的连接方式按钮 / 后端选择 / 一键部署 / 登录二维码；
 2. **开放平台那一整套仍可达** —— 扫码绑定就在接入页上，藏过头会把它一起关在门外；
-3. **已接入 OneBot 的老用户不被悄悄改掉连接方式** —— 界面只提示一句，后端照跑；
-   要改用开放平台，由扫码绑定这个显式动作来切（先确认）。
+3. **已接入 OneBot 的老用户不被悄悄改掉连接方式** —— 后端照跑；插件每次启动后第一次打开
+   首页时弹一次窗说明情况，并可在弹窗里选择改用开放平台。会改连接方式的只有这个弹窗和
+   扫码绑定两个显式动作。
 
 两条刻意的边界：
 
@@ -167,7 +168,7 @@ def test_trust_list_and_sticker_upload_wait_for_the_open_platform_connection():
     assert order == sorted(order)
 
 
-@pytest.mark.parametrize("page", ["status.html", "open_platform.html"])
+@pytest.mark.parametrize("page", ["index.html", "status.html", "open_platform.html"])
 def test_pages_load_what_the_legacy_handling_needs(page):
     html = (STATIC / page).read_text(encoding="utf-8")
     for name in ("onebot-legacy.js", "ui-confirm.js"):
@@ -238,17 +239,6 @@ for (const [where, key] of [['runtime','deployment_complete'], ['runtime','onebo
     assert.equal(OneBotLegacy.inUse(d), false, key + ' as string');
   }
 }
-// 提示：在用才显示；控制台里多说一句。
-const el = {style:{}, textContent:''};
-OneBotLegacy.renderNote(el, FRESH);
-assert.equal(el.style.display, 'none');
-OneBotLegacy.renderNote(el, DEPLOYED);
-assert.equal(el.style.display, '');
-assert.match(el.textContent, /测试版/);
-const short = el.textContent;
-OneBotLegacy.renderNote(el, DEPLOYED, true);
-assert.ok(el.textContent.length > short.length && el.textContent.startsWith(short));
-OneBotLegacy.renderNote(null, DEPLOYED);   // 页面上没有这个元素时不该抛
 """)
 
 
@@ -344,103 +334,138 @@ const modes = () => calls.filter(c => 'qq_connection_mode' in c).map(c => c.entr
 
 
 def test_the_real_apply_dashboard_refreshes_the_legacy_state_first():
-    """上面那条用的是替身；真函数必须每次拿到面板数据都先重算 keepOneBot 并刷新提示。"""
+    """上面那条用的是替身；真函数必须每次拿到面板数据都先重算 keepOneBot。"""
     body = _one_line_function(OPENPLAT, "applyDashboard")
-    head = body[:body.index("let s=")]
-    assert "state.keepOneBot=OneBotLegacy.inUse(d)" in head
-    assert "OneBotLegacy.renderNote(document.getElementById('onebot-legacy-note'),d,!0)" in head
-    assert 'id="onebot-legacy-note"' in OPENPLAT and 'id="onebot-legacy-note"' in STATUS
+    assert "state.keepOneBot=OneBotLegacy.inUse(d)" in body[:body.index("let s=")]
 
 
-def test_an_onebot_user_can_still_switch_to_the_open_platform_on_purpose():
-    """老用户必须有一条**不扫码**也能改用开放平台的路。
+def test_the_notice_lives_only_in_the_index_popup():
+    """给老用户的提示是首页的一次性弹窗，接入页和控制台里不再有常驻提示条。"""
+    for name, html in (("status.html", STATUS), ("open_platform.html", OPENPLAT)):
+        for leftover in ("onebot-legacy-note", "btn-switch-openplat", "renderNote", "doSwitchToOpenPlatform"):
+            assert leftover not in html, f"{name} 里还留着提示条的 {leftover}"
+    assert "OneBotLegacy.announceOnce(OneBotLegacy.run, window.localStorage, Nav.go)" in INDEX
+    assert "'i18n-ready'" in INDEX, "弹窗要等语言包就绪再弹"
+    runtime = (PLUGIN / "runtime_service.py").read_text(encoding="utf-8")
+    assert "BOOT_ID = uuid.uuid4().hex" in runtime and '"boot_id": BOOT_ID' in runtime, (
+        "面板数据里没有 boot_id —— 弹窗分不清这次启动之后弹过没有"
+    )
 
-    真机反馈（2026-11-15 23:06）：在控制台填了 AppID / 密钥、点保存、点启动，连上的还是
-    OneBot —— 「不被悄悄改掉」做到了，「想改却改不了」也一起发生了。提示条上的按钮就是这条路：
-    先确认，再关后端、切连接方式；原来在跑就按开放平台重新拉起来，拉不起来要如实说。
-    """
-    _node(r"""
+
+_ANNOUNCE_HARNESS = r"""
 const assert = require('node:assert/strict');
-let answer, calls, dashboard, behaviour;
-globalThis.UIConfirm = {ask: async () => answer};
+let answers, asked, calls, dashboard, behaviour, went;
+globalThis.UIConfirm = {ask: async (message, opts) => { asked.push({message, opts}); return answers.shift(); }};
+const store = new Map();
+const storage = {getItem: k => store.has(k) ? store.get(k) : null, setItem: (k, v) => store.set(k, String(v))};
 async function call(entry, args) {
   calls.push(entry + ':' + args.action + (args.mode ? '=' + args.mode : '') + (args.backend ? '=' + args.backend : ''));
-  if (args.action === 'dashboard') return dashboard;
+  if (args.action === 'dashboard') { if (behaviour.dashboard instanceof Error) throw behaviour.dashboard; return dashboard; }
   if (behaviour[args.action] instanceof Error) throw behaviour[args.action];
   return behaviour[args.action] || {};
 }
-const RUNNING = {settings:{qq_connection_mode:'napcat', onebot_backend:'snowluma'}, runtime:{auto_reply_running:true}};
-const IDLE = {settings:{qq_connection_mode:'napcat'}, runtime:{deployment_complete:true}};
-function reset(d, yes, b) { dashboard = d; answer = yes; calls = []; behaviour = b || {}; }
+const navigate = target => went.push(target);
+const boot = (id, extra) => ({settings:{qq_connection_mode:'napcat', onebot_backend:'snowluma', ...(extra || {}).settings},
+                             runtime:{boot_id:id, auto_reply_running:true, ...(extra || {}).runtime}});
+function reset(d, replies, b) { dashboard = d; answers = replies.slice(); asked = []; calls = []; behaviour = b || {}; went = []; }
+const announce = () => OneBotLegacy.announceOnce(call, storage, navigate);
+"""
+
+
+def test_the_popup_shows_once_per_plugin_start_and_only_for_onebot_users():
+    _node(_ANNOUNCE_HARNESS + r"""
 (async () => {
-  // 取消：什么都不发。
-  reset(RUNNING, false);
-  let r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.deepEqual([r.switched, r.message, calls], [false, '', []]);
+  // 全新安装 / 已是开放平台：不弹。
+  reset({settings:{}, runtime:{boot_id:'b0'}}, []);
+  assert.equal(await announce(), 'not-in-use');
+  reset({settings:{qq_connection_mode:'open_platform'}, runtime:{boot_id:'b0', onebot_connected:true}}, []);
+  assert.equal(await announce(), 'not-in-use');
+  assert.equal(asked.length, 0);
 
-  // 在跑 + 凭据可用：关后端 → 切连接方式（服务端顺手重连成功）。
-  reset(RUNNING, true, {set_mode: {status:'reconnected', restarted:true}});
-  r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.deepEqual(calls, ['query:dashboard', 'runtime:backend_stop=snowluma', 'runtime:set_mode=open_platform']);
-  assert.equal(r.switched, true);
-  assert.match(r.message, /重新启动/);
+  // 老用户，这次启动第一次打开首页：弹；选「继续使用 OneBot」什么都不发。
+  reset(boot('b1'), [false]);
+  assert.equal(await announce(), 'kept');
+  assert.equal(asked.length, 1);
+  assert.match(asked[0].message, /测试版/);
+  assert.equal(asked[0].opts.okText, OneBotLegacy.text('manual_switch'));
+  assert.equal(asked[0].opts.cancelText, OneBotLegacy.text('popup_keep'));
+  assert.equal(asked[0].opts.danger, false);
+  assert.deepEqual(calls, ['query:dashboard']);
 
-  // 后端不归插件管（手动 / 远程启动）：backend_stop 报错不拦切换。
-  reset(RUNNING, true, {backend_stop: Error('NOT_MANAGED'), set_mode: {restarted:true}});
-  r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.equal(r.switched, true);
-  assert.ok(calls.includes('runtime:set_mode=open_platform'));
+  // 同一次启动里再回首页：不重复弹。
+  reset(boot('b1'), [true]);
+  assert.equal(await announce(), 'already-shown');
+  assert.equal(asked.length, 0);
 
-  // 在跑 + 没填凭据：重连失败，再试一次启动也失败 —— 连接方式已经切了，但要说清没启动。
-  reset(RUNNING, true, {set_mode: {status:'reconnect_failed', restarted:false}, start: Error('no credentials')});
-  r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.deepEqual(calls.slice(-2), ['runtime:set_mode=open_platform', 'runtime:start']);
-  assert.equal(r.switched, true);
-  assert.match(r.message, /没有启动/);
+  // 插件重启（boot_id 变了）：再弹一次。
+  reset(boot('b2'), [false]);
+  assert.equal(await announce(), 'kept');
+  assert.equal(asked.length, 1);
 
-  // 没在跑：只切连接方式，不顺手把自动回复拉起来。
-  reset(IDLE, true, {set_mode: {status:'saved', restarted:false}});
-  r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.deepEqual(calls, ['query:dashboard', 'runtime:backend_stop=napcat', 'runtime:set_mode=open_platform']);
-  assert.equal(r.message, OneBotLegacy.text('manual_switch_done'));
+  // 面板读不到：不弹、也不记"弹过"，下次打开还有机会。
+  reset(boot('b3'), [false], {dashboard: Error('offline')});
+  assert.equal(await announce(), 'unavailable');
+  assert.equal(asked.length, 0);
+  reset(boot('b3'), [false]);
+  assert.equal(await announce(), 'kept');
 
-  // 切换本身失败：如实报，不说成功。
-  reset(RUNNING, true, {set_mode: Error('DEPLOY_BUSY')});
-  r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.equal(r.switched, false);
-  assert.match(r.message, /切换失败.*DEPLOY_BUSY/);
+  // 旧后端不带 boot_id：分不清就每次都弹，不能因此一次都不弹。
+  reset(boot(undefined), [false]);
+  assert.equal(await announce(), 'kept');
+  reset(boot(undefined), [false]);
+  assert.equal(await announce(), 'kept');
 
-  // 没有确认框可用（脚本没加载）：宁可不动。
-  delete globalThis.UIConfirm;
-  reset(RUNNING, true);
-  r = await OneBotLegacy.switchToOpenPlatform(call);
-  assert.deepEqual([r.switched, calls], [false, []]);
+  // 存储不可用（隐私模式）：照弹。
+  const broken = {getItem() { throw Error('denied'); }, setItem() { throw Error('denied'); }};
+  reset(boot('b9'), [false]);
+  assert.equal(await OneBotLegacy.announceOnce(call, broken, navigate), 'kept');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """)
 
 
-def test_refreshing_the_note_keeps_its_switch_button():
-    """面板每 5 秒刷新一次提示条：文案只能写进第一个子元素，不能把按钮一起抹掉。"""
-    _node(r"""
-const assert = require('node:assert/strict');
-const label = {textContent:''}, button = {textContent:'x'};
-const note = {style:{}, textContent:'KEEP', firstElementChild: label, querySelector: sel => sel === 'button' ? button : null};
-const DEPLOYED = {settings:{qq_connection_mode:'napcat'}, runtime:{deployment_complete:true}};
-OneBotLegacy.renderNote(note, DEPLOYED, true);
-assert.equal(note.textContent, 'KEEP');
-assert.match(label.textContent, /测试版/);
-assert.equal(button.textContent, OneBotLegacy.text('manual_switch'));
+def test_switching_from_the_popup_stops_onebot_and_reports_honestly():
+    """弹窗里选「改用 QQ 开放平台」：关后端 → 切连接方式；原来在跑就按开放平台重新拉起来，
+    拉不起来要如实说（真机反馈 2026-11-15 23:06：填了凭据点启动，连上的还是 OneBot）。"""
+    _node(_ANNOUNCE_HARNESS + r"""
+(async () => {
+  // 在跑 + 凭据可用：服务端顺手重连成功；第二个弹窗选「去扫码绑定」就跳过去。
+  reset(boot('s1'), [true, true], {set_mode: {status:'reconnected', restarted:true}});
+  assert.equal(await announce(), 'switched');
+  assert.deepEqual(calls, ['query:dashboard', 'query:dashboard', 'runtime:backend_stop=snowluma', 'runtime:set_mode=open_platform']);
+  assert.match(asked[1].message, /重新启动/);
+  assert.deepEqual(went, ['status.html']);
+
+  // 后端不归插件管（手动 / 远程启动）：backend_stop 报错不拦切换；选「关闭」不跳转。
+  reset(boot('s2'), [true, false], {backend_stop: Error('NOT_MANAGED'), set_mode: {restarted:true}});
+  assert.equal(await announce(), 'switched');
+  assert.ok(calls.includes('runtime:set_mode=open_platform'));
+  assert.deepEqual(went, []);
+
+  // 在跑 + 没填凭据：重连失败，再试一次启动也失败 —— 连接方式已经切了，但要说清没启动。
+  reset(boot('s3'), [true, false], {set_mode: {status:'reconnect_failed', restarted:false}, start: Error('no credentials')});
+  assert.equal(await announce(), 'switched');
+  assert.deepEqual(calls.slice(-2), ['runtime:set_mode=open_platform', 'runtime:start']);
+  assert.match(asked[1].message, /没有启动/);
+
+  // 没在跑：只切连接方式，不顺手把自动回复拉起来。
+  reset(boot('s4', {runtime:{auto_reply_running:false, deployment_complete:true}}), [true, false], {set_mode: {status:'saved', restarted:false}});
+  assert.equal(await announce(), 'switched');
+  assert.ok(!calls.includes('runtime:start'));
+  assert.equal(asked[1].message, OneBotLegacy.text('manual_switch_done'));
+
+  // 切换本身失败：如实报，不说成功，也不往扫码页跳。
+  reset(boot('s5'), [true, true], {set_mode: Error('DEPLOY_BUSY')});
+  assert.equal(await announce(), 'switch-failed');
+  assert.match(asked[1].message, /切换失败.*DEPLOY_BUSY/);
+  assert.deepEqual(went, []);
+
+  // 没有确认框可用（脚本没加载）：宁可不动。
+  delete globalThis.UIConfirm;
+  reset(boot('s6'), [true]);
+  assert.equal(await announce(), 'unavailable');
+  assert.deepEqual(calls, ['query:dashboard']);
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """)
-    for name, html in (("status.html", STATUS), ("open_platform.html", OPENPLAT)):
-        note = re.search(r'<div id="onebot-legacy-note"[^>]*>(.*?)</div>', html, re.S)
-        assert note, f"{name} 没有提示条"
-        assert re.match(r'\s*<span></span>\s*<button[^>]*id="btn-switch-openplat"', note.group(1)), (
-            f"{name} 的提示条应当是「文案 span + 改用开放平台按钮」"
-        )
-    assert "getElementById('btn-switch-openplat').addEventListener('click'" in STATUS
-    assert "OneBotLegacy.switchToOpenPlatform(call)" in STATUS
-    assert 'onclick="doSwitchToOpenPlatform()"' in OPENPLAT
-    assert "OneBotLegacy.switchToOpenPlatform(call)" in _one_line_function(OPENPLAT, "doSwitchToOpenPlatform")
 
 
 # ── 6. 后端能力不动：OneBot 的入口还在 ────────────────────────────────
