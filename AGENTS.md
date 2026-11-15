@@ -1,5 +1,30 @@
 # AGENTS.md
 
+## 两条发布分支（2026-11-15 起）
+
+| 分支 | 版本 | 界面 | tag |
+|---|---|---|---|
+| `main` | 稳定版 | 只有 QQ 开放平台；OneBot（NapCat / SnowLuma）界面不出现，后端能力不动 | `vX.Y.Z` |
+| `beta-onebot-ui` | 测试版 | 保留 OneBot 的全部界面 | `vX.Y.Z-beta.N`，release 标成 Pre-release |
+
+起因：NapCat / SnowLuma 的 release 不能稳定拉取，一键部署对新用户不可靠；已经下载好的用户
+还能继续用，所以 OneBot 界面留在测试版。
+
+- **`beta-onebot-ui` = `main` + 一个 revert**：它从 main 分出来，第一个提交把 main 上
+  「稳定版去除 OneBot 界面」那个提交整个还原。所以同步方向只有一个 ——
+  `git checkout beta-onebot-ui && git merge main`，不要反过来合。
+- 合并时必然冲突的只有 `plugin.toml` 的版本号和 `README.md` 顶部的版本段（两边各写各的），
+  保留测试版那一侧再按需改号。
+- main 上稳定版专有的改动都带 `[stable-no-onebot-ui]` 标记，集中在 `static/index.html`、
+  `static/status.html`、`static/open_platform.html`、`static/onebot-legacy.js`、两个语言包和
+  `tests/test_qq_stable_no_onebot_ui.py`。以后在 main 上再动这些地方，合进测试版时保留测试版
+  那一侧（测试版没有 `onebot-legacy.js` 和那个测试文件）。
+- 通用改动（后端、提示词、开放平台页的其它部分）一律先进 main，再合到测试版。
+- 发版：在对应分支上改 `plugin.toml` 版本 + README，推分支，再推同名 tag
+  （CI 要求 tag 与 `plugin.toml` 版本一致）。
+- 后续计划：开放平台并入本体之后，OneBot 这条线转正（把 `beta-onebot-ui` 合回 main，
+  并移除插件里的开放平台部分）。
+
 ## 跑测试（独立检出，宿主在同级目录 `../N.E.K.O`）
 
 ```bash
