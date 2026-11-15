@@ -978,7 +978,9 @@ def test_saved_admin_followup_uses_downgraded_permission_and_memory_policy(tmp_p
 
 @pytest.mark.parametrize("change", ["remove_tool", "admin_only", "no_roster", "group_removed", "blacklisted_group_sender"])
 def test_followup_revalidates_plugin_and_group_authority(tmp_path, change):
-    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "answer"})])
+    # 群名册只在 OneBot 上复查：开放平台没有登记群的入口（见 plugin_authorization）。
+    mode = "napcat" if change == "group_removed" else "open_platform"
+    plugin = _plugin(tmp_path, mode=mode, poll_results=[_ok({"status": "done", "result": "answer"})])
     _remember(plugin, convo=_GROUP_CONVO if "group" in change else _CONVO)
     if change == "remove_tool":
         plugin._qq_settings["qq_open_plugin_tools"].clear()
@@ -993,3 +995,12 @@ def test_followup_revalidates_plugin_and_group_authority(tmp_path, change):
         plugin.permission_mgr.get_permission_level = lambda sender: "blacklist"
     _tick_sync(plugin, 2)
     assert plugin.requests == []
+
+
+def test_followup_reaches_an_open_platform_group_that_is_not_in_the_roster(tmp_path):
+    """开放平台的群是 openid，名册里登记不了：异步任务的结果照样回到那个群。"""
+    plugin = _plugin(tmp_path, poll_results=[_ok({"status": "done", "result": "answer"})])
+    plugin.group_permission_mgr.get_group_level = lambda group: "none"
+    _remember(plugin, convo=_GROUP_CONVO)
+    _tick_sync(plugin, 2)
+    assert len(plugin.requests) == 1

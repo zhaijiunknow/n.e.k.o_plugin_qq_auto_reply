@@ -686,6 +686,11 @@ class QQPluginToolService:
                 not channel_allows_plugin_tools(getattr(self.plugin, "qq_client", None))
                 or self.tiers().get(plugin_id) not in self.allowed_tiers_for(permission)
             ):
+                emit_bridge_log(
+                    self.plugin, "WARN",
+                    f"[PluginTool] 调用被拒绝 session={session_key} tool={name}"
+                    f"（调用前复查：当前权限 {permission}，工具档位 {self.tiers().get(plugin_id) or '未授权'}）",
+                )
                 return ToolResult(call_id=call_id, name=name, output="当前权限已失效，不能调用这个工具。")
             if plugin_id == "video_reader":
                 if video_attempted:
