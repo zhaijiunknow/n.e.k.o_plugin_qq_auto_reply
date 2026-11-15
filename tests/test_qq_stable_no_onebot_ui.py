@@ -367,8 +367,14 @@ async function call(entry, args) {
 const navigate = target => went.push(target);
 const boot = (id, extra) => ({settings:{qq_connection_mode:'napcat', onebot_backend:'snowluma', ...(extra || {}).settings},
                              runtime:{boot_id:id, auto_reply_running:true, ...(extra || {}).runtime}});
-function reset(d, replies, b) { dashboard = d; answers = replies.slice(); asked = []; calls = []; behaviour = b || {}; went = []; }
-const announce = () => OneBotLegacy.announceOnce(call, storage, navigate);
+// 插件市场桥的替身：默认"没有可更新的测试版"。
+let found, installResult, installs;
+const bridge = {findBeta: async () => found, install: async f => { installs.push(f); return installResult; }};
+function reset(d, replies, b) {
+  dashboard = d; answers = replies.slice(); asked = []; calls = []; behaviour = b || {}; went = [];
+  found = {status:'none'}; installResult = {ok:true, error:''}; installs = [];
+}
+const announce = () => OneBotLegacy.announceOnce(call, storage, navigate, bridge);
 """
 
 
@@ -382,10 +388,10 @@ def test_the_popup_shows_once_per_plugin_start_and_only_for_onebot_users():
   assert.equal(await announce(), 'not-in-use');
   assert.equal(asked.length, 0);
 
-  // 老用户，这次启动第一次打开首页：弹；选「继续使用 OneBot」什么都不发。
+  // 老用户，这次启动第一次打开首页：弹；选「继续使用 OneBot」不动连接（接着那个弹窗是测试版的事）。
   reset(boot('b1'), [false]);
   assert.equal(await announce(), 'kept');
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, 2);
   assert.match(asked[0].message, /测试版/);
   assert.equal(asked[0].opts.okText, OneBotLegacy.text('manual_switch'));
   assert.equal(asked[0].opts.cancelText, OneBotLegacy.text('popup_keep'));
@@ -400,7 +406,7 @@ def test_the_popup_shows_once_per_plugin_start_and_only_for_onebot_users():
   // 插件重启（boot_id 变了）：再弹一次。
   reset(boot('b2'), [false]);
   assert.equal(await announce(), 'kept');
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, 2);
 
   // 面板读不到：不弹、也不记"弹过"，下次打开还有机会。
   reset(boot('b3'), [false], {dashboard: Error('offline')});
@@ -418,7 +424,130 @@ def test_the_popup_shows_once_per_plugin_start_and_only_for_onebot_users():
   // 存储不可用（隐私模式）：照弹。
   const broken = {getItem() { throw Error('denied'); }, setItem() { throw Error('denied'); }};
   reset(boot('b9'), [false]);
-  assert.equal(await OneBotLegacy.announceOnce(call, broken, navigate), 'kept');
+  assert.equal(await OneBotLegacy.announceOnce(call, broken, navigate, bridge), 'kept');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+
+def test_keeping_onebot_points_at_the_beta_and_can_update_to_it():
+    """选「继续使用 OneBot」之后要指到测试版，能直接更新就直接更新（使用者 2026-11-16）。"""
+    _node(_ANNOUNCE_HARNESS + r"""
+const RELEASE = {version:'0.16.0-beta.1', channel:'beta', package_url:'https://x/p', package_sha256:'s'};
+(async () => {
+  // 市场上有测试版：问一句；确认 → 走升级 → 结束后刷新首页。
+  reset(boot('k1'), [false, true, true]);
+  found = {status:'ok', release:RELEASE, token:'T', marketId:'52'};
+  assert.equal(await announce(), 'beta-updated');
+  assert.match(asked[1].message, /测试版 0\.16\.0-beta\.1/);
+  assert.equal(asked[1].opts.okText, OneBotLegacy.text('beta_update'));
+  assert.equal(asked[1].opts.cancelText, OneBotLegacy.text('beta_later'));
+  assert.equal(installs.length, 1);
+  assert.equal(installs[0].release, RELEASE);
+  assert.match(asked[2].message, /已更新到测试版 0\.16\.0-beta\.1/);
+  assert.deepEqual(went, ['index.html']);
+  assert.deepEqual(calls, ['query:dashboard'], '更新到测试版不该碰连接方式');
+
+  // 选「暂不更新」：什么都不装。
+  reset(boot('k2'), [false, false]);
+  found = {status:'ok', release:RELEASE, token:'T', marketId:'52'};
+  assert.equal(await announce(), 'kept');
+  assert.deepEqual([installs.length, went], [0, []]);
+
+  // 更新失败：如实报原因，不刷新、不说成功。
+  reset(boot('k3'), [false, true, false]);
+  found = {status:'ok', release:RELEASE, token:'T', marketId:'52'};
+  installResult = {ok:false, error:'sha256 mismatch'};
+  assert.equal(await announce(), 'beta-failed');
+  assert.match(asked[2].message, /更新到测试版失败.*sha256 mismatch/);
+  assert.deepEqual(went, []);
+
+  // 没有可直接更新的测试版（还没发布 / 不是从市场装的 / 市场连不上）：说清楚并指到插件市场。
+  for (const status of ['none', 'unavailable']) {
+    reset(boot('k4-' + status), [false, true]);
+    found = {status};
+    assert.equal(await announce(), 'kept');
+    assert.match(asked[1].message, /测试版/);
+    assert.match(asked[1].message, /插件市场/);
+    assert.equal(installs.length, 0);
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+
+def test_the_beta_to_update_to_is_never_older_than_what_is_installed():
+    """市场的版本列表里有很久以前的测试版（0.15.2-beta.1 等）：不能把 0.16.0 "更新"到它们上面。"""
+    _node(r"""
+const assert = require('node:assert/strict');
+const row = (version, extra) => ({channel:'beta', version, package_url:'u', package_sha256:'s', ...extra});
+const rows = [row('0.15.2-beta.1'), row('0.14.11-beta.1'), row('0.16.0-beta.1'), row('0.16.0-beta.2', {yanked_at:'2026-11-16'}),
+              row('0.16.0-beta.3', {package_sha256:''}), {channel:'stable', version:'0.17.0', package_url:'u', package_sha256:'s'},
+              row('nonsense')];
+const pick = (list, installed) => (OneBotLegacy.pickBeta(list, installed) || {}).version;
+assert.equal(pick(rows, '0.16.0'), '0.16.0-beta.1');           // 同号的测试版可以；下架的、缺校验和的不行
+assert.equal(pick(rows, '0.15.6'), '0.16.0-beta.1');
+assert.equal(pick(rows.slice(0, 2), '0.16.0'), undefined);       // 只有旧测试版：不挑
+assert.equal(pick(rows, '0.16.1'), undefined);                    // 已装的更新：不往回装
+assert.equal(pick([row('0.16.0-beta.1'), row('0.16.0-beta.10'), row('0.16.0-beta.9')], '0.16.0'), '0.16.0-beta.10');
+assert.equal(pick([row('0.16.0-beta.5'), row('0.17.0-beta.1')], '0.16.0'), '0.17.0-beta.1');
+assert.equal(pick(rows, 'weird'), undefined);                     // 已装版本认不出来：宁可不更新
+assert.equal(pick(undefined, '0.16.0'), undefined);
+""")
+
+
+def test_the_market_bridge_upgrade_request_carries_what_the_host_checks():
+    """走的是本体的 /market/install：mode=upgrade、测试通道、包地址与校验和都要带上。"""
+    _node(r"""
+const assert = require('node:assert/strict');
+const seen = [];
+let taskPolls = 0;
+globalThis.setTimeout = fn => { fn(); return 0; };
+globalThis.fetch = async (url, options) => {
+  seen.push({url, options});
+  const body = url.startsWith('/market/bridge-token') ? {bridge_token:'TOK EN'}
+    : url.startsWith('/market/installed') ? {installed:[
+        {plugin_id:'other', market_installed:true, latest_install_source:{plugin_market_id:'1'}},
+        {plugin_id:'qq_auto_reply', market_installed:true, effective_version:'0.16.0', latest_install_source:{plugin_market_id:'52'}}]}
+    : url.startsWith('/market/catalog') ? [
+        {channel:'beta', version:'0.16.0-beta.1', package_url:'https://x/p.neko-plugin', package_sha256:'abc', payload_hash:'ph', created_at:'2026-11-16T00:00:00Z'}]
+    : url.startsWith('/market/install') ? {task_id:'t 1', status:'pending'}
+    : url.startsWith('/market/tasks/') ? {status: ++taskPolls < 3 ? 'installing' : 'completed'}
+    : null;
+  return {ok: body !== null, status: body === null ? 404 : 200, json: async () => body};
+};
+(async () => {
+  const found = await OneBotLegacy.market.findBeta();
+  assert.equal(found.status, 'ok');
+  assert.deepEqual([found.marketId, found.release.version], ['52', '0.16.0-beta.1']);
+  assert.ok(seen.some(c => c.url === '/market/catalog/api/v1/plugins/52/versions'));
+  assert.ok(seen.some(c => c.url === '/market/installed?token=TOK%20EN'));
+
+  const result = await OneBotLegacy.market.install(found);
+  assert.deepEqual(result, {ok:true, error:''});
+  const post = seen.find(c => c.url.startsWith('/market/install?'));
+  assert.equal(post.url, '/market/install?token=TOK%20EN');
+  assert.equal(post.options.method, 'POST');
+  assert.deepEqual(JSON.parse(post.options.body), {
+    package_url:'https://x/p.neko-plugin', package_sha256:'abc', payload_hash:'ph', plugin_id:'52',
+    version:'0.16.0-beta.1', channel:'beta', published_at:'2026-11-16T00:00:00Z',
+    mode:'upgrade', expected_plugin_toml_id:'qq_auto_reply'});
+  assert.ok(seen.some(c => c.url === '/market/tasks/t%201?token=TOK%20EN'));
+  assert.equal(taskPolls, 3);
+
+  // 不是从市场装的：不去查版本，直接说不可用。
+  seen.length = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async url => url.startsWith('/market/installed')
+    ? {ok:true, json: async () => ({installed:[{plugin_id:'qq_auto_reply', market_installed:false}]})} : original(url);
+  assert.deepEqual(await OneBotLegacy.market.findBeta(), {status:'unavailable'});
+  assert.ok(!seen.some(c => c.url.startsWith('/market/catalog')));
+
+  // 市场桥连不上：不抛，说不可用。
+  globalThis.fetch = async () => { throw Error('offline'); };
+  assert.deepEqual(await OneBotLegacy.market.findBeta(), {status:'unavailable'});
+  // 升级任务失败：把原因带回来。
+  globalThis.fetch = async url => ({ok:true, json: async () => url.startsWith('/market/tasks/')
+    ? {status:'failed', error:'package sha256 mismatch'} : {task_id:'t2'}});
+  assert.deepEqual(await OneBotLegacy.market.install(found), {ok:false, error:'package sha256 mismatch'});
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """)
 

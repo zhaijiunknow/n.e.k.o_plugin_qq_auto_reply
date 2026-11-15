@@ -812,5 +812,14 @@
   "ui.stable.popup_switch_hint": "开放平台控制台里的启动、停止与通用设置对它同样生效。\n\n也可以现在改用 QQ 开放平台：会停止 OneBot 连接和插件拉起的后端进程，且本版本的界面里没有切回 OneBot 的入口。",
   "ui.stable.popup_keep": "继续使用 OneBot",
   "ui.stable.popup_go_bind": "去扫码绑定",
-  "ui.stable.popup_close": "关闭"
+  "ui.stable.popup_close": "关闭",
+  "ui.stable.beta_offer": "OneBot 的管理界面在测试版里。可以现在把本插件更新到测试版 {version}：已保存的配置与数据会保留，更新时插件会重启一次。",
+  "ui.stable.beta_update": "更新到测试版",
+  "ui.stable.beta_later": "暂不更新",
+  "ui.stable.beta_none": "OneBot 的管理界面在测试版里，但现在没有找到可以直接更新的测试版：它可能还没发布，或者本插件不是从插件市场安装的。请到插件市场查看「QQ集成」的测试版。",
+  "ui.stable.beta_ok": "知道了",
+  "ui.stable.beta_progress": "正在更新到测试版 {version}，请稍候…",
+  "ui.stable.beta_done": "已更新到测试版 {version}。",
+  "ui.stable.beta_reload": "刷新页面",
+  "ui.stable.beta_failed": "更新到测试版失败："
 }

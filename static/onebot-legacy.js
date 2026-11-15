@@ -23,6 +23,17 @@
         popup_keep: ['ui.stable.popup_keep', '继续使用 OneBot'],
         popup_go_bind: ['ui.stable.popup_go_bind', '去扫码绑定'],
         popup_close: ['ui.stable.popup_close', '关闭'],
+        beta_offer: ['ui.stable.beta_offer',
+            'OneBot 的管理界面在测试版里。可以现在把本插件更新到测试版 {version}：已保存的配置与数据会保留，更新时插件会重启一次。'],
+        beta_update: ['ui.stable.beta_update', '更新到测试版'],
+        beta_later: ['ui.stable.beta_later', '暂不更新'],
+        beta_none: ['ui.stable.beta_none',
+            'OneBot 的管理界面在测试版里，但现在没有找到可以直接更新的测试版：它可能还没发布，或者本插件不是从插件市场安装的。请到插件市场查看「QQ集成」的测试版。'],
+        beta_ok: ['ui.stable.beta_ok', '知道了'],
+        beta_progress: ['ui.stable.beta_progress', '正在更新到测试版 {version}，请稍候…'],
+        beta_done: ['ui.stable.beta_done', '已更新到测试版 {version}。'],
+        beta_reload: ['ui.stable.beta_reload', '刷新页面'],
+        beta_failed: ['ui.stable.beta_failed', '更新到测试版失败：'],
         manual_switch: ['ui.stable.manual_switch', '改用 QQ 开放平台'],
         manual_switch_done: ['ui.stable.manual_switch_done', '已改用 QQ 开放平台'],
         manual_switch_started: ['ui.stable.manual_switch_started', '，自动回复已按开放平台重新启动'],
@@ -85,12 +96,136 @@
         }
     }
 
+    // ── 更新到测试版（经本体的插件市场桥）─────────────────────────────
+
+    /** "0.16.0" / "0.16.0-beta.2" → [0, 16, 0, 序号]；稳定版的序号记成无穷大。认不出来返回 null。 */
+    function parseVersion(value) {
+        var match = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(String(value || '').trim());
+        return match ? [+match[1], +match[2], +match[3], match[4] === undefined ? Infinity : +match[4]] : null;
+    }
+
+    function compareVersions(a, b) {
+        for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return a[i] < b[i] ? -1 : 1; } }
+        return 0;
+    }
+
+    /** 从市场的版本列表里挑要更新到的测试版：没下架、带包地址与校验和、**不比已装的版本旧**
+        （按 x.y.z 比），其中最新的那个。已装版本认不出来时一律不挑 —— 宁可不更新，也不把人
+        "更新"到一个很久以前的测试版上。 */
+    function pickBeta(rows, installedVersion) {
+        var installed = parseVersion(installedVersion);
+        if (!installed) { return null; }
+        var best = null;
+        (rows || []).forEach(function (row) {
+            if (!row || row.channel !== 'beta' || row.yanked_at || !row.package_url || !row.package_sha256) { return; }
+            var version = parseVersion(row.version);
+            if (!version || compareVersions(version.slice(0, 3), installed.slice(0, 3)) < 0) { return; }
+            if (!best || compareVersions(version, best.version) > 0) { best = { version: version, row: row }; }
+        });
+        return best ? best.row : null;
+    }
+
+    async function getJson(url, options) {
+        var response = await fetch(url, options);
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+        return await response.json();
+    }
+
+    /** 本体的插件市场桥（/market/*，与插件界面同源）。只有从插件市场装的插件才能这样更新。 */
+    var market = {
+        async findBeta() {
+            try {
+                var token = (await getJson('/market/bridge-token')).bridge_token;
+                var installed = ((await getJson('/market/installed?token=' + encodeURIComponent(token))).installed || [])
+                    .filter(function (item) { return item.plugin_id === 'qq_auto_reply' && item.market_installed; })[0];
+                var source = installed && installed.latest_install_source;
+                if (!token || !source || !source.plugin_market_id) { return { status: 'unavailable' }; }
+                var marketId = String(source.plugin_market_id);
+                var rows = await getJson('/market/catalog/api/v1/plugins/' + encodeURIComponent(marketId) + '/versions');
+                var release = pickBeta(Array.isArray(rows) ? rows : [], installed.effective_version);
+                return release ? { status: 'ok', release: release, token: token, marketId: marketId } : { status: 'none' };
+            } catch (error) {
+                return { status: 'unavailable' };
+            }
+        },
+        /** 触发升级并等它结束。返回 ``{ok, error}``。 */
+        async install(found) {
+            try {
+                var release = found.release;
+                var query = '?token=' + encodeURIComponent(found.token);
+                var task = await getJson('/market/install' + query, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        package_url: release.package_url, package_sha256: release.package_sha256,
+                        payload_hash: release.payload_hash || null, plugin_id: found.marketId,
+                        version: release.version, channel: 'beta', published_at: release.created_at || null,
+                        mode: 'upgrade', expected_plugin_toml_id: 'qq_auto_reply',
+                    }),
+                });
+                for (var attempt = 0; attempt < 300; attempt++) {   // 最多约 5 分钟
+                    await new Promise(function (resolve) { setTimeout(resolve, 1000); });
+                    var status;
+                    try { status = await getJson('/market/tasks/' + encodeURIComponent(task.task_id) + query); } catch (ignored) { continue; }
+                    if (status.status === 'completed') { return { ok: true, error: '' }; }
+                    if (status.status === 'failed') { return { ok: false, error: status.error || status.message || 'failed' }; }
+                }
+                return { ok: false, error: 'timeout' };
+            } catch (error) {
+                return { ok: false, error: (error && error.message) || String(error) };
+            }
+        },
+    };
+
+    /** 更新期间页面底部的一行进度（没有 document 时什么都不做）。传空串收起。 */
+    function progress(message) {
+        var doc = global.document;
+        if (!doc || !doc.body) { return; }
+        var bar = doc.getElementById('onebot-legacy-progress');
+        if (!message) { if (bar) { bar.remove(); } return; }
+        if (!bar) {
+            bar = doc.createElement('div');
+            bar.id = 'onebot-legacy-progress';
+            bar.setAttribute('role', 'status');
+            bar.style.cssText = 'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483001;'
+                + 'padding:10px 18px;border-radius:999px;background:rgba(15,23,42,.88);color:#fff;font-size:13px;';
+            doc.body.appendChild(bar);
+        }
+        bar.textContent = message;
+    }
+
+    /** 选了「继续使用 OneBot」之后：OneBot 的界面在测试版，问要不要现在更新过去。
+        找不到可更新的测试版时如实说，并指到插件市场。 */
+    async function offerBeta(confirmer, navigate, bridge) {
+        var found = await bridge.findBeta();
+        if (found.status !== 'ok') {
+            await confirmer.ask(text('beta_none'), { danger: false, okText: text('beta_ok'), cancelText: text('popup_close') });
+            return 'kept';
+        }
+        var version = found.release.version;
+        var fill = function (name) { return text(name).replace('{version}', version); };
+        if (!await confirmer.ask(fill('beta_offer'), { danger: false, okText: text('beta_update'), cancelText: text('beta_later') })) {
+            return 'kept';
+        }
+        progress(fill('beta_progress'));
+        var result = await bridge.install(found);
+        progress('');
+        if (!result.ok) {
+            await confirmer.ask(text('beta_failed') + result.error, { danger: false, okText: text('beta_ok'), cancelText: text('popup_close') });
+            return 'beta-failed';
+        }
+        await confirmer.ask(fill('beta_done'), { danger: false, okText: text('beta_reload'), cancelText: text('popup_close') });
+        navigate('index.html');   // 无论点哪个都刷新：留在旧页面上看到的还是稳定版的界面
+        return 'beta-updated';
+    }
+
     /** 首页用：插件每次启动后第一次打开首页，OneBot 在用就弹一次窗。
 
         "一次"按插件进程算：面板数据里的 runtime.boot_id 每次启动都不同，弹过的那个记在
         localStorage 里。同一次启动里再回首页不重复弹；插件重启后再弹。
-        返回值只给测试看：not-in-use / already-shown / kept / switched / switch-failed / unavailable。 */
-    async function announceOnce(call, storage, navigate) {
+        选「继续使用 OneBot」之后接着问要不要更新到测试版（offerBeta）。
+        返回值只给测试看：not-in-use / already-shown / kept / beta-updated / beta-failed /
+        switched / switch-failed / unavailable。 */
+    async function announceOnce(call, storage, navigate, marketBridge) {
         var confirmer = global.UIConfirm;
         var dashboard;
         try { dashboard = await call('query', { action: 'dashboard' }); } catch (error) { return 'unavailable'; }
@@ -101,7 +236,7 @@
         try { if (boot) { storage.setItem(SEEN_KEY, boot); } } catch (ignored) { /* 同上 */ }
         var wantsSwitch = await confirmer.ask(text('note') + text('popup_switch_hint'),
             { danger: false, okText: text('manual_switch'), cancelText: text('popup_keep') });
-        if (!wantsSwitch) { return 'kept'; }
+        if (!wantsSwitch) { return await offerBeta(confirmer, navigate, marketBridge || market); }
         var result = await switchToOpenPlatform(call);
         var goBind = await confirmer.ask(result.message,
             { danger: false, okText: text('popup_go_bind'), cancelText: text('popup_close') });
@@ -138,5 +273,5 @@
     }
 
     global.OneBotLegacy = { isOneBotMode: isOneBotMode, inUse: inUse, announceOnce: announceOnce,
-        switchToOpenPlatform: switchToOpenPlatform, run: run, text: text };
+        switchToOpenPlatform: switchToOpenPlatform, pickBeta: pickBeta, market: market, run: run, text: text };
 })(window);

@@ -812,5 +812,14 @@
   "ui.stable.popup_switch_hint": " Start, stop and the shared settings in the Open Platform console still apply to it.\n\nYou can also switch to the QQ Open Platform now: this stops the OneBot connection and the backend process started by the plugin, and this release has no page for switching back to OneBot.",
   "ui.stable.popup_keep": "Keep using OneBot",
   "ui.stable.popup_go_bind": "Scan to bind",
-  "ui.stable.popup_close": "Close"
+  "ui.stable.popup_close": "Close",
+  "ui.stable.beta_offer": "The OneBot management pages are in the beta release. You can update this plugin to beta {version} now: saved settings and data are kept, and the plugin restarts once during the update.",
+  "ui.stable.beta_update": "Update to beta",
+  "ui.stable.beta_later": "Not now",
+  "ui.stable.beta_none": "The OneBot management pages are in the beta release, but no beta that can be installed directly was found: it may not be published yet, or this plugin was not installed from the plugin market. Check the plugin market for the beta of this plugin.",
+  "ui.stable.beta_ok": "OK",
+  "ui.stable.beta_progress": "Updating to beta {version}, please wait…",
+  "ui.stable.beta_done": "Updated to beta {version}.",
+  "ui.stable.beta_reload": "Reload",
+  "ui.stable.beta_failed": "Update to beta failed: "
 }
