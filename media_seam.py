@@ -8,8 +8,13 @@
    ``send_private_image``；群图那条走连接对象自己的 ``send_group_image``
    （宿主那份内部就是"先上传再 msg_type=7"）。上游把富媒体合进本体并发出新包之后，
    插件这边就只跑这一条。
+   **内置的暂时适配器**（``_vendor/connection_onebot/open_platform.py``，宿主还没带 #3709
+   时由 ``connector_seam`` 选中）是宿主那份的副本，混的是同一个 mixin，所以走的也是这一条
+   —— 调用上不区分，只在 ``source_of`` / ``describe`` 里如实写成 ``builtin``。
 2. **内置副本**（回退）：``_vendor/connection_onebot/qq_open_platform_media.py`` ——
-   插件自撰、以连接对象为第一参数的自由函数。宿主还没有那个 mixin 时用它。
+   插件自撰、以连接对象为第一参数的自由函数。连接对象没有那个 mixin 时用它。
+   2026-11-15 起 ``connector_seam`` 解析到的两份适配器都带 mixin，这条回退在真机上已经
+   走不到，随 ``_vendor`` 退役一起删。
 3. 两者都没有：不该发生，调用会 AttributeError（而不是静默不发图）。
 
 **判据是能力，不是类名、不是宿主版本号**：``upload_image`` 只有开放平台的媒体 mixin 提供；
@@ -17,7 +22,7 @@
 没有 ``record_sent``）。宿主哪天换名字、换实现、把这套挪到别的模块，本模块都不用改。
 
 为什么把这件事从 ``connector_seam`` 挪出来：``connector_seam`` 回答的是"连接器从哪来"
-（宿主包 vs 副本包，判据是 9 个必需属性），富媒体是**连接对象的能力**，与连接器来源无关 ——
+（宿主包 vs 副本包，判据是必需属性齐不齐），富媒体是**连接对象的能力**，与连接器来源无关 ——
 宿主连接器也可能还没混入媒体 mixin。两者混在一起，会让"宿主连接器 + 还没媒体"这种组合
 无法表达。
 
@@ -42,6 +47,9 @@ HOST_CAPABILITY = "upload_image"
 #: 宿主那两个方法所在的位置（文档/排查用；本模块不 import 它）。
 HOST_IMPLEMENTATION = "utils.connection.qq.open_platform_media.QQOpenPlatformMediaMixin"
 
+#: 连接类的模块名以它开头 = 内置的暂时适配器（只用来在日志里说清跑的是哪份，不参与分流）。
+BUILTIN_ADAPTER_PREFIX = f"{__package__}._vendor."
+
 
 def is_open_platform(conn: Any) -> bool:
     """这个连接对象是不是 QQ 开放平台。
@@ -56,15 +64,21 @@ def is_open_platform(conn: Any) -> bool:
 
 
 def host_adapter_available(conn: Any) -> bool:
-    """连接对象自带宿主适配器吗（能自己上传/发图）。"""
+    """连接对象自带适配器吗（能自己上传/发图）—— 宿主那份或内置的暂时适配器都算。"""
     return callable(getattr(conn, HOST_CAPABILITY, None))
 
 
 def source_of(conn: Any) -> str:
-    """``"host"`` / ``"vendored"`` / ``"n/a"``（非开放平台通道）。"""
+    """``"host"`` / ``"builtin"`` / ``"vendored"`` / ``"n/a"``（非开放平台通道）。
+
+    ``host`` 与 ``builtin`` 都是连接对象自带的 mixin，区别只在连接类来自宿主还是内置的
+    暂时适配器；``vendored`` 是连接对象没有 mixin、退回包装函数。
+    """
     if not is_open_platform(conn):
         return "n/a"
-    return "host" if host_adapter_available(conn) else "vendored"
+    if not host_adapter_available(conn):
+        return "vendored"
+    return "builtin" if type(conn).__module__.startswith(BUILTIN_ADAPTER_PREFIX) else "host"
 
 
 def describe(conn: Any) -> str:
@@ -72,6 +86,8 @@ def describe(conn: Any) -> str:
     source = source_of(conn)
     if source == "host":
         return f"宿主适配器（连接对象自带 {HOST_CAPABILITY}）"
+    if source == "builtin":
+        return f"内置适配器（{type(conn).__module__}，连接对象自带 {HOST_CAPABILITY}）—— 宿主还没带新版开放平台适配器"
     if source == "vendored":
         return f"内置副本（{VENDORED_MODULE}）—— 宿主还没带媒体 mixin"
     return "不适用（非开放平台通道自己发图）"

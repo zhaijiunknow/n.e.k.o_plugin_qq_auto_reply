@@ -279,24 +279,30 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         #
         # 解析走 connector_seam：宿主第一方包 utils.connection.onebot 优先，拿不到时
         # 回退 _vendor 里的副本（出处见 _vendor/connection_onebot/PROVENANCE.md）。
+        # 开放平台适配器单独解析：宿主那份带新接口（#3709）才用宿主的，否则用内置的暂时适配器。
         from .connector_seam import (
             CONNECTOR_MODULE,
             CONNECTOR_SOURCE,
+            OPEN_PLATFORM_MODULE,
+            OPEN_PLATFORM_SOURCE,
             create_onebot_connection,
         )
 
         # 两路都发：`_emit_log` 只写内存缓冲 + 推 SSE（插件 UI 的运行日志页），
         # 不进控制台/日志文件；`logger` 才是能在宿主控制台和插件日志文件里看到的。
         # 排查"装上去到底连的哪个连接器"时要的是后者。
-        source_msg = f"[QQ] 连接器来源: {CONNECTOR_SOURCE} ({CONNECTOR_MODULE})"
-        self._emit_log("INFO", source_msg)
-        self.logger.info(source_msg)
+        for source_msg in (
+            f"[QQ] 连接器来源: {CONNECTOR_SOURCE} ({CONNECTOR_MODULE})",
+            f"[QQ] 开放平台适配器来源: {OPEN_PLATFORM_SOURCE} ({OPEN_PLATFORM_MODULE})",
+        ):
+            self._emit_log("INFO", source_msg)
+            self.logger.info(source_msg)
         connection = create_onebot_connection(
             self._qq_settings,
             logger=self.logger,
             emit_log=self._emit_log,
         )
-        # 富媒体走谁：宿主适配器（连接对象自带 upload_image）还是内置副本。
+        # 富媒体走谁：宿主适配器 / 内置适配器（连接对象自带 upload_image）还是内置副本。
         # 与上面那行一样两路都发 —— 排查"装上去到底跑哪份"时看的是日志文件那份。
         from . import media_seam
 

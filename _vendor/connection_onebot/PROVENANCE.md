@@ -3,6 +3,60 @@
 宿主第一方连接器包 `utils.connection.onebot` 的副本，用作"宿主还没带这个包"时的回退。
 解析入口：`connector_seam.py`。
 
+## 2026-11-15：开放平台暂时适配器（宿主 #3709 的副本）
+
+宿主 `Project-N-E-K-O/N.E.K.O#3709`（`fix(connection): QQ 官方平台连接器按 API v2 修正旗标、
+补全事件、消灭空桩`，merge commit `e249ae46b77b6503f8202ee622830333440efb92`，2026-11-15）把
+开放平台适配器改成了 API v2 那套接口。源码版宿主已经带它；**已发布的包（v0.9.1）还停在 #3709
+之前** —— `utils/connection/qq/open_platform.py` 在、媒体 mixin 也在，但没有新接口。所以多带
+一份副本当退级：
+
+| 副本 | 上游（@ `e249ae46b`） | 与上游的差异 |
+|---|---|---|
+| `open_platform.py` | `utils/connection/qq/open_platform.py` | 只有 lint（见下），无功能改动 |
+| `open_platform_media.py` | `utils/connection/qq/open_platform_media.py` | 逐字 |
+| `../base.py`（即 `_vendor/base.py`） | `utils/connection/base.py` | 逐字 |
+
+`_vendor/base.py` 的作用是让 `open_platform.py` 里那句 `from ..base import ConnectionBase` 原样
+成立（它在副本里的相对位置与宿主一致），这样重新同步就是"拷三个文件 + 跑 lint"，**没有任何
+功能性本地改动要重放**。副本包里原有的 `onebot_connection.OneBotConnectionBase` 不动，仍是
+`OneBotClient` 副本的基类。
+
+**解析**（`connector_seam.py`）：开放平台那半单独解析 —— 宿主的
+`utils.connection.qq.open_platform` **带新接口**才用宿主的，否则用这份。判据是属性探测
+（`_OPEN_PLATFORM_MODULE_ATTRS` / `_OPEN_PLATFORM_CLASS_ATTRS`，全是 #3709 才出现的名字，外加媒体
+mixin 的两个方法），不是"模块导不导得进来"、也不是版本号。OneBot 那半照旧（宿主优先），所以
+已发布宿主上是"OneBot 用宿主的、开放平台用内置的"，工厂按连接模式分流。启动日志三行：
+
+```text
+[QQ] 连接器来源: host (utils.connection.onebot)
+[QQ] 开放平台适配器来源: vendored (plugin.plugins.qq_auto_reply._vendor.connection_onebot.open_platform)
+[QQ] 富媒体来源: 内置适配器（…，连接对象自带 upload_image）—— 宿主还没带新版开放平台适配器
+```
+
+宿主带 #3709 时后两行是 `host (utils.connection.qq.open_platform)` 与 `宿主适配器（…）`。
+
+副本包自己的 `__init__.py` / `factory.py` 也改成从 `open_platform` 取
+`QQOpenPlatformConnection`（连 OneBot 那半都没有的宿主上，用的是整个副本包）。
+
+**被取代的两个文件**：`qq_open_plat.py`（旧适配器副本 + `LOCAL-PATCH`）与
+`qq_open_platform_media.py`（自撰的包装函数）现在**不在任何真机路径上** —— 解析到的两份适配器
+都自带媒体 mixin，`media_seam` 的包装函数回退走不到。文件与它们的守卫暂时原样保留，随
+`_vendor/` 退役（或单独清理）时一起删；下面各节里关于它们"真机生效"的描述按历史读。
+
+**lint**（CI 那条 ruff，见「相对上游的本地改动（二）」）：`open_platform.py` 自动修复 2 处
+（import 块排序、`f"[QQOpenPlatform] token 已获取"` 去掉 `f`），手工 5 处（两处
+`try: await self._ws.close()` / `except Exception: pass` 拆行、一处
+`self._ws = None; self.ws = None` 拆两行）—— 与当年 `qq_open_plat.py` 是同一批位置。
+
+**重新同步**（宿主那份在发版前又改了的话）：拷上表三个文件 → 跑那条 `ruff check --fix` →
+手工拆那 5 处 → `pytest tests/test_qq_connector_seam.py tests/test_qq_media_seam.py`。
+宿主给连接类加了新接口而插件要用时，把名字补进 `connector_seam` 的判据。
+
+**验证**（2026-11-15）：插件全量测试在两种宿主上各跑一遍 —— 源码版（`main` @ `e249ae46b`，
+解析到 `host`）与已发布的 v0.9.1（`git archive v0.9.1` 解出的树，解析到 `vendored`）。
+**只有模拟，没有真机**：内置适配器这条退级路径还没在开放平台正式环境上跑过。
+
 ## 出处
 
 | 项 | 值 |
@@ -49,11 +103,13 @@ utils/connection/qq/factory.py               create_qq_connection
 全是注释/空行 + 两个函数内多余的 `import time` 被删）。**结论：拆分没有带来任何上游行为变化，
 副本也没有落后于拆分** —— 所以这次不需要重新同步，只需记下基线换了。
 
-副本一共 6 个文件，其中 5 个来自 `utils/connection/onebot/`，1 个是插件自撰：
+副本一共 8 个文件，其中 5 个来自 `utils/connection/onebot/`，1 个是插件自撰，2 个来自
+`utils/connection/qq/`（2026-11-15 的暂时适配器，见文首那一节）：
 
 ```
 __init__.py  factory.py  onebot_client.py  onebot_connection.py  qq_open_plat.py   ← 上游 5 个
 qq_open_platform_media.py                                                          ← 插件自撰，上游**没有**这个文件
+open_platform.py  open_platform_media.py                                           ← 宿主 #3709 的副本（暂时适配器）
 ```
 
 （上游同目录下的 `utils/connection/__init__.py` 只有 docstring、零 re-export，无需复制。）
@@ -197,20 +253,23 @@ ruff check --fix --unsafe-fixes --ignore-noqa --isolated --target-version py311 
 
 ## 什么时候删掉这个目录
 
-**前提（两件都到位）**：
+**前提（三件都到位）**：
 
 1. 宿主带 `utils.connection.onebot`（PR #2996 已合并 ✔）—— 连接器那半；
 2. 宿主带**媒体 mixin**（`utils/connection/qq/open_platform_media.py` 的
    `QQOpenPlatformMediaMixin` 混进 `QQOpenPlatformConnection`，于是连接对象自带
-   `upload_image`）—— 富媒体那半。PR 见 `docs/SESSION-HANDOFF.md` §37。
+   `upload_image`）—— 富媒体那半。PR 见 `docs/SESSION-HANDOFF.md` §37（已合并 ✔，v0.9.1 里有）；
+3. 宿主带**开放平台 API v2 适配器**（#3709 已合并 ✔，**还没发版**）—— 启动日志里
+   `[QQ] 开放平台适配器来源: host …` 就是它到位的标志。
 
-再叠一个**发布条件**：插件声明的"最低支持宿主版本"已经包含这两件（Steam 上发的包里有）。
+再叠一个**发布条件**：插件声明的"最低支持宿主版本"已经包含这三件（Steam 上发的包里有）。
 在那之前删掉本目录，Steam 上的旧宿主就会在表情包投递时 `ModuleNotFoundError`。
 
 **删的时候做什么**（现在的代码已经为这一步铺好，回退只在一处）：
 
-0. 确认宿主那两半都在（`[QQ] 连接器来源: host …` + `[QQ] 富媒体来源: 宿主适配器…` 两行日志）；
-1. 删整个 `_vendor/`；
+0. 确认宿主那几半都在（`[QQ] 连接器来源: host …` + `[QQ] 开放平台适配器来源: host …` +
+   `[QQ] 富媒体来源: 宿主适配器…` 三行日志）；
+1. 删整个 `_vendor/`（含 `_vendor/base.py`）；
 2. `media_seam.py` 里删 `VENDORED_MODULE`、`_vendored()` 与三个函数里的回退分支
    （**富媒体对副本的唯一引用点就是它**，`tests/test_qq_media_seam.py` 有一条守卫盯着这点）；
 3. `connector_seam.py` 收敛成一行 re-export（或直接改回

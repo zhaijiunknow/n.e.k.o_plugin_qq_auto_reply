@@ -15,7 +15,7 @@ from __future__ import annotations
 from .factory import OneBotConnector, create_onebot_connection
 from .onebot_client import OneBotClient
 from .onebot_connection import OneBotConnectionBase
-from .qq_open_plat import QQOpenPlatformConnection
+from .open_platform import QQOpenPlatformConnection
 
 __all__ = [
     "create_onebot_connection",

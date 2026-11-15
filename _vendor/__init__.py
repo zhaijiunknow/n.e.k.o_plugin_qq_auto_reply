@@ -3,6 +3,9 @@
 `connection_onebot` 是宿主第一方包 ``utils.connection.onebot``（PR #2996）的副本，
 作为"宿主还没带这个包"时的回退。解析入口在 :mod:`plugin.plugins.qq_auto_reply.connector_seam`。
 
+`base.py` 是宿主 ``utils/connection/base.py`` 的逐字副本：`connection_onebot/open_platform.py`
+（宿主 #3709 那份开放平台适配器的副本）里的 ``from ..base import ConnectionBase`` 靠它原样成立。
+
 **不要把它挪到 `lib/` 或 `vendor/`** —— 两个更显眼的位置都试过，都会坏：
 
 - ``lib/``：``_lib_bootstrap.py`` 与 ``tests/conftest.py`` 都把 ``lib/`` 插到 ``sys.path[0]``。

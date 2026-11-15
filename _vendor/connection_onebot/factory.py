@@ -13,7 +13,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 
 from .onebot_client import OneBotClient
 from .onebot_connection import OneBotConnectionBase
-from .qq_open_plat import QQOpenPlatformConnection
+from .open_platform import QQOpenPlatformConnection
 
 
 def create_onebot_connection(

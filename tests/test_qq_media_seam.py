@@ -104,6 +104,19 @@ def test_describe_names_the_vendored_module_when_falling_back():
     assert media_seam.VENDORED_MODULE in media_seam.describe(_OldConn())
 
 
+def test_the_builtin_adapter_is_reported_as_builtin_not_as_the_host():
+    """内置的暂时适配器也自带 `upload_image`，走的是同一条路，但日志不能把它写成宿主的。"""
+    import importlib
+
+    builtin = importlib.import_module(connector_seam.VENDORED_OPEN_PLATFORM_MODULE)
+    conn = builtin.QQOpenPlatformConnection(app_id="a", client_secret="b")
+
+    assert media_seam.host_adapter_available(conn) is True
+    assert media_seam.source_of(conn) == "builtin"
+    described = media_seam.describe(conn)
+    assert "内置适配器" in described and connector_seam.VENDORED_OPEN_PLATFORM_MODULE in described
+
+
 # ── 2. 有宿主适配器时：调它的方法，**不碰副本** ─────────────────────────
 
 def test_upload_image_prefers_the_host_adapter():
