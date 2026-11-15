@@ -26,13 +26,10 @@ PAGES = ("static/napcat.html", "static/open_platform.html")
 NAV_HELPER = "static/nav.js"
 
 #: 会互相跳转的页面 → 它**必须**带 data-nav 指向的目标（含回程）。
-#: 稳定版（main）不提供 OneBot 界面：首页不链 napcat.html / old.html，开放平台页不链
-#: napcat.html（见 tests/test_qq_stable_no_onebot_ui.py）。napcat.html 自己的跳转不变 ——
-#: 页面仍随包发布，测试版分支保留它的入口。
 EXPECTED_NAV: dict[str, tuple[str, ...]] = {
-    "static/index.html": ("status.html", "open_platform.html"),
+    "static/index.html": ("status.html", "napcat.html", "open_platform.html", "old.html"),
     "static/napcat.html": ("index.html", "open_platform.html"),
-    "static/open_platform.html": ("index.html", "status.html"),
+    "static/open_platform.html": ("index.html", "napcat.html"),
     "static/status.html": ("index.html",),
 }
 

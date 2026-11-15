@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QQ 开放平台接入</title>
+<title data-i18n="ui.status.title">QQ 一键部署</title>
 <link rel="stylesheet" href="theme.css?v=8">
 <style>
 /* 本页用**森林插画**当底图（使用者指定），其余三页用默认的蓝白图形。
@@ -101,18 +101,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 .form-label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; }
 .form-input { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius-md); font-size:13px; outline:none; transition:.15s; background:var(--input-bg); color:var(--text); }
 .form-input:focus { border-color:var(--primary-focus-border); box-shadow:0 0 0 3px var(--primary-tint); }
-
-/* ── [stable-no-onebot-ui] 稳定版不提供 OneBot（NapCat / SnowLuma）界面 ──────────
-   这些元素**只藏不删**：页内脚本会无条件 getElementById 读写它们（applyMode /
-   renderNapcatLogin / 部署按钮的事件），删掉元素会让整页开页即抛、一片空白。
-   用 !important 是因为脚本会按已保存的连接方式把 display 写回来。 */
-#modes, #onebot-backend-section, #mode-hint-napcat, #sec-napcat, #btn-qr { display:none !important; }
-/* 反过来：已保存的连接方式还是 OneBot 时（全新安装的缺省值就是它），脚本会把开放平台
-   这两块藏起来。稳定版只有扫码绑定这一条路，所以始终显示。 */
-#sec-openplat { display:block !important; }
-#mode-hint-openplat { display:inline !important; }
-/* 已接入 OneBot 的老用户看到的那句提示（显示与否由 onebot-legacy.js 决定）。 */
-#onebot-legacy-note { margin-top:12px; padding:10px 12px; border-radius:var(--radius-md); background:var(--warning-tint); color:var(--warning-on-tint); font-size:12px; line-height:1.7; }
 </style>
 <link rel="stylesheet" href="layout.css?v=2">
 </head>
@@ -120,14 +108,14 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 <div class="wrap">
   <header>
     <img class="mascot" src="assets/neko-logo.png?v=1" alt="" aria-hidden="true" draggable="false" onerror="this.style.display='none'">
-    <h1 id="title">QQ 开放平台接入</h1>
+    <h1 id="title" data-i18n="ui.status.title">QQ 一键部署</h1>
   </header>
 
   <!-- 操作条：自动刷新 / 刷新 / 刷新二维码 / 返回。
        这四个原本挤在 <header> 里标题旁边（又挤又难看），而且页面有 6 张卡片，
        滑到底就够不着了。挪出来做成一条 sticky 操作条 —— 见 <style> 里的说明。 -->
   <div id="actions">
-    <span class="action-caption" data-i18n="ui.layout.setup_hint">扫码绑定 → 写入凭据 → 自动回复</span>
+    <span class="action-caption" data-i18n="ui.layout.setup_hint">接入 → 部署 → 登录确认</span>
     <label class="auto"><input type="checkbox" id="auto" checked><span data-i18n="ui.status.auto">自动刷新</span></label>
     <button class="ghost" id="btn-refresh" data-i18n="ui.status.refresh">刷新</button>
     <button class="ghost" id="btn-qr" style="display:none" data-i18n="ui.status.refresh_qr">刷新二维码</button>
@@ -138,7 +126,7 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 
   <!-- 连接方式：整页内容跟着它翻。运行中切换会按新模式停掉重连（见 runtime.set_mode） -->
   <div class="card">
-    <h2 data-i18n="ui.status.flow_title">接入流程</h2>
+    <h2 data-i18n="ui.status.mode">连接方式</h2>
     <div class="modes" id="modes">
       <button class="mode" data-mode="napcat">
         <b>OneBot</b>
@@ -162,8 +150,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
       <span id="mode-hint-napcat">流程：填写机器人 QQ 号 → 部署并写入配置 → 使用该账号扫码登录 → 自动回复。<b>记得在下方「信任名单」把自己的 QQ 号设为管理员</b> —— 管理员才是「主人」，其余人只是好友。</span>
       <span id="mode-hint-openplat" style="display:none" data-i18n="ui.status.flow_openplat">流程：扫码绑定 → 自动写入凭据并启动自动回复，<b>扫码的人会自动成为管理员</b>。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。</span>
     </div>
-    <!-- [stable-no-onebot-ui] 已接入 OneBot 的老用户：后端照跑，这里只提示一句 -->
-    <div id="onebot-legacy-note" role="status" style="display:none"></div>
   </div>
 
   <!-- NapCat / OneBot 那一套：部署 + 登录二维码。开放平台模式下整块隐藏 -->
@@ -287,8 +273,6 @@ ul.list .empty { color:var(--text-secondary); font-size:12px; padding:4px 0; }
 <script src="nav.js?v=1"></script>
 <script src="onebot-backend.js?v=4"></script>
 <script src="backend-controls.js?v=1"></script>
-<script src="ui-confirm.js?v=1"></script>
-<script src="onebot-legacy.js?v=1"></script>
 <script src="ui-sse.js?v=3"></script>
 <script>
 const P = 'qq_auto_reply', RUNS = '/runs';
@@ -404,7 +388,7 @@ function applyMode(mode) {
   document.getElementById('sec-napcat').style.display = openplat ? 'none' : '';
   document.getElementById('sec-openplat').style.display = openplat ? '' : 'none';
   document.getElementById('btn-qr').style.display = 'none';
-  document.getElementById('title').textContent = 'QQ 开放平台接入';   /* [stable-no-onebot-ui] 这页在稳定版只做扫码绑定 */
+  document.getElementById('title').textContent = openplat ? 'QQ 开放平台接入' : 'QQ 一键部署';
   /* 切走时停掉绑定轮询 —— 别在后台空转着打接口 */
   if (!openplat) stopBindPoll();
   return openplat;
@@ -514,17 +498,13 @@ async function loadDashboardState() {
   const webui = document.getElementById('backend-webui');
   updateBackendConsoleLink(webui,st.onebot_backend||'napcat',(d.runtime||{}).backend_webui_url,false,call);
   const openplat = applyMode(st.qq_connection_mode || 'napcat');
-  /* [stable-no-onebot-ui] 已接入 OneBot 的老用户看到一句提示；自启卡只对他们用 OneBot 的说法
-     （全新安装的缺省连接方式也是 OneBot，但那不是他们选的，照开放平台的说法写）。 */
-  OneBotLegacy.renderNote(document.getElementById('onebot-legacy-note'), d);
-  const openplatCopy = openplat || !OneBotLegacy.inUse(d);
   const nativeLogin = backend.loginMethod === 'native_qq';
   renderSnowLumaSetup(document.getElementById('snowluma-setup'),nativeLogin);
   document.getElementById('backend-login-heading').textContent = nativeLogin ? 'SnowLuma 初始化与 QQ 接入' : '登录二维码';
-  document.getElementById('autostart-hint').textContent = openplatCopy
+  document.getElementById('autostart-hint').textContent = openplat
     ? '开启后每次插件启动都会连接 QQ 开放平台并启动自动回复。'
     : '开启后每次插件启动都会自动拉起 ' + backend.label + ' 并启动自动回复。';
-  document.getElementById('autostart-label').textContent = openplatCopy
+  document.getElementById('autostart-label').textContent = openplat
     ? '启动插件时自动连接开放平台并开启自动回复'
     : '启动插件时自动拉起 ' + backend.label + ' 并开启自动回复';
   document.getElementById('mode-hint-napcat').textContent = '流程：填写机器人 QQ 号 → 部署并写入配置 → '
@@ -554,20 +534,6 @@ function stopBindPoll() { if (bindTimer) { clearInterval(bindTimer); bindTimer =
 
 async function startBind() {
   stopBindPoll();
-  /* [stable-no-onebot-ui] 稳定版没有「连接方式」按钮：扫码绑定就是"改用开放平台"的那个动作
-     （切换由服务端在绑定**完成**时做，见 deploy.bind_poll）。OneBot 正在用的话先问一句 ——
-     绑定完成会停掉它。状态读不到时不往下走：宁可让人重试，也不在没确认的情况下切换。 */
-  try {
-    const current = await call('query', {action:'dashboard'});
-    if (OneBotLegacy.inUse(current) && !await UIConfirm.ask(OneBotLegacy.text('switch_confirm'),
-        {danger:false, okText:OneBotLegacy.text('switch_ok')})) {
-      bindStatus(OneBotLegacy.text('switch_cancelled'));
-      return;
-    }
-  } catch (e) {
-    bindStatus(OneBotLegacy.text('state_unknown'));
-    return;
-  }
   bindStatus('正在申请绑定任务…');
   try {
     const d = await call('deploy', {action:'bind_start'});
