@@ -87,8 +87,9 @@ body{display:flex;height:100vh;overflow:hidden}
         <div class="nav-item" data-page="prompts"><span data-i18n="ui.napcat.sidebar.prompts">提示词</span></div>
         <div class="nav-section" data-i18n="ui.layout.maintenance">排查与维护</div>
         <div class="nav-item" data-page="logs"><span data-i18n="ui.shared.sidebar.logs">日志</span></div>
-        <a class="nav-item setup-nav" href="status.html" data-nav="status.html" data-i18n="ui.index.status.title">一键部署</a>
-        <a class="nav-item" href="napcat.html" data-nav="napcat.html">OneBot 控制台 ↗</a>
+        <!-- [stable-no-onebot-ui] 稳定版：这条通往扫码绑定页（测试版上叫「一键部署」），
+             下面原有的「OneBot 控制台 ↗」入口不出现。 -->
+        <a class="nav-item setup-nav" href="status.html" data-nav="status.html" data-i18n="ui.index.bind.title">扫码绑定</a>
     </nav>
     <div class="actions">
         <button class="btn-start" onclick="doStart()" data-i18n="ui.shared.sidebar.start">启动</button>
@@ -105,6 +106,8 @@ body{display:flex;height:100vh;overflow:hidden}
     <span class="tb-status" style="margin-left:10px"><span class="dot" id="conn-dot" style="background:var(--danger)"></span><span id="conn-text" data-i18n="ui.shared.topbar.disconnected">未连接</span></span>
 </div>
 <div id="content">
+<!-- [stable-no-onebot-ui] 已接入 OneBot 的老用户：后端照跑，这里只提示一句（显示与否由 onebot-legacy.js 决定） -->
+<div id="onebot-legacy-note" role="status" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:var(--radius);background:var(--warning-tint);color:var(--warning-on-tint);font-size:12px;line-height:1.7"></div>
 <div class="page active" id="page-status-overview">
     <div class="card"><div class="card-title" data-i18n="ui.shared.status.title">连接状态</div>
         <div style="display:flex;gap:20px;flex-wrap:wrap">
@@ -181,7 +184,7 @@ body{display:flex;height:100vh;overflow:hidden}
          用户却永远看不到（回复策略删除后这个容器必须搬到可见页，否则 loadBots 会
          在 box 为 null 时抛错）。见 docs/SESSION-HANDOFF.md §24。 -->
     <div class="card"><div class="card-title" data-i18n="ui.openplat.bots.title">机器人账本</div>
-      <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:10px" data-i18n="ui.openplat.bots.desc">扫码绑定在「一键部署」页（那页会按当前连接模式显示对应的自动化）。这里管理本机记录过的机器人：点「用它」即可切换，不必重新扫码 —— <b>扫码会轮换 AppSecret</b>，能复用就别重扫。</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:10px" data-i18n="ui.openplat.bots.desc">扫码绑定在「扫码绑定」页。这里管理本机记录过的机器人：点「用它」即可切换，不必重新扫码 —— <b>扫码会轮换 AppSecret</b>，能复用就别重扫。</div>
       <div id="bind-bots" style="font-size:13px"></div>
     </div>
 </div>
@@ -272,6 +275,7 @@ body{display:flex;height:100vh;overflow:hidden}
 <script src="i18n.js?v=3"></script>
 <script src="nav.js?v=1"></script>
 <script src="ui-confirm.js?v=1"></script>
+<script src="onebot-legacy.js?v=1"></script>
 <script src="ui-sse.js?v=3"></script>
 <script>
 'use strict';
@@ -314,7 +318,11 @@ document.getElementById("modal-bg").style.display="flex"}
 function applySettings(s){s=s||{};let _skc=document.getElementById('cfg-sticker-collect');if(_skc)_skc.value=['off','current','any'].includes(s.sticker_collect_policy)?s.sticker_collect_policy:'current';document.getElementById('cfg-appid').value=s.qq_open_app_id||'';document.getElementById('cfg-secret').value=s.qq_open_client_secret||'';document.getElementById('cfg-sandbox').checked=s.qq_open_sandbox_enabled===true;document.getElementById('cfg-identity-probe').checked=!!s.qq_open_identity_probe_enabled;document.getElementById('cfg-group-memory').checked=!!s.group_memory_enabled;document.getElementById('cfg-group-member-memory').checked=!!s.group_member_memory_enabled;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=!!s.allow_cross_group_context;syncGroupMemoryDeps();}
 function syncGroupMemoryDeps(){var g=document.getElementById('cfg-group-memory'),m=document.getElementById('cfg-group-member-memory');if(!g.checked)m.checked=false;m.disabled=!g.checked;m.closest('.form-group').style.opacity=g.checked?'':'0.55'}
 document.getElementById('cfg-group-memory').addEventListener('change',syncGroupMemoryDeps);
-function applyDashboard(d){let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];state.identityScope=d.identity_scope||{};applySettings(s);updateStatusBar();updateGuide();renderUsers();renderIdentityScope()}
+/* [stable-no-onebot-ui] 已接入 OneBot 的老用户进这页时，不许把连接方式改成开放平台 —— 那会让
+   下次启动连不上 QQ。keepOneBot 为真时：bootstrap / 保存 / 启动都不带 qq_connection_mode，
+   于是这里的启动、停止与通用设置照样对 OneBot 生效。要改用开放平台，走扫码绑定。 */
+function modeArgs(){return state.keepOneBot?{}:{qq_connection_mode:MODE}}
+function applyDashboard(d){state.keepOneBot=OneBotLegacy.inUse(d);OneBotLegacy.renderNote(document.getElementById('onebot-legacy-note'),d,!0);let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];state.identityScope=d.identity_scope||{};applySettings(s);updateStatusBar();updateGuide();renderUsers();renderIdentityScope()}
 // 降级必须可见（设计文档 §2.15.4.3）：actor_scope 为 per_conversation 时才有
 // 「群内 ID 认领」这回事——napcat 下 ID 是真实 QQ 号，跨群本来就是同一个。
 function renderIdentityScope(){let card=document.getElementById('identity-scope-card');if(!card)return;card.style.display=(state.identityScope||{}).actor_scope==='per_conversation'?'':'none'}
@@ -350,8 +358,8 @@ async function doSetGroupStickerCollect(gid, checkbox){
 }
 function renderKeywords(){let tb=document.getElementById('kw-table');let lbls=state.backlogLabels||[];if(!lbls.length){tb.innerHTML='<tr><td colspan="5" style="color:var(--text-secondary)">'+t('ui.shared.render.no_labels','暂无标签')+'</td></tr>';return}tb.innerHTML=lbls.map(l=>{let kw=escapeHtml((l.keywords||[]).join(', ')),isBl=(l.priority||0)<0;return`<tr><td>${escapeHtml(l.id)}</td><td>${escapeHtml(l.label)}</td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${kw}</td><td style="color:${isBl?'var(--danger)':'var(--success)'}">${escapeHtml(String(l.priority||0))}</td><td><button class="btn btn-danger btn-sm" onclick="doRemoveKeyword('${escapeOnclick(l.id)}')">${t('ui.shared.btn.remove','移除')}</button></td></tr>`}).join('')}
 async function loadDashboard(){try{let d=await call('query', {action:'dashboard'});applyDashboard(d)}catch(e){console.error('loadDashboard failed',e)}}
-async function doSave(){try{let args={sticker_collect_policy:((document.getElementById('cfg-sticker-collect')||{}).value||'current'),qq_connection_mode:MODE,qq_open_app_id:document.getElementById('cfg-appid').value.trim(),qq_open_client_secret:document.getElementById('cfg-secret').value,qq_open_sandbox_enabled:document.getElementById('cfg-sandbox').checked,qq_open_identity_probe_enabled:document.getElementById('cfg-identity-probe').checked,group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1){toast(t('ui.shared.toast.save_not_persisted','写盘失败，设置已回滚（记忆开关未生效）'))}else{toast(t('ui.shared.toast.saved','设置已保存'),!0)}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
-async function doStart(){try{await call('config', {action:'save', qq_connection_mode:MODE});await call('runtime',{action:'start'});toast(t('ui.shared.toast.started','已启动'),!0);await loadDashboard()}catch(e){toast(t('ui.shared.toast.start_failed_prefix','启动失败: ')+e.message)}}
+async function doSave(){try{let args={sticker_collect_policy:((document.getElementById('cfg-sticker-collect')||{}).value||'current'),...modeArgs(),qq_open_app_id:document.getElementById('cfg-appid').value.trim(),qq_open_client_secret:document.getElementById('cfg-secret').value,qq_open_sandbox_enabled:document.getElementById('cfg-sandbox').checked,qq_open_identity_probe_enabled:document.getElementById('cfg-identity-probe').checked,group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1){toast(t('ui.shared.toast.save_not_persisted','写盘失败，设置已回滚（记忆开关未生效）'))}else{toast(t('ui.shared.toast.saved','设置已保存'),!0)}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
+async function doStart(){try{if(!state.keepOneBot)await call('config', {action:'save', qq_connection_mode:MODE});await call('runtime',{action:'start'});toast(t('ui.shared.toast.started','已启动'),!0);await loadDashboard()}catch(e){toast(t('ui.shared.toast.start_failed_prefix','启动失败: ')+e.message)}}
 async function doStop(){try{await call('runtime',{action:'stop'});toast(t('ui.shared.toast.stopped','已停止'),!0);await loadDashboard()}catch(e){toast(t('ui.shared.toast.stop_failed_prefix','停止失败: ')+e.message)}}
 function showModal(type){let title='',b='';if(type==='user'){title=t('ui.shared.form.user_title','添加信任用户');b='<div class="form-group"><label class="form-label">'+t('ui.shared.form.userid_label','用户ID (openid)')+'</label><input class="form-input" id="mu-qq" placeholder="'+t('ui.shared.form.required','必填')+'"></div><div class="form-group" id="mu-nick-group"><label class="form-label">'+t('ui.shared.form.nickname_label','昵称')+'</label><input class="form-input" id="mu-nick" placeholder="'+t('ui.shared.form.optional','可选')+'"></div><div class="form-group"><label class="form-label">'+t('ui.shared.form.level_label','级别')+'</label><select class="form-select" id="mu-level" onchange="document.getElementById(\'mu-nick-group\').style.display=this.value===\'admin\'?\'none\':\'\'"><option value="admin">'+t('ui.shared.form.level_admin','管理员')+'</option><option value="trusted" selected>'+t('ui.shared.form.level_trusted','信任用户')+'</option><option value="normal">'+t('ui.shared.form.level_normal','普通用户')+'</option><option value="blacklist">'+t('ui.shared.form.level_blacklist','黑名单（不处理其消息）')+'</option></select></div>'}else{title=t('ui.shared.form.group_title','添加信任群聊');b='<div class="form-group"><label class="form-label">'+t('ui.shared.form.group_label','群号')+'</label><input class="form-input" id="mg-id" placeholder="'+t('ui.shared.form.required','必填')+'"></div><div class="form-group"><label class="form-label">'+t('ui.shared.form.level_label','级别')+'</label><select class="form-select" id="mg-level"><option value="trusted" selected>'+t('ui.shared.form.level_trusted_group','信任群')+'</option><option value="normal">'+t('ui.shared.form.level_normal_group','普通群')+'</option></select></div>'}document.getElementById('modal-title').textContent=title;document.getElementById('modal-body').innerHTML=b;let btn=document.getElementById('modal-confirm');btn.onclick=type==='user'?async()=>{let qq=document.getElementById('mu-qq').value.trim();if(!qq)return toast(t('ui.shared.form.validate_qq','请输入QQ号'));try{await call('trust', {action:'user_add', qq_number:qq,level:document.getElementById('mu-level').value,nickname:document.getElementById('mu-nick').value.trim()});hideModal();await loadDashboard();toast(t('ui.shared.toast.added','已添加'),!0)}catch(e){toast(t('ui.shared.toast.add_failed_prefix','添加失败: ')+e.message)}}:async()=>{let gid=document.getElementById('mg-id').value.trim();if(!gid)return toast(t('ui.shared.form.validate_group','请输入群号'));try{await call('trust', {action:'group_add', group_id:gid,level:document.getElementById('mg-level').value});hideModal();await loadDashboard();toast(t('ui.shared.toast.added','已添加'),!0)}catch(e){toast(t('ui.shared.toast.add_failed_prefix','添加失败: ')+e.message)}};document.getElementById('modal-bg').style.display='flex'}
 function hideModal(){document.getElementById('modal-bg').style.display='none';var c=document.getElementById('modal-confirm');if(c)c.style.display=''}
@@ -423,7 +431,7 @@ async function loadBots(){
 
 loadBots();
 
-async function bootstrap(){try{await call('config', {action:'save', qq_connection_mode:MODE});let d=await call('query', {action:'dashboard'});applyDashboard(d)}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}
+async function bootstrap(){try{let d=await call('query', {action:'dashboard'});if(!OneBotLegacy.inUse(d)){await call('config', {action:'save', qq_connection_mode:MODE});d=await call('query', {action:'dashboard'})}applyDashboard(d)}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}
 bootstrap();
 </script>
 <script src="plugin-tools.js?v=1"></script>

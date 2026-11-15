@@ -12,6 +12,8 @@ def test_login_display_and_qrcode_refresh():
         pytest.skip("Node.js is needed to execute frontend behavior tests")
     html = (Path(__file__).resolve().parents[1] / "static/status.html").read_text(encoding="utf-8")
     backend = (Path(__file__).resolve().parents[1] / "static/onebot-backend.js").read_text(encoding="utf-8")
+    # 稳定版：loadDashboardState 里多了一句 OneBotLegacy（已接入 OneBot 的老用户提示）。
+    backend += (Path(__file__).resolve().parents[1] / "static/onebot-legacy.js").read_text(encoding="utf-8")
     script = html.split("let dashboardLoad = null;", 1)[1].split("/* ── 开放平台扫码绑定", 1)[0]
     deploy_handler = html.split("const DEPLOY_TIMEOUT_MS =", 1)[1].split("document.getElementById('btn-apply').addEventListener", 1)[0]
     deploy_handler = "const DEPLOY_TIMEOUT_MS =" + deploy_handler
