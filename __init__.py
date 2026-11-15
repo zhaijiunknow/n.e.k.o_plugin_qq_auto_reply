@@ -2567,6 +2567,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._qq_settings["qq_open_app_id"] = appid
         self._qq_settings["qq_open_client_secret"] = secret
         self._qq_bind_session = None
+        # 扫码绑定完成 = 改用这个开放平台机器人。连接方式还不是开放平台时一并切过去：
+        # 否则下面的收尾重建会按旧方式再起一条 OneBot 连接，新凭据写了却没人用。
+        # 切换发生在**绑定完成**这一刻而不是开始扫码时 —— 中途放弃扫码不该动现有连接。
+        switched_from_onebot = str(self._qq_settings.get("qq_connection_mode") or "napcat").strip() != "open_platform"
+        if switched_from_onebot:
+            self._qq_settings["qq_connection_mode"] = "open_platform"
 
         # 扫码者 = 主人。绑定回包里的 ``user_openid`` 是**平台**给出的、扫码那个人
         # 的 openid —— 这是唯一一个"谁是主人"能被平台证明的时刻，比事后靠
@@ -2598,6 +2604,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self.logger.warning(
                 f"[绑定] 凭据未通过校验（旧密钥此时已被轮换，新值仍已写入配置）: "
                 f"{verify['error']}")
+
+        if switched_from_onebot:
+            # 旧的 OneBot 运行时连同插件拉起的后端进程一起停：开放平台不用它，而收尾重建
+            # 那一步刻意不碰后端进程（且 auto_start=False 时什么都不做）。
+            self.logger.info("[绑定] 连接方式由 OneBot 切换到开放平台，停止 OneBot 连接与后端进程")
+            try:
+                await self._stop_auto_reply_runtime(stop_napcat=True)
+            except Exception as e:
+                self.logger.warning(f"[绑定] 停止 OneBot 运行时失败（连接方式已切换）: {e}")
 
         auto = await self._restart_auto_reply_runtime(bool(auto_start))
 

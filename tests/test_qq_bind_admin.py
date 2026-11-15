@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
 from plugin.plugins.qq_auto_reply import qq_official_bind as bind
 from plugin.plugins.qq_auto_reply.permission import PermissionManager
 
 
-def _plugin(monkeypatch, *, openid: str = "OPENID_OF_SCANNER"):
+def _plugin(monkeypatch, *, openid: str = "OPENID_OF_SCANNER", mode: str = "open_platform"):
     async def _poll(session):
         return {"status": "completed", "appid": "1903565393",
                 "secret": "s", "user_openid": openid}
@@ -27,8 +28,13 @@ def _plugin(monkeypatch, *, openid: str = "OPENID_OF_SCANNER"):
     async def _restart(auto_start):
         return {"ok": True, "status": "started", "error": ""}
 
+    async def _stop(*, stop_napcat):
+        p.stopped.append(stop_napcat)
+
     p = QQAutoReplyPlugin.__new__(QQAutoReplyPlugin)
-    p._qq_settings = {}
+    p._qq_settings = {"qq_connection_mode": mode}
+    p.stopped = []
+    p._stop_auto_reply_runtime = _stop
     p._qq_bind_session = bind.BindSession(task_id="t", bind_key="k", qrcode="")
     p.permission_mgr = PermissionManager()
     p.logger = SimpleNamespace(info=lambda *a: None, warning=lambda *a: None,
@@ -105,3 +111,44 @@ async def test_invalid_openid_is_logged_not_raised(monkeypatch):
 
     assert r.is_ok(), r
     assert p.permission_mgr.list_users() == []
+
+
+# ── 绑定完成 = 改用开放平台 ─────────────────────────────────
+#
+# 没有 OneBot 界面的版本里页面上没有「连接方式」按钮，扫码绑定就是"改用开放平台"的那个
+# 动作。绑定回包只带凭据；连接方式不跟着切的话，收尾会按旧方式再起一条 OneBot 连接。
+
+@pytest.mark.parametrize("mode", ["napcat", "napcat_forward", ""])
+async def test_bind_switches_an_onebot_setup_to_the_open_platform(monkeypatch, mode):
+    p = _plugin(monkeypatch, mode=mode)
+
+    r = await p.deploy(action="bind_poll")
+
+    assert r.is_ok(), r
+    assert p._qq_settings["qq_connection_mode"] == "open_platform"
+    assert p.stopped == [True], "旧的 OneBot 运行时要连同插件拉起的后端进程一起停"
+
+
+async def test_bind_on_the_open_platform_leaves_the_runtime_to_the_rebuild(monkeypatch):
+    p = _plugin(monkeypatch, mode="open_platform")
+
+    await p.deploy(action="bind_poll")
+
+    assert p._qq_settings["qq_connection_mode"] == "open_platform"
+    assert p.stopped == [], "本来就是开放平台：只走收尾重建，不额外停后端"
+
+
+async def test_an_unfinished_bind_does_not_touch_the_connection_mode(monkeypatch):
+    """中途的轮询（还在等扫码 / 二维码过期）不能动现有连接。"""
+    p = _plugin(monkeypatch, mode="napcat")
+
+    async def _waiting(session):
+        return {"status": "pending"}
+
+    monkeypatch.setattr(bind, "poll_bind_result", _waiting)
+
+    r = await p.deploy(action="bind_poll")
+
+    assert r.is_ok() and r.value["status"] == "pending"
+    assert p._qq_settings["qq_connection_mode"] == "napcat"
+    assert p.stopped == []
