@@ -543,3 +543,109 @@ async def test_overlapping_history_pages_do_not_replay_a_message_twice(tmp_path)
     client.get_group_msg_history = fetch
     await svc.catch_up(force=True)
     assert [m["message_seq"] for m in dispatcher.injected] == [11, 12, 13]
+
+
+# ── 开放平台：没有历史消息接口，这个通道上不补 ──────────────────
+#
+# 真机（2026-11-16，从 OneBot 切到开放平台之后）：补消息每 30 秒对每个会话报一次
+#   [Catchup] 拉取 group:… 历史失败: QQOpenPlatformConnection.get_group_msg_history()
+#   takes 1 positional argument but 2 were given
+# 一个多小时 1179 条。官方 v2 没有"按会话翻历史"这个接口：#3709 的适配器对这两个方法
+# 直接抛"平台不提供"，而且只收关键字参数 —— 这边按位置传，连那句"不提供"都没走到。
+# 游标上的缺口标记永远清不掉，于是每个周期都重试，还捎上 OneBot 时期留下的那些会话。
+
+
+class _RecordingLogger(_Logger):
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.infos: list[str] = []
+
+    def warning(self, message="", *a, **k):
+        self.warnings.append(str(message))
+
+    def info(self, message="", *a, **k):
+        self.infos.append(str(message))
+
+
+class _OpenPlatformClient:
+    """形状照 #3709 的 ``QQOpenPlatformConnection``：历史接口只收关键字参数，并且直接抛。"""
+
+    CHANNEL = "open"
+
+    def __init__(self) -> None:
+        self.connected = True
+        self.self_id = "bot-openid"
+        self.history_calls = 0
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def get_group_msg_history(self, **kw):
+        self.history_calls += 1
+        raise RuntimeError("QQ Open Platform does not offer message history: no such interface in v2")
+
+    async def get_friend_msg_history(self, **kw):
+        self.history_calls += 1
+        raise RuntimeError("QQ Open Platform does not offer message history: no such interface in v2")
+
+
+def _open_platform_service(tmp_path):
+    plugin, _onebot_client, dispatcher = _plugin(tmp_path, settings={"catchup_stagger_ms": 0})
+    plugin.qq_client = client = _OpenPlatformClient()
+    plugin.logger = logger = _RecordingLogger()
+    svc = QQMessageCatchupService(plugin)
+    # OneBot 时期留下的会话：带着没补上的缺口。
+    svc.note_message(_msg(10))
+    svc.note_message(_msg(12))
+    assert svc._cursors["group:500"]["pending_seq"] == 10
+    return svc, client, logger, dispatcher
+
+
+@_sync
+async def test_the_open_platform_never_polls_history_for_a_gap(tmp_path):
+    svc, client, logger, dispatcher = _open_platform_service(tmp_path)
+    for _ in range(4):
+        await svc._watch_tick()
+    assert client.history_calls == 0
+    assert logger.warnings == [], "这个通道上补不了不是故障，不该每个周期告警一次"
+    assert dispatcher.injected == []
+    # 缺口标记原样留着：切回 OneBot 之后还要靠它把这段补上。
+    assert svc._cursors["group:500"]["pending_seq"] == 10
+    # 为什么没补要说一次，而且只说一次。
+    assert len([line for line in logger.infos if "[Catchup]" in line and "开放平台" in line]) == 1
+
+
+@_sync
+async def test_an_open_platform_reconnect_does_not_start_a_catch_up(tmp_path):
+    svc, client, logger, _dispatcher = _open_platform_service(tmp_path)
+    svc._cursors["group:500"].pop("pending_seq")
+    await svc._watch_tick()          # 首次采样
+    client.connected = False
+    await svc._watch_tick()          # 掉线
+    client.connected = True
+    await svc._watch_tick()          # 重连
+    assert client.history_calls == 0 and logger.warnings == []
+    assert "pending_seq" not in svc._cursors["group:500"], "补不了的通道上不该再记新的缺口"
+    assert svc._was_connected is True, "连接状态照常跟踪（状态页要看）"
+
+
+@_sync
+async def test_a_manual_catch_up_on_the_open_platform_says_unsupported(tmp_path):
+    svc, client, logger, _dispatcher = _open_platform_service(tmp_path)
+    result = await svc.catch_up(reason="manual", force=True)
+    assert result["status"] == "unsupported" and result["injected"] == 0
+    assert client.history_calls == 0 and logger.warnings == []
+    assert svc.describe_state()["last_result"]["status"] == "unsupported"
+
+
+@_sync
+async def test_switching_back_to_onebot_repairs_the_gap_left_behind(tmp_path):
+    """在开放平台上按兵不动的那段缺口，换回有历史接口的通道后照常补。"""
+    svc, _client, _logger, dispatcher = _open_platform_service(tmp_path)
+    await svc._watch_tick()
+    await svc._watch_tick()
+    onebot = _Client()
+    onebot.history["group:500"] = [_msg(11), _msg(12)]
+    svc.plugin.qq_client = onebot
+    await svc._watch_tick()
+    assert [m["message_seq"] for m in dispatcher.injected] == [11]

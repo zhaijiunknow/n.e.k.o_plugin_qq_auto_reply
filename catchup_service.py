@@ -74,6 +74,11 @@ class QQMessageCatchupService:
         "no such action", "未实现", "undefine", "not found",
     )
 
+    #: 没有"按会话翻历史"接口的通道（连接对象的 ``CHANNEL``）。开放平台官方 v2 不提供
+    #: 这个接口，所以在这个通道上**一次都不去拉**：以前会每个周期对每个会话试一遍，
+    #: 新适配器下每次都是一条告警（见 :meth:`_history_unavailable`）。
+    NO_HISTORY_CHANNELS = ("open",)
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self.logger = getattr(plugin, "logger", None)
@@ -107,6 +112,8 @@ class QQMessageCatchupService:
             "seq_missing": 0,
         }
         self._consecutive_failures = 0
+        #: "这个通道补不了"只说一次（每次进程启动）。
+        self._no_history_noted = False
 
     # ── 配置 ────────────────────────────────────────────────
 
@@ -317,6 +324,10 @@ class QQMessageCatchupService:
             connected = False
         previous = self._was_connected
         self._was_connected = connected
+        if self._history_unavailable(client):
+            # 补不了的通道：不记新缺口，也不去拉。已有的缺口标记原样留着 ——
+            # 它们多半是 OneBot 时期留下的，换回去之后还要靠它们补。
+            return
         if previous is None:
             # 第一次采样只记录。插件刚启动时"连上了"不算重连：
             # 那时候游标是上次运行留下的，本来就该对齐，但没有"漏的消息"
@@ -330,6 +341,23 @@ class QQMessageCatchupService:
             await self.catch_up(reason="reconnect" if not previous else "sequence_gap")
 
     # ── 主流程 ──────────────────────────────────────────────
+
+    def _history_unavailable(self, client: Any) -> bool:
+        """这个连接所在的通道是不是根本没有历史消息接口（见 ``NO_HISTORY_CHANNELS``）。
+
+        真机（2026-11-16）：切到开放平台后，每 30 秒每个会话一条
+        ``get_group_msg_history() takes 1 positional argument but 2 were given``。
+        新适配器的这两个方法只收关键字参数、并且本来就抛"平台不提供"；游标上的缺口
+        标记因此永远清不掉，每个周期都重试。旧适配器返回空 dict，同样每个周期白试一遍，
+        只是不出声。
+        """
+        channel = str(getattr(client, "CHANNEL", "") or "").strip().lower()
+        if channel not in self.NO_HISTORY_CHANNELS:
+            return False
+        if not self._no_history_noted:
+            self._no_history_noted = True
+            self._emit("INFO", "[Catchup] 开放平台没有历史消息接口，这个通道上不做重连补消息")
+        return True
 
     def _self_id(self) -> str:
         client = getattr(self.plugin, "qq_client", None)
@@ -355,6 +383,12 @@ class QQMessageCatchupService:
     async def catch_up(self, *, reason: str = "manual", force: bool = False) -> dict[str, Any]:
         """重连后对账补消息。返回这次做了什么，供日志和状态查询用。"""
         await self._load()
+        if self._history_unavailable(getattr(self.plugin, "qq_client", None)):
+            self._last_result = {
+                "status": "unsupported", "reason": reason, "conversations": 0,
+                "injected": 0, "skipped": 0, "details": [],
+            }
+            return self._last_result
         now = time.time()
         # 连接抖动时 30 秒内可能触发好几次，没必要每次都打接口
         if not force and now - self._last_catchup_at < self.MIN_INTERVAL_SECONDS:
@@ -600,9 +634,10 @@ class QQMessageCatchupService:
             ``status=failed`` 会抛 ``RuntimeError``，只能从文案里认。
           - ``failed``：超时/连接断了/返回形状不认识
 
-        **开放平台通道走这条路永远是 ``failed``**：`qq_open_plat.py` 里这两个
-        方法是同名空实现，直接返回 ``{}``。空 dict 不能当成"真没消息"，否则
-        用户会以为补成功了，而实际上一条都没补。
+        **开放平台通道不走这条路**（见 :meth:`_history_unavailable`）：它没有这个接口。
+        旧适配器 `qq_open_plat.py` 里这两个方法是同名空实现，直接返回 ``{}``；空 dict
+        不能当成"真没消息"（下面按 ``failed`` 处理），否则用户会以为补成功了，而实际上
+        一条都没补。
         """
         client = getattr(self.plugin, "qq_client", None)
         if client is None:
