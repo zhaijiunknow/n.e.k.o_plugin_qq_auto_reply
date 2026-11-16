@@ -1514,7 +1514,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                        "enum": ["user_add", "user_remove", "user_nickname",
                                 "group_add", "group_remove", "claims",
                                 "identity_bind", "identity_unbind", "refresh_contacts",
-                                "link_code", "links", "unlink"],
+                                "link_code", "links", "unlink", "link"],
                        "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
             "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
@@ -1522,7 +1522,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
             "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
             "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
-            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份"},
+            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份；link：要匹配的旧 QQ 号"},
+            "target_group_id": {"type": "string", "description": "link：要匹配的旧群号（group_id 填新通道的群 ID）"},
         }, "required": ["action"], "additionalProperties": False},
     )
     async def trust(self, action: str = "", **kw):
@@ -1547,12 +1548,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._trust_identity_unbind(kw)
         if action == "refresh_contacts":
             return await self._trust_refresh_contacts(kw)
-        if action in ("link_code", "links", "unlink"):
+        if action in ("link_code", "links", "unlink", "link"):
             return self._trust_identity_links(action, kw)
         return Err(SdkError(
             f"BAD_ACTION: trust 不支持 {action!r}"
             f"（可选 user_add/user_remove/user_nickname/group_add/group_remove/"
-            f"claims/identity_bind/identity_unbind/refresh_contacts/link_code/links/unlink）"))
+            f"claims/identity_bind/identity_unbind/refresh_contacts/link_code/links/unlink/link）"))
 
     def _trust_identity_links(self, action: str, kw: dict[str, Any]):
         """换通道后的认领（见 ``identity_links``）。
@@ -1565,6 +1566,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if action == "link_code":
             try:
                 return Ok(self.identity_links.issue_code("group" if group_id else "user", group_id or qq_number))
+            except ValueError as exc:
+                return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
+        if action == "link":
+            # 管理员直接匹配：用户填 user_id + target_user_id，群填 group_id + target_group_id。
+            target_group = str(kw.get("target_group_id") or "").strip()
+            try:
+                if target_group or group_id:
+                    self.identity_links.link("group", group_id, target_group)
+                else:
+                    self.identity_links.link("user", kw.get("user_id"), kw.get("target_user_id"))
             except ValueError as exc:
                 return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
         if action == "unlink":
@@ -2610,6 +2621,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if admin_openid:
             if self.permission_mgr and self.permission_mgr.add_user(admin_openid, "admin"):
                 self._refresh_admin_qq()
+                # 扫码者就是主人：名单里有 OneBot 时期的那个管理员 QQ 号的话，直接认上。
+                links = getattr(self, "identity_links", None)
+                if links is not None:
+                    links.auto_link_admin(self.permission_mgr)
                 self.logger.info(f"[绑定] 已把扫码者设为管理员: {admin_openid}")
             else:
                 self.logger.warning(f"[绑定] 扫码者 openid 无效，未能设为管理员: {admin_openid!r}")

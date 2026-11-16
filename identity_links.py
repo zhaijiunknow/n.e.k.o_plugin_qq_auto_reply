@@ -18,6 +18,16 @@ OneBot 按 QQ 号、群号存名单和记忆。开放平台拿不到这两样，
 
 码十分钟过期、只能用一次（群里发出来别人看得见，用过即废），只存在内存里。
 
+## 不用码的两条路
+
+* **管理员自动匹配**（``auto_link_admin``）：名单里只有一个 QQ 号的管理员时，openid 形态的
+  管理员条目自动认到它上面。那些 openid 是扫码绑定时平台给出的（或管理员自己加的），
+  是"这个人就是主人"唯一能被证明的地方。有两个以上 QQ 管理员就不猜。撤销过的不再自动认。
+* **管理员在控制台直接匹配**（``link``）：新通道上出现过、还没认领的 ID 会列出来，附最近
+  一句话帮助辨认，管理员点一下指给某个旧账号。
+
+别人的 ID 做不到全自动：平台不给 QQ 号，没有任何信号能说明一个 openid 是谁。
+
 ## 第一版管到哪里
 
 名单（级别、昵称、群设置）、记忆服务的键（群 / 群成员 / 私聊对象 / 信赖度账号）、按群写的
@@ -50,6 +60,10 @@ class QQIdentityLinks:
         self._links: dict[str, dict[str, str]] = {"user": {}, "group": {}}
         #: 码 → {kind, legacy_id, expires_at}。只在内存里：重启即作废。
         self._codes: dict[str, dict[str, Any]] = {}
+        #: 被撤销过的自动匹配（openid）：不再自动认回去。
+        self._auto_off: set[str] = set()
+        #: 新通道上最近出现的 ID → {kind, id, group, text, at}。只在内存里，含一句话预览。
+        self._seen: dict[tuple[str, str], dict[str, Any]] = {}
         self._loaded = False
 
     # ── 存取 ────────────────────────────────────────────────────
@@ -72,13 +86,16 @@ class QQIdentityLinks:
                     str(linked).strip(): str(legacy).strip()
                     for linked, legacy in table.items() if str(linked).strip() and str(legacy).strip()
                 }
+        if isinstance(payload, dict) and isinstance(payload.get("auto_off"), list):
+            self._auto_off = {str(item) for item in payload["auto_off"]}
 
     def _save(self) -> None:
         path = self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_name(path.name + ".tmp")
         temp.write_text(json.dumps(
-            {"version": 1, "users": self._links["user"], "groups": self._links["group"]},
+            {"version": 1, "users": self._links["user"], "groups": self._links["group"],
+             "auto_off": sorted(self._auto_off)},
             ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, path)
 
@@ -159,10 +176,70 @@ class QQIdentityLinks:
 
     def unlink(self, kind: str, linked_id: Any) -> bool:
         self._load()
-        if kind not in self.KINDS or self._links[kind].pop(str(linked_id or "").strip(), None) is None:
+        linked = str(linked_id or "").strip()
+        if kind not in self.KINDS or self._links[kind].pop(linked, None) is None:
             return False
+        if kind == "user":
+            self._auto_off.add(linked)   # 撤销的若是自动匹配，别在下次载入名单时又认回去
         self._save()
         return True
+
+    # ── 不用码：管理员直接匹配 / 管理员自动匹配 ─────────────────
+
+    def link(self, kind: str, linked_id: Any, legacy_id: Any) -> None:
+        """管理员在控制台直接把一个新 ID 指给名单里的旧账号。"""
+        self._load()
+        linked, legacy = str(linked_id or "").strip(), str(legacy_id or "").strip()
+        if kind not in self.KINDS or not linked or not legacy:
+            raise ValueError("需要指定新 ID 和要匹配的旧账号")
+        if linked == legacy:
+            raise ValueError("新 ID 和旧账号是同一个")
+        if not self._roster_has(kind, legacy) or legacy in self._links[kind]:
+            raise ValueError("要匹配的旧账号不在名单里")
+        if linked in self._links[kind]:
+            raise ValueError("这个 ID 已经认领过了，请先撤销")
+        self._links[kind][linked] = legacy
+        self._auto_off.discard(linked)
+        self._seen.pop((kind, linked), None)
+        self._save()
+
+    OPENID_RE = re.compile(r"^[0-9A-Fa-f]{32}$")
+
+    def auto_link_admin(self, permission_mgr: Any) -> list[str]:
+        """名单里只有一个 QQ 号管理员时，把 openid 形态的管理员条目自动认到它上面。"""
+        try:
+            self._load()
+            admins = [str(row.get("qq") or "") for row in permission_mgr.list_users() if row.get("level") == "admin"]
+        except Exception:
+            return []
+        legacy = [qq for qq in admins if qq.isdigit()]
+        if len(legacy) != 1:
+            return []
+        added = [
+            qq for qq in admins
+            if self.OPENID_RE.match(qq) and qq not in self._links["user"] and qq not in self._auto_off
+        ]
+        for qq in added:
+            self._links["user"][qq] = legacy[0]
+        if added:
+            self._save()
+            self.plugin.logger.info(f"[Identity] 管理员自动匹配: {len(added)} 个 openid → {legacy[0]}")
+        return added
+
+    SEEN_MAX = 60
+
+    def note_seen(self, message: dict[str, Any]) -> None:
+        """记下新通道上出现的、还没认领的人和群（只在内存里），给控制台的直接匹配用。"""
+        sender = str(message.get("user_id") or "").strip()
+        group = str(message.get("group_id") or "").strip() if message.get("message_type") == "group" else ""
+        text = str(message.get("content") or "")[:24]
+        for kind, value in (("user", sender), ("group", group)):
+            if not value or value in self._links[kind] or self._roster_has(kind, value):
+                continue
+            self._seen.pop((kind, value), None)
+            self._seen[(kind, value)] = {"kind": kind, "id": value, "group": group, "text": text, "at": int(time.time())}
+        while len(self._seen) > self.SEEN_MAX:
+            self._seen.pop(next(iter(self._seen)))
 
     def snapshot(self) -> dict[str, Any]:
         """给控制台看的：已有的映射 + 名单里可以发码的旧账号。不含任何认领码。"""
@@ -171,6 +248,7 @@ class QQIdentityLinks:
         groups = getattr(self.plugin, "group_permission_mgr", None)
         return {
             "users": dict(self._links["user"]), "groups": dict(self._links["group"]),
+            "seen": [row for key, row in reversed(list(self._seen.items())) if key[1] not in self._links[key[0]]],
             "candidates": {
                 "users": [
                     {"id": str(row.get("qq")), "level": row.get("level"), "nickname": row.get("nickname") or ""}
@@ -204,7 +282,14 @@ class QQIdentityLinks:
         if client is None or str(getattr(client, "CHANNEL", "") or "") != "open":
             return False
         kind = str(message.get("message_type") or "")
-        if kind not in ("private", "group") or (kind == "group" and not message.get("is_at_bot")):
+        if kind not in ("private", "group"):
+            return False
+        try:
+            self._load()
+            self.note_seen(message)
+        except Exception:
+            pass
+        if kind == "group" and not message.get("is_at_bot"):
             return False
         match = self.COMMAND_RE.match(str(message.get("content") or message.get("raw_message") or ""))
         if match is None or not self.has_pending():

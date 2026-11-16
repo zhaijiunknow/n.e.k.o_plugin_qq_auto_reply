@@ -824,7 +824,7 @@
   "ui.stable.beta_failed": "Update to beta failed: ",
   "errors.invalid_level": "Unrecognised permission level {level}; allowed: {allowed}",
   "ui.openplat.links.title": "Claim after switching channels",
-  "ui.openplat.links.hint": "After moving from OneBot to the Open Platform every person and group has a new ID, so their level, nickname, group settings and memory no longer match. Generate a claim code for an old QQ number or group number on the roster and have them send \"claim CODE\" here: in a private chat it links that person; in a group, mentioning her, it links their identity in that group; a group's code must be sent in that group, mentioning her. A code is valid for 10 minutes and works once. A claimed ID inherits the old account's level, so make sure it is really them.",
+  "ui.openplat.links.hint": "After moving from OneBot to the Open Platform every person and group has a new ID, so their level, nickname, group settings and memory no longer match. The admin is matched automatically (when the roster has exactly one admin QQ number). For everyone else there are two ways: pick a match under \"IDs not matched yet\" below, or generate a claim code for an old QQ number or group number and have them send \"claim CODE\" (in a private chat it links that person; in a group, mentioning her, it links their identity in that group; a group's code must be sent in that group, mentioning her; valid for 10 minutes, works once). A matched ID inherits the old account's level, so make sure it is the same person.",
   "ui.openplat.links.col_old": "Old account",
   "ui.openplat.links.col_new": "Claimed new IDs",
   "ui.openplat.links.kind_user": "User",
@@ -839,5 +839,17 @@
   "ui.openplat.links.load_failed": "Could not load claim records: ",
   "ui.openplat.links.unlink_confirm": "Undo this claim? The new ID will stop inheriting the old account's level and records; the old records themselves are untouched.",
   "ui.openplat.links.unlink_done": "Undone",
-  "ui.openplat.links.unlink_failed": "Could not undo: "
+  "ui.openplat.links.unlink_failed": "Could not undo: ",
+  "ui.openplat.links.seen_title": "IDs seen on the new channel and not matched yet",
+  "ui.openplat.links.col_seen": "New ID",
+  "ui.openplat.links.col_said": "Last message",
+  "ui.openplat.links.col_match": "Match to",
+  "ui.openplat.links.seen_empty": "None yet. Have them send a message on the new channel, then refresh.",
+  "ui.openplat.links.in_group": "Group member",
+  "ui.openplat.links.in_private": "Private chat",
+  "ui.openplat.links.btn_match": "Match",
+  "ui.openplat.links.no_target": "The roster has no old account to match to",
+  "ui.openplat.links.match_confirm": "Match this new ID to {target}? It will inherit {target}'s level and records, so make sure it is the same person (or the same group).",
+  "ui.openplat.links.match_done": "Matched",
+  "ui.openplat.links.match_failed": "Could not match: "
 }

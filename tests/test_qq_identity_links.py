@@ -233,7 +233,8 @@ def test_the_console_has_the_claim_card_wired():
     root = pathlib.Path(__file__).resolve().parents[1]
     html = (root / "static" / "open_platform.html").read_text(encoding="utf-8")
     assert 'id="identity-links-card"' in html and 'id="link-table"' in html and 'id="link-code-box"' in html
-    for name in ("loadIdentityLinks", "renderIdentityLinks", "doLinkCode", "doUnlink"):
+    assert 'id="seen-table"' in html and "action:'link'," in html, "控制台缺「直接匹配」"
+    for name in ("loadIdentityLinks", "renderIdentityLinks", "doLinkCode", "doUnlink", "renderSeenIds", "doLinkDirect"):
         assert re.search(rf"function {name}\(", html), f"控制台缺 {name}()"
     assert "if(sub==='accounts'){loadIdentityLinks();" in html, "进「用户」页时要加载认领记录"
     for action in ("action:'links'", "action:'link_code'", "action:'unlink'"):
@@ -245,3 +246,80 @@ def test_the_console_has_the_claim_card_wired():
         bundle = json.loads((root / "i18n" / name).read_text(encoding="utf-8"))
         assert not sorted(key for key in keys if not bundle.get(key)), f"{name} 缺认领相关文案"
 
+
+# ── 不用码：管理员自动匹配、控制台直接匹配 ──────────────────────────
+
+def _rebuild(plugin, users, groups=()):
+    QQSettingsService(plugin).rebuild_permission_managers({"trusted_users": list(users), "trusted_groups": list(groups)})
+    plugin.memory_bridge = QQMemoryBridge(plugin)
+
+
+def test_the_scan_bound_admin_is_matched_to_the_old_admin_automatically(tmp_path):
+    """扫码绑定把扫码者的 openid 登记成管理员；名单里只有一个 QQ 管理员时，两者就是同一个人。"""
+    plugin = _plugin(tmp_path)
+    _rebuild(plugin, [{"qq": OWNER_QQ, "level": "admin"}, {"qq": OPENID_PRIVATE, "level": "admin"},
+                      {"qq": FRIEND_QQ, "level": "trusted"}])
+    assert plugin.identity_links.user(OPENID_PRIVATE) == OWNER_QQ
+    assert plugin.memory_bridge.speaker_account_id(OPENID_PRIVATE) == f"qq:{OWNER_QQ}"
+    assert plugin.identity_links.user(FRIEND_QQ) == FRIEND_QQ
+    assert json.loads((tmp_path / QQIdentityLinks.FILENAME).read_text(encoding="utf-8"))["users"] == {
+        OPENID_PRIVATE: OWNER_QQ}
+
+
+@pytest.mark.parametrize("users", [
+    [{"qq": OWNER_QQ, "level": "admin"}, {"qq": "10009", "level": "admin"}, {"qq": OPENID_PRIVATE, "level": "admin"}],
+    [{"qq": OPENID_PRIVATE, "level": "admin"}, {"qq": FRIEND_QQ, "level": "trusted"}],
+    [{"qq": OWNER_QQ, "level": "admin"}, {"qq": OPENID_PRIVATE, "level": "trusted"}],
+])
+def test_the_automatic_match_never_guesses(tmp_path, users):
+    """两个 QQ 管理员、没有 QQ 管理员、或那个 openid 不是管理员：都不自动匹配。"""
+    plugin = _plugin(tmp_path)
+    _rebuild(plugin, users)
+    assert plugin.identity_links.user(OPENID_PRIVATE) == OPENID_PRIVATE
+
+
+def test_an_undone_automatic_match_stays_undone(tmp_path):
+    plugin = _plugin(tmp_path)
+    users = [{"qq": OWNER_QQ, "level": "admin"}, {"qq": OPENID_PRIVATE, "level": "admin"}]
+    _rebuild(plugin, users)
+    assert plugin.identity_links.unlink("user", OPENID_PRIVATE) is True
+    _rebuild(plugin, users)
+    restarted = _plugin(tmp_path)
+    _rebuild(restarted, users)
+    assert plugin.identity_links.user(OPENID_PRIVATE) == restarted.identity_links.user(OPENID_PRIVATE) == OPENID_PRIVATE
+
+
+def test_the_admin_can_match_a_seen_id_directly(tmp_path):
+    plugin = _plugin(tmp_path)
+    links = plugin.identity_links
+    assert _say(plugin, "大家好呀", sender=OPENID_IN_GROUP, group=GROUP_OPENID, at=False) is False
+    seen = links.snapshot()["seen"]
+    assert {(row["kind"], row["id"]) for row in seen} == {("user", OPENID_IN_GROUP), ("group", GROUP_OPENID)}
+    assert seen[0]["text"] == "大家好呀" and seen[0]["group"] == GROUP_OPENID
+
+    links.link("group", GROUP_OPENID, GROUP_QQ)
+    links.link("user", OPENID_IN_GROUP, OWNER_QQ)
+    assert plugin.group_permission_mgr.get_group_level(GROUP_OPENID) == "trusted"
+    assert plugin.permission_mgr.get_permission_level(OPENID_IN_GROUP) == "admin"
+    assert links.snapshot()["seen"] == [], "匹配过的不再列在待匹配里"
+    assert "大家好呀" not in (tmp_path / QQIdentityLinks.FILENAME).read_text(encoding="utf-8"), "预览不落盘"
+
+    for kind, linked, legacy in (("user", OPENID_PRIVATE, "99999"), ("user", OPENID_IN_GROUP, FRIEND_QQ),
+                                 ("user", FRIEND_QQ, FRIEND_QQ), ("group", "", GROUP_QQ),
+                                 ("user", OPENID_PRIVATE, OPENID_IN_GROUP)):
+        with pytest.raises(ValueError):
+            links.link(kind, linked, legacy)
+
+
+def test_the_trust_entry_links_directly(tmp_path):
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    plugin = _plugin(tmp_path)
+
+    def call(**kw):
+        return QQAutoReplyPlugin._trust_identity_links(plugin, "link", kw)
+
+    assert call(user_id=OPENID_PRIVATE, target_user_id=FRIEND_QQ).value["users"] == {OPENID_PRIVATE: FRIEND_QQ}
+    assert call(group_id=GROUP_OPENID, target_group_id=GROUP_QQ).value["groups"] == {GROUP_OPENID: GROUP_QQ}
+    assert call(user_id=OPENID_IN_GROUP, target_user_id="99999").is_err()
+    assert call(group_id=GROUP_OPENID).is_err()

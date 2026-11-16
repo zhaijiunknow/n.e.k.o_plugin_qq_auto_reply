@@ -731,6 +731,7 @@ class QQSettingsService:
         if links is not None:
             self.plugin.permission_mgr.resolve = links.user
             self.plugin.group_permission_mgr.resolve = links.group
+            links.auto_link_admin(self.plugin.permission_mgr)
         for kind, manager in (("用户", self.plugin.permission_mgr), ("群", self.plugin.group_permission_mgr)):
             for target, level in manager.invalid_levels:
                 self.plugin.logger.warning(

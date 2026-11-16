@@ -824,7 +824,7 @@
   "ui.stable.beta_failed": "更新到测试版失败：",
   "errors.invalid_level": "无法识别的权限级别 {level}，可用：{allowed}",
   "ui.openplat.links.title": "换通道认领",
-  "ui.openplat.links.hint": "从 OneBot 换到开放平台后，同一个人、同一个群的 ID 都变了，原来的级别、昵称、群设置和记忆对不上。给名单里的旧 QQ 号或群号生成认领码，让对方在这里发「认领 认领码」：私聊发认回这个人，群里 @ 她发则认回他在这个群的身份；群的认领码要在那个群里 @ 她发。认领码 10 分钟有效、只能用一次。认领后沿用旧账号的级别，生成前请确认是本人。",
+  "ui.openplat.links.hint": "从 OneBot 换到开放平台后，同一个人、同一个群的 ID 都变了，原来的级别、昵称、群设置和记忆对不上。管理员自己会自动匹配（名单里只有一个 QQ 号管理员时）。其他人和群有两种办法：在下面「还没匹配的 ID」里直接点选匹配；或者给旧 QQ 号、群号生成认领码，让对方发「认领 认领码」（私聊发认回本人，群里 @ 她发认回他在这个群的身份，群的认领码要在那个群里 @ 她发；10 分钟有效、只能用一次）。匹配后沿用旧账号的级别，请确认是同一个人。",
   "ui.openplat.links.col_old": "旧账号",
   "ui.openplat.links.col_new": "已认领的新 ID",
   "ui.openplat.links.kind_user": "用户",
@@ -839,5 +839,17 @@
   "ui.openplat.links.load_failed": "加载认领记录失败: ",
   "ui.openplat.links.unlink_confirm": "撤销这条认领？这个新 ID 将不再沿用旧账号的级别和记录；旧记录本身不受影响。",
   "ui.openplat.links.unlink_done": "已撤销",
-  "ui.openplat.links.unlink_failed": "撤销失败: "
+  "ui.openplat.links.unlink_failed": "撤销失败: ",
+  "ui.openplat.links.seen_title": "新通道上出现过、还没匹配的 ID",
+  "ui.openplat.links.col_seen": "新 ID",
+  "ui.openplat.links.col_said": "最近说的话",
+  "ui.openplat.links.col_match": "匹配到",
+  "ui.openplat.links.seen_empty": "暂无。让对方在新通道发一句话后点刷新。",
+  "ui.openplat.links.in_group": "群内成员",
+  "ui.openplat.links.in_private": "私聊",
+  "ui.openplat.links.btn_match": "匹配",
+  "ui.openplat.links.no_target": "名单里没有可匹配的旧账号",
+  "ui.openplat.links.match_confirm": "把这个新 ID 匹配到 {target}？它会沿用 {target} 的级别和记录，请确认是同一个人（或同一个群）。",
+  "ui.openplat.links.match_done": "已匹配",
+  "ui.openplat.links.match_failed": "匹配失败: "
 }
