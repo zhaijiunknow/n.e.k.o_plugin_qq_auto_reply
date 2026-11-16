@@ -1513,8 +1513,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "action": {"type": "string",
                        "enum": ["user_add", "user_remove", "user_nickname",
                                 "group_add", "group_remove", "claims",
-                                "identity_bind", "identity_unbind", "refresh_contacts",
-                                "link_code", "links", "unlink", "link"],
+                                "identity_bind", "identity_unbind", "refresh_contacts"],
                        "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
             "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
@@ -1522,8 +1521,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
             "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
             "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
-            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份；link：要匹配的旧 QQ 号"},
-            "target_group_id": {"type": "string", "description": "link：要匹配的旧群号（group_id 填新通道的群 ID）"},
+            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份"},
         }, "required": ["action"], "additionalProperties": False},
     )
     async def trust(self, action: str = "", **kw):
@@ -1548,14 +1546,39 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._trust_identity_unbind(kw)
         if action == "refresh_contacts":
             return await self._trust_refresh_contacts(kw)
-        if action in ("link_code", "links", "unlink", "link"):
-            return self._trust_identity_links(action, kw)
         return Err(SdkError(
             f"BAD_ACTION: trust 不支持 {action!r}"
             f"（可选 user_add/user_remove/user_nickname/group_add/group_remove/"
-            f"claims/identity_bind/identity_unbind/refresh_contacts/link_code/links/unlink/link）"))
+            f"claims/identity_bind/identity_unbind/refresh_contacts）"))
 
-    def _trust_identity_links(self, action: str, kw: dict[str, Any]):
+    # ── identity_link：换通道认领（只给控制台用）──────────────────
+    #
+    # **对 agent 隐藏**（`agent_auto: False`）：这里能把任意 ID 匹配到名单里的旧账号，
+    # 匹配到管理员旧账号就等于拿到管理员的权限和记忆。这不该是模型自己能调的。
+
+    @ui.action(id="identity_link", label=tr("entries.identity_link.name", default="换通道认领"), refresh_context=True)
+    @plugin_entry(
+        id="identity_link",
+        name=tr("entries.identity_link.name", default="换通道认领"),
+        description=tr("entries.identity_link.description", default="换通道后把新 ID 匹配回名单里的旧 QQ 号 / 群号。action 取 links / link / link_code / unlink。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["links", "link", "link_code", "unlink"],
+                       "description": "links=列出已有的匹配、待匹配的新 ID 和可匹配的旧账号；link=直接匹配；link_code=给旧账号生成一次性认领码；unlink=撤销一条匹配"},
+            "qq_number": {"type": "string", "description": "link_code：名单里的旧 QQ 号"},
+            "group_id": {"type": "string", "description": "link_code：名单里的旧群号；link / unlink：新通道的群 ID"},
+            "user_id": {"type": "string", "description": "link / unlink：新通道的用户 ID"},
+            "target_user_id": {"type": "string", "description": "link：要匹配的旧 QQ 号"},
+            "target_group_id": {"type": "string", "description": "link：要匹配的旧群号"},
+        }, "required": ["action"], "additionalProperties": False},
+        metadata={"agent_auto": False},
+    )
+    async def identity_link(self, action: str = "", **kw):
+        action = str(action or "").strip()
+        if action not in ("links", "link", "link_code", "unlink"):
+            return Err(SdkError(f"BAD_ACTION: identity_link 不支持 {action!r}（可选 links/link/link_code/unlink）"))
+        return self._identity_link_dispatch(action, kw)
+
+    def _identity_link_dispatch(self, action: str, kw: dict[str, Any]):
         """换通道后的认领（见 ``identity_links``）。
 
         link_code：给名单里的旧 QQ 号（``qq_number``）或群号（``group_id``）发一次性认领码；

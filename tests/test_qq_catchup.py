@@ -873,3 +873,60 @@ async def test_switching_back_to_onebot_catches_up_from_where_it_left(tmp_path):
     svc.plugin.qq_client = onebot
     await svc._watch_tick()
     assert [m["message_seq"] for m in dispatcher.injected] == [11]
+
+
+# ── 审查报告 A621 ───────────────────────────────────────────
+
+
+@_sync
+async def test_a_corrupt_bookmark_in_the_cursor_file_does_not_break_startup(tmp_path: Path) -> None:
+    """游标文件里 ``pending_seq`` 被改坏：丢掉这一个书签，别让整个补消息起不来。"""
+    import json
+
+    plugin, _client, _d = _plugin(tmp_path)
+    conversations = {
+        "group:500": {"seq": 42, "kind": "group", "peer": "500", "updated": 1, "pending_seq": "not-a-number"},
+        "group:501": {"seq": 7, "kind": "group", "peer": "501", "updated": 1, "pending_seq": 5},
+    }
+    (tmp_path / QQMessageCatchupService.CURSOR_FILENAME).write_text(
+        json.dumps({"version": 2, "conversations": conversations, "recent_ids": {}}), encoding="utf-8")
+    svc = QQMessageCatchupService(plugin)
+
+    await svc.start()
+    await svc.stop()
+
+    assert svc._cursors["group:500"]["seq"] == 42
+    assert svc._cursors["group:501"]["seq"] == 7
+
+
+@_sync
+async def test_a_round_that_blows_up_is_dropped_not_retried(tmp_path: Path) -> None:
+    """补的那一轮抛了异常：这一轮到此为止，等下次登录。以前会每 30 秒重来一次。"""
+    plugin, client, _d = _plugin(tmp_path)
+    svc = QQMessageCatchupService(plugin)
+    svc.note_message(_msg(10))
+    rounds: list[str] = []
+
+    async def _explode(*, reason: str = "", force: bool = False, window_seconds=None):
+        rounds.append(reason)
+        raise RuntimeError("boom")
+
+    svc.catch_up = _explode  # type: ignore[assignment]
+
+    for _ in range(5):
+        try:
+            await svc._watch_tick()
+        except RuntimeError:
+            pass          # 真跑起来时由 _watch_loop 记一条告警
+
+    assert rounds == ["startup"]
+    assert svc._round_due == "" and "pending_seq" not in svc._cursors["group:500"]
+
+    client.connected = False
+    await svc._watch_tick()
+    client.connected = True
+    try:
+        await svc._watch_tick()
+    except RuntimeError:
+        pass
+    assert rounds == ["startup", "reconnect"], "下次登录照常再试一轮"

@@ -855,5 +855,7 @@
   "ui.layout.roster": "People",
   "ui.layout.advanced": "Advanced",
   "ui.openplat.config.probe_summary": "Troubleshooting (when a group does not recognise the admin)",
-  "ui.openplat.links.more": "Matched records / let them claim with a code"
+  "ui.openplat.links.more": "Matched records / let them claim with a code",
+  "entries.identity_link.name": "Claim after switching channels",
+  "entries.identity_link.description": "Match new IDs back to the old QQ numbers / group numbers on the roster after switching channels."
 }

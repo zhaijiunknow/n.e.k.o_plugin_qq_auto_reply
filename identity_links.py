@@ -28,6 +28,17 @@ OneBot 按 QQ 号、群号存名单和记忆。开放平台拿不到这两样，
 
 别人的 ID 做不到全自动：平台不给 QQ 号，没有任何信号能说明一个 openid 是谁。
 
+## 和「合并身份」的分工
+
+``trust`` 入口里原有的 identity_bind（「合并身份」）只合并记忆服务里的**信赖度账本**，
+不改权限、不改记忆键。这里的认领管的是名单和记忆键。认领过的 ID 之后的信赖度直接记在
+旧账号上，不需要再合并；认领之前它自己攒下的那一份不会自动并过去。
+
+## 这些动作不对 agent 开放
+
+发码、直接匹配、撤销都在 ``identity_link`` 入口上（``agent_auto: False``）：能把任意 ID
+匹配到管理员旧账号的动作，不该是模型自己能调的。
+
 ## 第一版管到哪里
 
 名单（级别、昵称、群设置）、记忆服务的键（群 / 群成员 / 私聊对象 / 信赖度账号）、按群写的
@@ -51,6 +62,8 @@ class QQIdentityLinks:
     #: 去掉了 0/O、1/I 这类容易看错的字符。8 位 ≈ 40 bit，十分钟内猜不中。
     CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     CODE_LENGTH = 8
+    #: 同一个人十分钟内最多失败这么多次；超过之后不回复、也不再受理，免得被当成回声筒。
+    MAX_FAILED_ATTEMPTS = 5
     #: 整条消息只有这一句才算（不从闲聊里捞）。
     COMMAND_RE = re.compile(r"^\s*[/#]?(?:认领|绑定|claim|bind)\s+([A-Za-z0-9]{8})\s*$", re.IGNORECASE)
     KINDS = ("user", "group")
@@ -60,6 +73,8 @@ class QQIdentityLinks:
         self._links: dict[str, dict[str, str]] = {"user": {}, "group": {}}
         #: 码 → {kind, legacy_id, expires_at}。只在内存里：重启即作废。
         self._codes: dict[str, dict[str, Any]] = {}
+        #: 发送者 → 最近几次认领失败的时刻。只在内存里。
+        self._failures: dict[str, list[float]] = {}
         #: 被撤销过的自动匹配（openid）：不再自动认回去。
         self._auto_off: set[str] = set()
         #: 新通道上最近出现的 ID → {kind, id, group, text, at}。只在内存里，含一句话预览。
@@ -118,12 +133,22 @@ class QQIdentityLinks:
 
     # ── 认领码 ──────────────────────────────────────────────────
 
-    def _roster_has(self, kind: str, legacy_id: str) -> bool:
+    def _own_level(self, kind: str, value: str) -> str:
+        """这个 ID 自己在名单里的级别（``none`` = 没有条目）。单次查表，收消息的热路径上也用它。"""
         manager = getattr(self.plugin, "permission_mgr" if kind == "user" else "group_permission_mgr", None)
-        if manager is None:
-            return False
-        rows = manager.list_users() if kind == "user" else manager.list_groups()
-        return any(str(row.get("qq" if kind == "user" else "group_id") or "") == legacy_id for row in rows)
+        return manager.own_level(value) if manager is not None else "none"
+
+    def _roster_has(self, kind: str, legacy_id: str) -> bool:
+        return self._own_level(kind, legacy_id) != "none"
+
+    def _forks(self, kind: str, linked: str, legacy: str) -> bool:
+        """认领后权限和记忆会不会分叉：新 ID 自己有名单条目，而且级别和旧账号不一样。
+
+        读名单时自己的条目优先，记忆键却落到旧账号 —— 一个普通用户认到管理员头上，权限
+        还是普通，读到的却是管理员的记忆。级别一致不算（管理员自动匹配正是这种情况）。
+        """
+        own = self._own_level(kind, linked)
+        return own != "none" and own != self._own_level(kind, legacy)
 
     def _drop_expired(self, now: float) -> None:
         for code in [c for c, row in self._codes.items() if row["expires_at"] <= now]:
@@ -153,7 +178,8 @@ class QQIdentityLinks:
         """用码认领。返回 ``{status, kind, legacy_id, linked_id}``；只有 ``linked`` 会消耗这个码。
 
         status：``linked`` / ``invalid``（码不对或过期）/ ``needs_group``（群码发在了私聊）/
-        ``already``（这个 ID 已经认领过别的）/ ``same``（它就是那个旧账号）。
+        ``already``（这个 ID 已经认领过别的）/ ``same``（它就是那个旧账号）/
+        ``conflict``（它自己在名单里是另一个级别，见 `_forks`）。
         """
         self._load()
         self._drop_expired(time.time() if now is None else now)
@@ -169,6 +195,8 @@ class QQIdentityLinks:
             return {"status": "same", **result}
         if linked in self._links[kind]:
             return {"status": "already", **result}
+        if self._forks(kind, linked, legacy):
+            return {"status": "conflict", **result}
         del self._codes[str(code).strip().upper()]
         self._links[kind][linked] = legacy
         self._save()
@@ -198,6 +226,8 @@ class QQIdentityLinks:
             raise ValueError("要匹配的旧账号不在名单里")
         if linked in self._links[kind]:
             raise ValueError("这个 ID 已经认领过了，请先撤销")
+        if self._forks(kind, linked, legacy):
+            raise ValueError("这个 ID 自己在名单里是另一个级别，请先把那一条删掉或改成一致再匹配")
         self._links[kind][linked] = legacy
         self._auto_off.discard(linked)
         self._seen.pop((kind, linked), None)
@@ -270,7 +300,16 @@ class QQIdentityLinks:
         "needs_group": "这是群的认领码，请在要认领的群里 @ 我发送。",
         "already": "这里已经认领过了；要改的话请让管理员先撤销。",
         "same": "这里就是那个账号本身，不需要认领。",
+        "conflict": "这个 ID 在名单里已经有一条不同级别的记录，请让管理员先处理那一条。",
     }
+
+    def _locked_out(self, sender: str, now: float) -> bool:
+        recent = [at for at in self._failures.get(sender, ()) if now - at < self.CODE_TTL_SECONDS]
+        if recent:
+            self._failures[sender] = recent
+        else:
+            self._failures.pop(sender, None)
+        return len(recent) >= self.MAX_FAILED_ATTEMPTS
 
     async def handle_message(self, message: dict[str, Any]) -> bool:
         """是认领指令就处理掉并回一句，返回 True（这条消息不再进对话）。
@@ -296,8 +335,13 @@ class QQIdentityLinks:
             return False
         sender = str(message.get("user_id") or "").strip()
         group = str(message.get("group_id") or "").strip() if kind == "group" else ""
+        now = time.time()
+        if self._locked_out(sender, now):
+            return True          # 连着失败太多次：不受理、不回复，也不让这句话进对话
         result = self.claim(match.group(1), sender_id=sender, group_id=group)
         status = result["status"]
+        if status != "linked":
+            self._failures.setdefault(sender, []).append(now)
         if status == "linked":
             status = f"linked_{result['kind']}"
             self.plugin.logger.info(
@@ -309,15 +353,20 @@ class QQIdentityLinks:
                     await invalidate(sender)
                 except Exception:
                     pass
-        text = self.REPLIES[status]
+        # 私聊和群聊都带回复锚点：开放平台上没有它就是主动消息，有额度，可能发不出去。
+        segments = [{"type": "text", "data": {"text": self.REPLIES[status]}}]
+        if message.get("message_id"):
+            segments.insert(0, {"type": "reply", "data": {"id": str(message["message_id"])}})
         try:
             if kind == "group":
-                segments = [{"type": "text", "data": {"text": text}}]
-                if message.get("message_id"):
-                    segments.insert(0, {"type": "reply", "data": {"id": str(message["message_id"])}})
-                await client.send_group_message_segments(group, segments)
+                sent = await client.send_group_message_segments(group, segments)
             else:
-                await client.send_message(sender, text)
+                sent = await client.send_private_message_segments(sender, segments)
         except Exception as exc:
+            sent = None
             self.plugin.logger.warning(f"[Identity] 认领结果没发出去（{type(exc).__name__}）")
+        else:
+            if not sent:
+                # 适配器发送失败不抛异常，只返回 None。
+                self.plugin.logger.warning(f"[Identity] 认领结果没发出去（平台未确认；结果是 {status}）")
         return True

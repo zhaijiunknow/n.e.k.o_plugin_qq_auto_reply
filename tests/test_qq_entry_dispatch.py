@@ -114,10 +114,12 @@ DEEPCHAT_ENTRIES = {
     "dc_forget_user",
 }
 INTER_PLUGIN_ENTRIES = {"account_identity"}
-EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES
+#: 只给控制台用的入口（对 agent 隐藏）：换通道认领能把任意 ID 匹配到管理员旧账号。
+CONSOLE_ONLY_ENTRIES = {"identity_link"}
+EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES | CONSOLE_ONLY_ENTRIES
 
 #: 对 agent 隐藏的入口（braid/task_executor.py 的 _is_plugin_entry_agent_hidden 读这个标记）
-AGENT_HIDDEN = {"asset", "deploy", "account_identity"}
+AGENT_HIDDEN = {"asset", "deploy", "account_identity", "identity_link"}
 
 
 def _entry_attr_map() -> dict[str, str]:
@@ -250,3 +252,11 @@ def test_deploy_declares_a_timeout_long_enough_for_its_own_download():
         f"退回宿主默认的 {PLUGIN_EXECUTION_TIMEOUT} 秒了 —— 一次稍慢的下载就会把一键部署掐死")
     assert resolved >= napcat_install.DOWNLOAD_TIMEOUT_SECONDS, (
         "入口超时不该比它内部允许的下载超时还短")
+
+
+async def test_trust_no_longer_accepts_the_claim_actions():
+    """认领的动作搬到了对 agent 隐藏的 identity_link：trust 上再调就是 BAD_ACTION。"""
+    p = _plugin()
+    for action in ("link", "link_code", "links", "unlink"):
+        r = await p.trust(action=action, user_id="A", target_user_id="1")
+        assert r.is_err() and "BAD_ACTION" in str(r.error), action

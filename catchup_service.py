@@ -197,7 +197,10 @@ class QQMessageCatchupService:
                     "seq_unknown": bool(rec.get("seq_unknown")),
                 }
                 if keep_bookmarks and rec.get("pending_seq") is not None:
-                    self._cursors[str(key)]["pending_seq"] = max(0, int(rec["pending_seq"]))
+                    try:
+                        self._cursors[str(key)]["pending_seq"] = max(0, int(rec["pending_seq"]))
+                    except (TypeError, ValueError):
+                        pass          # 书签坏了就不要这一个，别让整个服务起不来
         ids = (payload or {}).get("recent_ids") if isinstance(payload, dict) else None
         if isinstance(ids, dict):
             for mid, ts in ids.items():
@@ -399,10 +402,18 @@ class QQMessageCatchupService:
                 self._clear_bookmarks()
             return
         reason = self._round_due
-        result = await self.catch_up(
-            reason=reason,
-            window_seconds=self.STARTUP_WINDOW_SECONDS if reason == "startup" else None,
-        )
+        try:
+            result = await self.catch_up(
+                reason=reason,
+                window_seconds=self.STARTUP_WINDOW_SECONDS if reason == "startup" else None,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 这一轮出错就到此为止，等下次登录；留着的话每过一个冷却期就重来一次。
+            self._round_due = ""
+            self._clear_bookmarks()
+            raise
         # 撞上限流就欠着，冷却过了再补；别的结果都算这一轮补完了。
         if result.get("status") != "throttled":
             self._round_due = ""

@@ -174,6 +174,10 @@ class PermissionManager:
         if qq_str in self._users:
             del self._users[qq_str]
 
+    def own_level(self, qq_number: str) -> str:
+        """这个 ID **自己**在名单里的级别（不看它认领的旧账号）；没有条目返回 ``none``。"""
+        return str((self._users.get(self._normalize_qq(qq_number)) or {}).get("level") or "none")
+
     def get_permission_level(self, qq_number: str) -> str:
         """
         获取用户权限等级

@@ -28,23 +28,32 @@ class _Client:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
+    #: 发送的返回值。开放平台的发送失败不抛异常，返回 None。
+    result = "m1"
+
     async def send_message(self, user_id, text):
-        self.sent.append((str(user_id), text))
-        return "m1"
+        raise AssertionError("不带回复锚点的私聊发送：在开放平台上算主动消息，可能发不出去")
+
+    async def _segments(self, target, segments):
+        self.sent.append((str(target), "".join(
+            f"[reply:{s['data']['id']}]" if s["type"] == "reply" else s["data"]["text"] for s in segments)))
+        return self.result
+
+    async def send_private_message_segments(self, user_id, segments, **kw):
+        return await self._segments(user_id, segments)
 
     async def send_group_message_segments(self, group_id, segments, **kw):
-        self.sent.append((str(group_id), "".join(
-            f"[reply:{s['data']['id']}]" if s["type"] == "reply" else s["data"]["text"] for s in segments)))
-        return "m1"
+        return await self._segments(group_id, segments)
 
 
 def _plugin(tmp_path):
     plugin = SimpleNamespace(
         data_path=lambda name="": str(tmp_path / name),
-        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda message="", *a, **k: warnings.append(str(message))),
         qq_client=_Client(),
         _refresh_admin_qq=lambda: None,
     )
+    plugin.warnings = warnings = []
     plugin.identity_links = QQIdentityLinks(plugin)
     QQSettingsService(plugin).rebuild_permission_managers({
         "trusted_users": [{"qq": OWNER_QQ, "level": "admin"},
@@ -153,12 +162,37 @@ def test_a_claimed_group_gets_the_old_settings_and_memory_keys(tmp_path):
     assert plugin.permission_mgr.get_permission_level(OPENID_IN_GROUP) == "admin", "主人在群里也被认成主人"
 
 
-def test_an_id_with_its_own_roster_entry_keeps_that_entry(tmp_path):
-    """扫码绑定时已经登记成管理员的 openid：认领别人的号不会改掉它自己的级别。"""
+def test_an_id_with_its_own_entry_at_another_level_cannot_be_linked(tmp_path):
+    """自己在名单里是一个级别、认领的旧账号是另一个级别：权限按自己的条目、记忆却落到旧账号，
+
+    两边会分叉（比如普通用户认到管理员头上，读到的是管理员的记忆）。认领和直接匹配都拒绝，
+    而且不消耗认领码。
+    """
     plugin = _plugin(tmp_path)
-    plugin.permission_mgr.add_user(OPENID_PRIVATE, "admin")
+    links = plugin.identity_links
+    plugin.permission_mgr.add_user(OPENID_PRIVATE, "normal")
+    plugin.group_permission_mgr.add_group(GROUP_OPENID, "normal")
+
+    code = links.issue_code("user", OWNER_QQ)["code"]
+    assert _say(plugin, f"认领 {code}") is True
+    assert "名单" in plugin.qq_client.sent[-1][1]
+    assert links.user(OPENID_PRIVATE) == OPENID_PRIVATE
+    assert plugin.memory_bridge.speaker_account_id(OPENID_PRIVATE) == f"qq:{OPENID_PRIVATE}"
+    assert links.claim(code, sender_id=OPENID_IN_GROUP)["status"] == "linked", "被拒的那次不消耗码"
+
+    with pytest.raises(ValueError):
+        links.link("user", OPENID_PRIVATE, OWNER_QQ)
+    with pytest.raises(ValueError):
+        links.link("group", GROUP_OPENID, GROUP_QQ)          # 名单里 GROUP_QQ 是 trusted
+
+
+def test_an_id_with_its_own_entry_at_the_same_level_can_be_linked(tmp_path):
+    """级别一致就不算分叉 —— 管理员自动匹配正是这种情况（两边都是 admin）。"""
+    plugin = _plugin(tmp_path)
+    plugin.permission_mgr.add_user(OPENID_PRIVATE, "trusted")
     _say(plugin, f"认领 {plugin.identity_links.issue_code('user', FRIEND_QQ)['code']}")
-    assert plugin.permission_mgr.get_permission_level(OPENID_PRIVATE) == "admin"
+    assert plugin.identity_links.user(OPENID_PRIVATE) == FRIEND_QQ
+    assert plugin.permission_mgr.get_permission_level(OPENID_PRIVATE) == "trusted"
 
 
 # ── 撤销与持久化 ────────────────────────────────────────────────────
@@ -199,7 +233,7 @@ def test_the_trust_entry_issues_codes_lists_and_unlinks(tmp_path):
 
     plugin = _plugin(tmp_path)
     def call(action, **kw):
-        return QQAutoReplyPlugin._trust_identity_links(plugin, action, kw)
+        return QQAutoReplyPlugin._identity_link_dispatch(plugin, action, kw)
 
     issued = call("link_code", qq_number=FRIEND_QQ).value
     assert issued["legacy_id"] == FRIEND_QQ and len(issued["code"]) == 8
@@ -239,6 +273,8 @@ def test_the_console_has_the_claim_card_wired():
     assert "if(sub==='accounts'){loadIdentityLinks();" in html, "进「用户」页时要加载认领记录"
     for action in ("action:'links'", "action:'link_code'", "action:'unlink'"):
         assert action in html
+    assert html.count("call('identity_link',") == 4, "认领的四个调用都走对 agent 隐藏的 identity_link 入口"
+    assert not re.search(r"call\('trust',[^)]*action:'(?:links?|link_code|unlink)'", html)
     keys = set(re.findall(r"'(ui\.openplat\.links\.[a-z_]+)'", html)) | set(
         re.findall(r'data-i18n="(ui\.openplat\.links\.[a-z_]+)"', html))
     assert len(keys) >= 15
@@ -317,9 +353,72 @@ def test_the_trust_entry_links_directly(tmp_path):
     plugin = _plugin(tmp_path)
 
     def call(**kw):
-        return QQAutoReplyPlugin._trust_identity_links(plugin, "link", kw)
+        return QQAutoReplyPlugin._identity_link_dispatch(plugin, "link", kw)
 
     assert call(user_id=OPENID_PRIVATE, target_user_id=FRIEND_QQ).value["users"] == {OPENID_PRIVATE: FRIEND_QQ}
     assert call(group_id=GROUP_OPENID, target_group_id=GROUP_QQ).value["groups"] == {GROUP_OPENID: GROUP_QQ}
     assert call(user_id=OPENID_IN_GROUP, target_user_id="99999").is_err()
     assert call(group_id=GROUP_OPENID).is_err()
+
+
+# ── 审查报告 A621 ───────────────────────────────────────────────────
+
+def test_the_private_reply_is_anchored_to_the_incoming_message(tmp_path):
+    """私聊的认领结果要带回复锚点：开放平台上没有它就是主动消息，有额度，可能发不出去。"""
+    plugin = _plugin(tmp_path)
+    assert _say(plugin, f"认领 {plugin.identity_links.issue_code('user', FRIEND_QQ)['code']}") is True
+    target, text = plugin.qq_client.sent[0]
+    assert target == OPENID_PRIVATE and text.startswith("[reply:in-1]认领成功")
+
+
+def test_an_unconfirmed_reply_leaves_a_warning(tmp_path):
+    """适配器发送失败不抛异常、只返回 None：不能让"认领了却没人告诉他"悄悄过去。"""
+    plugin = _plugin(tmp_path)
+    plugin.qq_client.result = None
+    _say(plugin, f"认领 {plugin.identity_links.issue_code('user', FRIEND_QQ)['code']}")
+    assert plugin.identity_links.user(OPENID_PRIVATE) == FRIEND_QQ, "认领本身照常生效"
+    assert any("[Identity]" in line and "没发出去" in line for line in plugin.warnings)
+
+
+def test_wrong_codes_from_one_sender_stop_getting_replies(tmp_path):
+    """连着猜错的人不再得到回复，也不再被受理 —— 不拿机器人当回声筒。别人不受影响。"""
+    plugin = _plugin(tmp_path)
+    links = plugin.identity_links
+    code = links.issue_code("user", FRIEND_QQ)["code"]
+    limit = links.MAX_FAILED_ATTEMPTS
+
+    for _ in range(limit + 4):
+        assert _say(plugin, "认领 ZZZZZZZZ", sender=OPENID_IN_GROUP) is True, "仍然不进对话"
+    assert len(plugin.qq_client.sent) == limit
+    assert _say(plugin, f"认领 {code}", sender=OPENID_IN_GROUP) is True
+    assert links.user(OPENID_IN_GROUP) == OPENID_IN_GROUP and len(plugin.qq_client.sent) == limit
+
+    assert _say(plugin, f"认领 {code}") is True              # 另一个人
+    assert links.user(OPENID_PRIVATE) == FRIEND_QQ
+
+
+def test_noting_a_seen_id_does_not_rebuild_the_roster(tmp_path):
+    """每条消息都会走到这里：查名单用单次查表，不为此把整份名单重建一遍。"""
+    plugin = _plugin(tmp_path)
+
+    def _boom():
+        raise AssertionError("note_seen 不该在热路径上重建名单列表")
+
+    plugin.permission_mgr.list_users = _boom
+    plugin.group_permission_mgr.list_groups = _boom
+    assert _say(plugin, "路过", sender=OPENID_IN_GROUP, group=GROUP_OPENID, at=False) is False
+    assert (("user", OPENID_IN_GROUP) in plugin.identity_links._seen
+            and ("group", GROUP_OPENID) in plugin.identity_links._seen)
+
+
+def test_claim_actions_live_on_an_agent_hidden_entry():
+    """能把任意 ID 匹配到管理员旧账号的动作，不放在模型能调的入口上。"""
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+    from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
+
+    meta = getattr(QQAutoReplyPlugin.identity_link, EVENT_META_ATTR)
+    assert (meta.metadata or {}).get("agent_auto") is False
+    assert set(meta.input_schema["properties"]["action"]["enum"]) == {"links", "link", "link_code", "unlink"}
+    trust = getattr(QQAutoReplyPlugin.trust, EVENT_META_ATTR)
+    assert not {"links", "link", "link_code", "unlink"} & set(trust.input_schema["properties"]["action"]["enum"])
+    assert "target_group_id" not in trust.input_schema["properties"]

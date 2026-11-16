@@ -139,6 +139,10 @@ class GroupPermissionManager:
         if normalized_group_id in self._groups:
             del self._groups[normalized_group_id]
 
+    def own_level(self, group_id: str) -> str:
+        """这个群**自己**在名单里的级别（不看它认领的旧群号）；没有条目返回 ``none``。"""
+        return str((self._groups.get(str(group_id or "").strip()) or {}).get("level") or "none")
+
     def get_group_level(self, group_id: str) -> str:
         """
         获取群聊权限等级

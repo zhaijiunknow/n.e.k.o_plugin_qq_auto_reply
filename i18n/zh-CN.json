@@ -855,5 +855,7 @@
   "ui.layout.roster": "名单",
   "ui.layout.advanced": "高级",
   "ui.openplat.config.probe_summary": "排查工具（群里认不出管理员时用）",
-  "ui.openplat.links.more": "已匹配的记录 / 用认领码让对方自己认领"
+  "ui.openplat.links.more": "已匹配的记录 / 用认领码让对方自己认领",
+  "entries.identity_link.name": "换通道认领",
+  "entries.identity_link.description": "换通道后把新 ID 匹配回名单里的旧 QQ 号 / 群号。"
 }
