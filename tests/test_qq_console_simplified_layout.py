@@ -46,12 +46,12 @@ def test_the_accounts_page_tucks_rarely_used_tools_away():
     page = HTML.split('<div class="page" id="page-config-accounts">')[1].split('<div class="page"')[0]
     probe = page.index('id="cfg-identity-probe"')
     assert page.rindex("<details", 0, probe) > page.rfind("</details>", 0, probe), "排查开关在折叠区里"
-    card = page[page.index('id="identity-links-card"'):page.index('id="identity-scope-card"')]
+    card = page[page.index('id="identity-links-card"'):page.index('id="plugin-tools-card"')]
     assert card.index('id="seen-table"') < card.index("<details") < card.index('id="link-table"'), (
         "先是「这是谁」的列表，认领码和已匹配记录收在折叠区"
     )
     assert 'id="identity-links-card" style="display:none"' in page
-    assert "getElementById('identity-links-card').style.display=" in HTML, "名单里没有旧账号时整张卡片不出现"
+    assert "getElementById('identity-links-card').style.display=" in HTML, "加载后即显示，纯开放平台用户也能关联"
 
 
 def test_the_prompt_editor_is_gone_from_the_console_but_not_from_the_backend():

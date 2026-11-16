@@ -1502,26 +1502,23 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     # ── trust：名单与身份 ───────────────────────────────────────
     #
-    # 信任用户/群、用户昵称、开放平台身份合并，以及联系人刷新。对 agent 可见。
+    # 信任用户/群、用户昵称与联系人刷新。身份关联独立于 agent 可见的名册操作。
 
-    @ui.action(id="trust", label=tr("entries.trust.name", default="信任名单与身份"), refresh_context=True)
+    @ui.action(id="trust", label=tr("entries.trust.name", default="信任名单"), refresh_context=True)
     @plugin_entry(
         id="trust",
-        name=tr("entries.trust.name", default="信任名单与身份"),
-        description=tr("entries.trust.description", default="管理信任用户/群、用户昵称，以及开放平台身份合并。action 取 user_add / user_remove / user_nickname / group_add / group_remove / claims / identity_bind / identity_unbind / refresh_contacts。"),
+        name=tr("entries.trust.name", default="信任名单"),
+        description=tr("entries.trust.description", default="管理信任用户/群和昵称。action 取 user_add / user_remove / user_nickname / group_add / group_remove / refresh_contacts。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["user_add", "user_remove", "user_nickname",
-                                "group_add", "group_remove", "claims",
-                                "identity_bind", "identity_unbind", "refresh_contacts"],
-                       "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
+                                "group_add", "group_remove", "refresh_contacts"],
+                       "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；refresh_contacts=从 OneBot 重新拉联系人"},
             "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
             "level": {"type": "string", "description": "user_add / group_add：权限等级（用户：admin / trusted / normal / blacklist，blacklist＝不处理这个人的消息；群：trusted / normal，群省略 level 时默认 trusted＝正常参与，只有显式 normal 才是仅转发）"},
             "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
             "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
-            "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
-            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份"},
         }, "required": ["action"], "additionalProperties": False},
     )
     async def trust(self, action: str = "", **kw):
@@ -1538,37 +1535,31 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._trust_group_add(kw)
         if action == "group_remove":
             return await self._trust_group_remove(kw)
-        if action == "claims":
-            return await self._trust_claims(kw)
-        if action == "identity_bind":
-            return await self._trust_identity_bind(kw)
-        if action == "identity_unbind":
-            return await self._trust_identity_unbind(kw)
         if action == "refresh_contacts":
             return await self._trust_refresh_contacts(kw)
         return Err(SdkError(
             f"BAD_ACTION: trust 不支持 {action!r}"
             f"（可选 user_add/user_remove/user_nickname/group_add/group_remove/"
-            f"claims/identity_bind/identity_unbind/refresh_contacts）"))
+            f"refresh_contacts）"))
 
-    # ── identity_link：换通道认领（只给控制台用）──────────────────
+    # ── identity_link：账号关联（只给控制台用）──────────────────
     #
-    # **对 agent 隐藏**（`agent_auto: False`）：这里能把任意 ID 匹配到名单里的旧账号，
-    # 匹配到管理员旧账号就等于拿到管理员的权限和记忆。这不该是模型自己能调的。
+    # **对 agent 隐藏**（`agent_auto: False`）：这里能把任意 ID 关联到名单里的已有账号，
+    # 关联到管理员账号就等于拿到管理员的权限和记忆。这不该是模型自己能调的。
 
-    @ui.action(id="identity_link", label=tr("entries.identity_link.name", default="换通道认领"), refresh_context=True)
+    @ui.action(id="identity_link", label=tr("entries.identity_link.name", default="账号关联"), refresh_context=True)
     @plugin_entry(
         id="identity_link",
-        name=tr("entries.identity_link.name", default="换通道认领"),
-        description=tr("entries.identity_link.description", default="换通道后把新 ID 匹配回名单里的旧 QQ 号 / 群号。action 取 links / link / link_code / unlink。"),
+        name=tr("entries.identity_link.name", default="账号关联"),
+        description=tr("entries.identity_link.description", default="把新 ID 关联到名册中的已有用户或群，不迁移历史账本。action 取 links / link / link_code / unlink。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string", "enum": ["links", "link", "link_code", "unlink"],
-                       "description": "links=列出已有的匹配、待匹配的新 ID 和可匹配的旧账号；link=直接匹配；link_code=给旧账号生成一次性认领码；unlink=撤销一条匹配"},
-            "qq_number": {"type": "string", "description": "link_code：名单里的旧 QQ 号"},
-            "group_id": {"type": "string", "description": "link_code：名单里的旧群号；link / unlink：新通道的群 ID"},
+                       "description": "links=列出现有关联、最近出现的 ID 和目标账号；link=直接关联；link_code=为目标生成一次性认领码；unlink=解除关联（不拆回历史数据）"},
+            "qq_number": {"type": "string", "description": "link_code：名单中的目标用户 ID"},
+            "group_id": {"type": "string", "description": "link_code：名单中的目标群 ID；link / unlink：新通道的群 ID"},
             "user_id": {"type": "string", "description": "link / unlink：新通道的用户 ID"},
-            "target_user_id": {"type": "string", "description": "link：要匹配的旧 QQ 号"},
-            "target_group_id": {"type": "string", "description": "link：要匹配的旧群号"},
+            "target_user_id": {"type": "string", "description": "link：目标用户 ID（QQ 号或 openid）"},
+            "target_group_id": {"type": "string", "description": "link：目标群 ID（群号或 openid）"},
         }, "required": ["action"], "additionalProperties": False},
         metadata={"agent_auto": False},
     )
@@ -1576,36 +1567,33 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         action = str(action or "").strip()
         if action not in ("links", "link", "link_code", "unlink"):
             return Err(SdkError(f"BAD_ACTION: identity_link 不支持 {action!r}（可选 links/link/link_code/unlink）"))
-        return self._identity_link_dispatch(action, kw)
+        return await self._identity_link_dispatch(action, kw)
 
-    def _identity_link_dispatch(self, action: str, kw: dict[str, Any]):
-        """换通道后的认领（见 ``identity_links``）。
-
-        link_code：给名单里的旧 QQ 号（``qq_number``）或群号（``group_id``）发一次性认领码；
-        links：列出已有的映射和可发码的旧账号；unlink：撤销一条（``user_id`` 或 ``group_id``
-        填认领时用的那个 openid）。
-        """
-        qq_number, group_id = str(kw.get("qq_number") or "").strip(), str(kw.get("group_id") or "").strip()
-        if action == "link_code":
-            try:
-                return Ok(self.identity_links.issue_code("group" if group_id else "user", group_id or qq_number))
-            except ValueError as exc:
-                return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
-        if action == "link":
-            # 管理员直接匹配：用户填 user_id + target_user_id，群填 group_id + target_group_id。
-            target_group = str(kw.get("target_group_id") or "").strip()
-            try:
-                if target_group or group_id:
-                    self.identity_links.link("group", group_id, target_group)
-                else:
-                    self.identity_links.link("user", kw.get("user_id"), kw.get("target_user_id"))
-            except ValueError as exc:
-                return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
-        if action == "unlink":
-            linked = str(kw.get("user_id") or "").strip()
-            if not self.identity_links.unlink("group" if group_id else "user", group_id or linked):
-                return Err(SdkError("NOT_FOUND: 没有这条认领记录"))
-        return Ok(self.identity_links.snapshot())
+    async def _identity_link_dispatch(self, action: str, kw: dict[str, Any]):
+        """唯一的账号关联管理入口；不调用宿主账本合并/拆分接口。"""
+        user = str(kw.get("user_id") or "").strip()
+        group = str(kw.get("group_id") or "").strip()
+        qq = str(kw.get("qq_number") or "").strip()
+        target_user = str(kw.get("target_user_id") or "").strip()
+        target_group = str(kw.get("target_group_id") or "").strip()
+        if (group or target_group) and (user or qq or target_user):
+            return Err(SdkError("INVALID_ARGUMENT: 用户和群不能混合关联"))
+        try:
+            if action == "link_code":
+                return Ok(self.identity_links.issue_code("group" if group else "user", group or qq))
+            if action == "link":
+                await self.identity_links.link(
+                    "group" if group or target_group else "user",
+                    group or user, target_group or target_user,
+                )
+            if action == "unlink":
+                if not await self.identity_links.unlink("group" if group else "user", group or user):
+                    return Err(SdkError("NOT_FOUND: 没有这条关联记录"))
+            return Ok(self.identity_links.snapshot())
+        except ValueError as exc:
+            return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
+        except OSError:
+            return Err(SdkError("NOT_PERSISTED: 读取或保存关联失败，身份没有改变，请重试"))
 
     async def _trust_user_add(self, kw: dict[str, Any]):
         """把一个 QQ 号加入信任用户列表。"""
@@ -1653,45 +1641,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError("INVALID_INPUT: group_remove 需要 group_id"))
         return await self.dashboard_service.remove_trusted_group(group_id=group_id)
 
-    async def _trust_claims(self, kw: dict[str, Any]):
-        """列出开放平台上出现过、但还不在名册里的群内 ID。"""
-        return await self.dashboard_service.list_identity_claims()
-
-    async def _trust_identity_bind(self, kw: dict[str, Any]):
-        """把一个群内 ID 的信赖度账本并入已有身份。只能由人触发。"""
-        user_id = str(kw.get("user_id") or "")
-        target_user_id = str(kw.get("target_user_id") or "")
-        if not user_id or not target_user_id:
-            return Err(SdkError("INVALID_INPUT: identity_bind 需要 user_id 与 target_user_id"))
-        return await self.dashboard_service.bind_identity_account(
-            user_id=user_id, target_user_id=target_user_id)
-
-    async def _trust_identity_unbind(self, kw: dict[str, Any]):
-        """把一个群内 ID 从被合并进的身份里拆回独立身份（误合并的唯一回滚方式）。"""
-        user_id = str(kw.get("user_id") or "")
-        if not user_id:
-            return Err(SdkError("INVALID_INPUT: identity_unbind 需要 user_id"))
-        return await self.dashboard_service.unbind_identity_account(user_id=user_id)
 
     async def _trust_refresh_contacts(self, kw: dict[str, Any]):
         """重新从 OneBot 拉取好友与群列表。"""
         return await self.dashboard_service.refresh_actual_contacts()
 
 
-
-
-
-
-
-
-
     # ── QQ 开放平台：扫码创建 / 复用机器人 ────────────────────
-
-
-
-
-
-
 
 
     # ── query：状态读取 ─────────────────────────────────────────
@@ -2638,16 +2594,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # "第一个私聊的人"去猜可靠得多（那条 bootstrap 只在名单为空时生效一次）。
         #
         # 开放平台拿不到 QQ 号，只给 openid，所以信任名单里存的就是 openid；
-        # 同一个人在不同群的 openid 可能不同，那部分仍要人工合并身份
-        # （bind_identity_account 刻意不自动做）。
+        # 同一个人在不同群的 openid 可能不同，需要管理员明确关联账号。
         admin_openid = str(result.get("user_openid") or "").strip()
         if admin_openid:
             if self.permission_mgr and self.permission_mgr.add_user(admin_openid, "admin"):
                 self._refresh_admin_qq()
-                # 扫码者就是主人：名单里有 OneBot 时期的那个管理员 QQ 号的话，直接认上。
-                links = getattr(self, "identity_links", None)
-                if links is not None:
-                    links.auto_link_admin(self.permission_mgr)
                 self.logger.info(f"[绑定] 已把扫码者设为管理员: {admin_openid}")
             else:
                 self.logger.warning(f"[绑定] 扫码者 openid 无效，未能设为管理员: {admin_openid!r}")

@@ -1,57 +1,22 @@
-"""换通道后把人和群认回来：开放平台的 openid → OneBot 时期的 QQ 号 / 群号。
+"""账号关联是插件唯一的身份匹配机制：新 ID → 名册中的已有账号（用户或群）。
 
-OneBot 按 QQ 号、群号存名单和记忆。开放平台拿不到这两样，只给 32 位 openid，而且同一个人
-私聊是 ``user_openid``、每个群里又各是一个 ``member_openid``。换通道之后按新 ID 什么都查
-不到：信任级别、昵称、群设置不生效，群记忆、群成员记忆、非管理员的私聊记忆从零开始。
+只有管理员直接关联或签发的一次性认领码可以建边；不自动猜测管理员身份。
+只允许一层映射，不迁移历史记忆或合并历史信赖度。解除仅改变后续读写，
+关联期间写到目标账号的数据不会拆回。宿主已有的身份绑定不在这里修改。
 
-这里只存一张**别名表**（openid → 旧账号），在取名单、拼记忆键的地方换算一次。旧记录原地
-不动：撤销只是删一行映射，切回 OneBot 也不受影响。
-
-## 认领必须由管理员授权
-
-平台不给 QQ 号，没法验证"你真的是那个号"。任何人发一句"我是 123456"就能认领的话，认领
-主人的号就等于拿到管理员权限和主人的记忆。所以流程是：
-
-1. 管理员在控制台对名单里某个旧 QQ 用户 / 群生成一次性认领码（``issue_code``）；
-2. 对方在新通道发 ``认领 <码>``：私聊发 → 绑定私聊 openid；群里 @ 她发 → 用户码绑定这个人
-   在这个群的 openid，群码绑定这个群。
-
-码十分钟过期、只能用一次（群里发出来别人看得见，用过即废），只存在内存里。
-
-## 不用码的两条路
-
-* **管理员自动匹配**（``auto_link_admin``）：名单里只有一个 QQ 号的管理员时，openid 形态的
-  管理员条目自动认到它上面。那些 openid 是扫码绑定时平台给出的（或管理员自己加的），
-  是"这个人就是主人"唯一能被证明的地方。有两个以上 QQ 管理员就不猜。撤销过的不再自动认。
-* **管理员在控制台直接匹配**（``link``）：新通道上出现过、还没认领的 ID 会列出来，附最近
-  一句话帮助辨认，管理员点一下指给某个旧账号。
-
-别人的 ID 做不到全自动：平台不给 QQ 号，没有任何信号能说明一个 openid 是谁。
-
-## 和「合并身份」的分工
-
-``trust`` 入口里原有的 identity_bind（「合并身份」）只合并记忆服务里的**信赖度账本**，
-不改权限、不改记忆键。这里的认领管的是名单和记忆键。认领过的 ID 之后的信赖度直接记在
-旧账号上，不需要再合并；认领之前它自己攒下的那一份不会自动并过去。
-
-## 这些动作不对 agent 开放
-
-发码、直接匹配、撤销都在 ``identity_link`` 入口上（``agent_auto: False``）：能把任意 ID
-匹配到管理员旧账号的动作，不该是模型自己能调的。
-
-## 第一版管到哪里
-
-名单（级别、昵称、群设置）、记忆服务的键（群 / 群成员 / 私聊对象 / 信赖度账号）、按群写的
-提示词。插件本地按 ID 存的状态（好感度、群消息汇总等）还没接。
+权限/昵称/群设置、记忆键、信赖度账号键和群提示词沿用现有解析接点。
+插件本地好感度、群消息汇总等不迁移。所有管理操作仅由 identity_link 控制台入口提供。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import secrets
 import time
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
@@ -71,12 +36,11 @@ class QQIdentityLinks:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._links: dict[str, dict[str, str]] = {"user": {}, "group": {}}
-        #: 码 → {kind, legacy_id, expires_at}。只在内存里：重启即作废。
+        #: 码 → {kind, legacy_id, level, expires_at}。只在内存里：重启即作废。
         self._codes: dict[str, dict[str, Any]] = {}
         #: 发送者 → 最近几次认领失败的时刻。只在内存里。
         self._failures: dict[str, list[float]] = {}
-        #: 被撤销过的自动匹配（openid）：不再自动认回去。
-        self._auto_off: set[str] = set()
+        self._mutation_lock = asyncio.Lock()
         #: 新通道上最近出现的 ID → {kind, id, group, text, at}。只在内存里，含一句话预览。
         self._seen: dict[tuple[str, str], dict[str, Any]] = {}
         self._loaded = False
@@ -89,30 +53,86 @@ class QQIdentityLinks:
     def _load(self) -> None:
         if self._loaded:
             return
-        self._loaded = True
         try:
             payload = json.loads(self._path().read_text(encoding="utf-8"))
-        except Exception:
+        except FileNotFoundError:
+            self._loaded = True
             return
+        if not isinstance(payload, dict):
+            raise ValueError("账号关联文件格式错误，请先修复，不能覆盖原记录")
+        draft = {"user": {}, "group": {}}
         for kind, key in (("user", "users"), ("group", "groups")):
-            table = payload.get(key) if isinstance(payload, dict) else None
-            if isinstance(table, dict):
-                self._links[kind] = {
-                    str(linked).strip(): str(legacy).strip()
-                    for linked, legacy in table.items() if str(linked).strip() and str(legacy).strip()
-                }
-        if isinstance(payload, dict) and isinstance(payload.get("auto_off"), list):
-            self._auto_off = {str(item) for item in payload["auto_off"]}
+            table = payload.get(key, {})
+            if not isinstance(table, dict):
+                raise ValueError("账号关联文件格式错误，请先修复，不能覆盖原记录")
+            draft[kind] = {
+                str(linked).strip(): str(legacy).strip()
+                for linked, legacy in table.items() if str(linked).strip() and str(legacy).strip()
+            }
+        self._links = draft
+        self._loaded = True
 
-    def _save(self) -> None:
+    def _save(self, links: dict[str, dict[str, str]]) -> None:
+        """先原子替换磁盘，再发布内存；失败不改变关联，也不消耗码。"""
         path = self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_name(path.name + ".tmp")
         temp.write_text(json.dumps(
-            {"version": 1, "users": self._links["user"], "groups": self._links["group"],
-             "auto_off": sorted(self._auto_off)},
+            {"version": 1, "users": links["user"], "groups": links["group"]},
             ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, path)
+        self._links = links
+
+    async def _commit(self, kind: str, linked: str, legacy: str | None,
+                      *, expected_level: str | None = None) -> None:
+        """沿用现有会话锁/结算，不另造迁移系统。结算不完就拒绝这次变更。
+
+        在旧映射下结算，避免积压历史被写进新目标；持锁到映射落盘。
+        用户关联可能影响群成员记忆，因此保守刷新现有群会话。
+        """
+        runtime = getattr(self.plugin, "session_runtime_service", None)
+        sessions = getattr(self.plugin, "_user_sessions", {})
+        handoff = getattr(self.plugin, "session_handoff_service", None)
+        primary = f"private:{linked}" if kind == "user" else f"group:{linked}"
+        async with AsyncExitStack() as stack:
+            locked: set[str] = set()
+            if runtime is not None:
+                # await 期间可能出现新群会话；全部结算完后才进行无 await 的提交。
+                while True:
+                    keys = {primary}
+                    if kind == "user":
+                        keys.update(key for key in sessions if key.startswith("group:"))
+                    pending = sorted(keys - locked)
+                    if not pending:
+                        break
+                    for key in pending:
+                        await stack.enter_async_context(await runtime.get_session_lock(key))
+                        locked.add(key)
+                        data = sessions.get(key)
+                        if data is not None:
+                            data["handoff_revoked"] = True
+                        if handoff is not None:
+                            handoff.forget(key)
+                        if not await runtime.discard_session(key, reason="identity_link_changed"):
+                            raise ValueError("会话尚未结算完成，账号关联未改变，请稍后重试")
+            if legacy is not None:
+                # 名册可能在结算的 await 期间改变，落盘前必须再次验证。
+                self._validate_link(kind, linked, legacy)
+                if expected_level is not None and self._own_level(kind, legacy) != expected_level:
+                    raise ValueError("目标级别已变化，请重新生成认领码")
+            draft = {key: dict(value) for key, value in self._links.items()}
+            if legacy is None:
+                draft[kind].pop(linked)
+            else:
+                draft[kind][linked] = legacy
+            if handoff is not None:
+                # 无活跃会话时也可能有旧权限/身份下的接续摘要。
+                if kind == "user":
+                    handoff.forget_all()
+                else:
+                    handoff.forget(primary)
+            self._save(draft)
+            self._seen.pop((kind, linked), None)
 
     # ── 换算（热路径：只查内存）─────────────────────────────────
 
@@ -145,7 +165,7 @@ class QQIdentityLinks:
         """认领后权限和记忆会不会分叉：新 ID 自己有名单条目，而且级别和旧账号不一样。
 
         读名单时自己的条目优先，记忆键却落到旧账号 —— 一个普通用户认到管理员头上，权限
-        还是普通，读到的却是管理员的记忆。级别一致不算（管理员自动匹配正是这种情况）。
+        还是普通，读到的却是管理员的记忆。级别一致不算，但仍需管理员明确授权关联。
         """
         own = self._own_level(kind, linked)
         return own != "none" and own != self._own_level(kind, legacy)
@@ -163,98 +183,78 @@ class QQIdentityLinks:
         self._load()
         legacy = str(legacy_id or "").strip()
         if kind not in self.KINDS or not legacy:
-            raise ValueError("需要指定要认领的旧 QQ 号或群号")
+            raise ValueError("需要指定要认领的目标用户或群 ID")
         if not self._roster_has(kind, legacy):
             raise ValueError("这个账号不在名单里，不能发认领码")
         if legacy in self._links[kind]:
-            raise ValueError("这个账号本身是认领来的别名，请对它指向的旧账号发码")
+            raise ValueError("这个账号本身是别名，请对它指向的目标账号发码")
         ts = time.time() if now is None else now
         self._drop_expired(ts)
         code = "".join(secrets.choice(self.CODE_ALPHABET) for _ in range(self.CODE_LENGTH))
-        self._codes[code] = {"kind": kind, "legacy_id": legacy, "expires_at": ts + self.CODE_TTL_SECONDS}
+        self._codes[code] = {"kind": kind, "legacy_id": legacy, "level": self._own_level(kind, legacy),
+                             "expires_at": ts + self.CODE_TTL_SECONDS}
         return {"code": code, "kind": kind, "legacy_id": legacy, "expires_in": int(self.CODE_TTL_SECONDS)}
 
-    def claim(self, code: str, *, sender_id: Any, group_id: Any = "", now: float | None = None) -> dict[str, str]:
-        """用码认领。返回 ``{status, kind, legacy_id, linked_id}``；只有 ``linked`` 会消耗这个码。
-
-        status：``linked`` / ``invalid``（码不对或过期）/ ``needs_group``（群码发在了私聊）/
-        ``already``（这个 ID 已经认领过别的）/ ``same``（它就是那个旧账号）/
-        ``conflict``（它自己在名单里是另一个级别，见 `_forks`）。
-        """
-        self._load()
-        self._drop_expired(time.time() if now is None else now)
-        row = self._codes.get(str(code or "").strip().upper())
-        if row is None:
-            return {"status": "invalid"}
-        kind, legacy = row["kind"], row["legacy_id"]
-        linked = str((group_id if kind == "group" else sender_id) or "").strip()
-        result = {"kind": kind, "legacy_id": legacy, "linked_id": linked}
-        if not linked:
-            return {"status": "needs_group", **result}
-        if linked == legacy:
-            return {"status": "same", **result}
-        if linked in self._links[kind]:
-            return {"status": "already", **result}
-        if self._forks(kind, linked, legacy):
-            return {"status": "conflict", **result}
-        del self._codes[str(code).strip().upper()]
-        self._links[kind][linked] = legacy
-        self._save()
-        return {"status": "linked", **result}
-
-    def unlink(self, kind: str, linked_id: Any) -> bool:
-        self._load()
-        linked = str(linked_id or "").strip()
-        if kind not in self.KINDS or self._links[kind].pop(linked, None) is None:
-            return False
-        if kind == "user":
-            self._auto_off.add(linked)   # 撤销的若是自动匹配，别在下次载入名单时又认回去
-        self._save()
-        return True
-
-    # ── 不用码：管理员直接匹配 / 管理员自动匹配 ─────────────────
-
-    def link(self, kind: str, linked_id: Any, legacy_id: Any) -> None:
-        """管理员在控制台直接把一个新 ID 指给名单里的旧账号。"""
-        self._load()
-        linked, legacy = str(linked_id or "").strip(), str(legacy_id or "").strip()
+    def _validate_link(self, kind: str, linked: str, legacy: str) -> None:
         if kind not in self.KINDS or not linked or not legacy:
-            raise ValueError("需要指定新 ID 和要匹配的旧账号")
+            raise ValueError("需要指定新 ID 和名册中的目标账号")
         if linked == legacy:
-            raise ValueError("新 ID 和旧账号是同一个")
-        if not self._roster_has(kind, legacy) or legacy in self._links[kind]:
-            raise ValueError("要匹配的旧账号不在名单里")
-        if linked in self._links[kind]:
-            raise ValueError("这个 ID 已经认领过了，请先撤销")
+            raise ValueError("新 ID 和目标账号是同一个")
+        table = self._links[kind]
+        if not self._roster_has(kind, legacy) or legacy in table:
+            raise ValueError("目标已不在名册里，或目标本身是别名")
+        if linked in table:
+            raise ValueError("这个 ID 已经关联过了，请先解除")
+        if linked in table.values():
+            raise ValueError("这个账号已有其他 ID 指向它，不能再作为别名关联")
         if self._forks(kind, linked, legacy):
-            raise ValueError("这个 ID 自己在名单里是另一个级别，请先把那一条删掉或改成一致再匹配")
-        self._links[kind][linked] = legacy
-        self._auto_off.discard(linked)
-        self._seen.pop((kind, linked), None)
-        self._save()
+            raise ValueError("这个 ID 自己在名单里是另一个级别，请先处理权限冲突")
 
-    OPENID_RE = re.compile(r"^[0-9A-Fa-f]{32}$")
-
-    def auto_link_admin(self, permission_mgr: Any) -> list[str]:
-        """名单里只有一个 QQ 号管理员时，把 openid 形态的管理员条目自动认到它上面。"""
-        try:
+    async def claim(self, code: str, *, sender_id: Any, group_id: Any = "",
+                    now: float | None = None) -> dict[str, str]:
+        """兑换管理员签发的码；成功落盘后才消耗。兑换时重新校验名册和映射。"""
+        async with self._mutation_lock:
             self._load()
-            admins = [str(row.get("qq") or "") for row in permission_mgr.list_users() if row.get("level") == "admin"]
-        except Exception:
-            return []
-        legacy = [qq for qq in admins if qq.isdigit()]
-        if len(legacy) != 1:
-            return []
-        added = [
-            qq for qq in admins
-            if self.OPENID_RE.match(qq) and qq not in self._links["user"] and qq not in self._auto_off
-        ]
-        for qq in added:
-            self._links["user"][qq] = legacy[0]
-        if added:
-            self._save()
-            self.plugin.logger.info(f"[Identity] 管理员自动匹配: {len(added)} 个 openid → {legacy[0]}")
-        return added
+            self._drop_expired(time.time() if now is None else now)
+            code = str(code or "").strip().upper()
+            row = self._codes.get(code)
+            if row is None:
+                return {"status": "invalid"}
+            kind, legacy = row["kind"], row["legacy_id"]
+            linked = str((group_id if kind == "group" else sender_id) or "").strip()
+            result = {"kind": kind, "legacy_id": legacy, "linked_id": linked}
+            if not linked:
+                return {"status": "needs_group", **result}
+            if linked == legacy:
+                return {"status": "same", **result}
+            if linked in self._links[kind]:
+                return {"status": "already", **result}
+            try:
+                self._validate_link(kind, linked, legacy)
+                await self._commit(kind, linked, legacy, expected_level=row["level"])
+            except ValueError:
+                return {"status": "conflict", **result}
+            except OSError:
+                return {"status": "save_failed", **result}
+            self._codes.pop(code, None)
+            return {"status": "linked", **result}
+
+    async def unlink(self, kind: str, linked_id: Any) -> bool:
+        async with self._mutation_lock:
+            self._load()
+            linked = str(linked_id or "").strip()
+            if kind not in self.KINDS or linked not in self._links[kind]:
+                return False
+            await self._commit(kind, linked, None)
+            return True
+
+    async def link(self, kind: str, linked_id: Any, legacy_id: Any) -> None:
+        """管理员直接关联；与认领码共用校验、会话刷新和提交。"""
+        async with self._mutation_lock:
+            self._load()
+            linked, legacy = str(linked_id or "").strip(), str(legacy_id or "").strip()
+            self._validate_link(kind, linked, legacy)
+            await self._commit(kind, linked, legacy)
 
     SEEN_MAX = 60
 
@@ -264,7 +264,7 @@ class QQIdentityLinks:
         group = str(message.get("group_id") or "").strip() if message.get("message_type") == "group" else ""
         text = str(message.get("content") or "")[:24]
         for kind, value in (("user", sender), ("group", group)):
-            if not value or value in self._links[kind] or self._roster_has(kind, value):
+            if not value or value in self._links[kind] or value in self._links[kind].values():
                 continue
             self._seen.pop((kind, value), None)
             self._seen[(kind, value)] = {"kind": kind, "id": value, "group": group, "text": text, "at": int(time.time())}
@@ -278,15 +278,16 @@ class QQIdentityLinks:
         groups = getattr(self.plugin, "group_permission_mgr", None)
         return {
             "users": dict(self._links["user"]), "groups": dict(self._links["group"]),
-            "seen": [row for key, row in reversed(list(self._seen.items())) if key[1] not in self._links[key[0]]],
+            "seen": [row for key, row in reversed(list(self._seen.items()))
+                     if key[1] not in self._links[key[0]] and key[1] not in self._links[key[0]].values()],
             "candidates": {
                 "users": [
                     {"id": str(row.get("qq")), "level": row.get("level"), "nickname": row.get("nickname") or ""}
-                    for row in (users.list_users() if users else []) if str(row.get("qq") or "").isdigit()
+                    for row in (users.list_users() if users else []) if str(row.get("qq") or "") not in self._links["user"]
                 ],
                 "groups": [
                     {"id": str(row.get("group_id")), "level": row.get("level")}
-                    for row in (groups.list_groups() if groups else []) if str(row.get("group_id") or "").isdigit()
+                    for row in (groups.list_groups() if groups else []) if str(row.get("group_id") or "") not in self._links["group"]
                 ],
             },
         }
@@ -294,13 +295,14 @@ class QQIdentityLinks:
     # ── 收到"认领 <码>" ─────────────────────────────────────────
 
     REPLIES = {
+        "save_failed": "保存关联失败，身份没有改变，认领码未消耗，请稍后重试。",
         "linked_user": "认领成功：以后在这里也认得你了。",
         "linked_group": "认领成功：这个群接上原来的记录了。",
         "invalid": "认领码无效或已过期，请让管理员重新生成。",
         "needs_group": "这是群的认领码，请在要认领的群里 @ 我发送。",
-        "already": "这里已经认领过了；要改的话请让管理员先撤销。",
+        "already": "这里已经认领过了；要改的话请让管理员先解除关联。",
         "same": "这里就是那个账号本身，不需要认领。",
-        "conflict": "这个 ID 在名单里已经有一条不同级别的记录，请让管理员先处理那一条。",
+        "conflict": "目标或权限已变化、存在关联冲突，或会话尚未结算，请让管理员检查后重试。",
     }
 
     def _locked_out(self, sender: str, now: float) -> bool:
@@ -338,21 +340,18 @@ class QQIdentityLinks:
         now = time.time()
         if self._locked_out(sender, now):
             return True          # 连着失败太多次：不受理、不回复，也不让这句话进对话
-        result = self.claim(match.group(1), sender_id=sender, group_id=group)
+        try:
+            result = await self.claim(match.group(1), sender_id=sender, group_id=group)
+        except (OSError, ValueError):
+            result = {"status": "save_failed"}
         status = result["status"]
-        if status != "linked":
+        if status not in ("linked", "save_failed", "conflict"):
             self._failures.setdefault(sender, []).append(now)
         if status == "linked":
             status = f"linked_{result['kind']}"
             self.plugin.logger.info(
                 f"[Identity] 认领成功: {result['kind']} {result['linked_id'][:6]}… → {result['legacy_id']}"
             )
-            invalidate = getattr(self.plugin, "_invalidate_private_session", None)
-            if callable(invalidate) and kind == "private":
-                try:
-                    await invalidate(sender)
-                except Exception:
-                    pass
         # 私聊和群聊都带回复锚点：开放平台上没有它就是主动消息，有额度，可能发不出去。
         segments = [{"type": "text", "data": {"text": self.REPLIES[status]}}]
         if message.get("message_id"):
