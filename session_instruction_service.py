@@ -54,38 +54,8 @@ def _apply_role_placeholders(*args: Any, **kwargs: Any) -> str:
     return apply_role_placeholders(*args, **kwargs)
 
 
-def resolve_prompt_override(
-    overrides: Any, locale: str, i18n_key: str,
-) -> tuple[str, str] | None:
-    """定位「运行时真正会用的」那个提示词覆盖桶。
-
-    返回 ``(桶的 locale, 覆盖文本)``，没有覆盖时返回 ``None``。
-
-    ⚠️ 单一实现，三个消费方（运行时 ``_resolve_static_layer``、编辑器
-    ``get_prompt_editor_state``、重置 ``reset_prompt_override``）必须都走这里。
-    覆盖按 locale 分桶存，而读取是 ``locale_candidates`` 的逐级回退：一旦哪个
-    消费方改用精确匹配，就会出现「运行时在用、编辑器看不见、也重置不掉」的
-    覆盖——存量用户的桶键未必等于今天解析出来的 locale（例如 #2500 之前繁中
-    用户的编辑器兜底是短码 ``zh``）。
-
-    空串覆盖（``save_prompt_override`` 对空输入的存法）视为「没设」，继续往下
-    一个候选找，与运行时原有行为一致。
-    """
-    if not isinstance(overrides, dict):
-        return None
-    from plugin.sdk.shared.i18n import locale_candidates
-    for candidate in locale_candidates(locale, "zh-CN"):
-        locale_map = overrides.get(candidate)
-        if not isinstance(locale_map, dict) or i18n_key not in locale_map:
-            continue
-        value = locale_map[i18n_key]
-        if isinstance(value, str) and value.strip():
-            return candidate, value
-    return None
-
-
 class QQSessionInstructionService:
-    # 提示词层定义（供编辑器 + 运行时覆盖解析使用）
+    # 提示词层定义（只读诊断 + 运行时模板占位符护栏）
     #
     # 2026-09-27 审计删掉了四类层（见 docs/SESSION-HANDOFF.md §25）：
     #   · `role`（角色设定）—— 与本体的角色扮演前言/人设**直接冲突**（它说"你是 AI 数字生命"，
@@ -96,7 +66,7 @@ class QQSessionInstructionService:
     #     —— 只在已删除的 neko_scene 分支里可达，删除后没人再构造它们；
     #   · `format_prompt_section`（旧纯文本版）—— 本来就不在这一层表里。
     _PROMPT_LAYERS: list[dict[str, Any]] = [
-        # === 静态层（可编辑） ===
+        # === 内置静态层（只读） ===
         {"id": "init",                  "i18n_key": "",                      "required_placeholders": ["{name}"],                       "format_after": True},
         {"id": "attention",             "i18n_key": "attention_prompt_section", "required_placeholders": [],                            "format_after": False},
         {"id": "group_attention",       "i18n_key": "group_attention_prompt_section", "required_placeholders": [],                        "format_after": False},
@@ -186,29 +156,14 @@ class QQSessionInstructionService:
         return build_time_context()
 
     def _resolve_static_layer(self, i18n_key: str, default_template: str, locale: str = "", **format_kwargs) -> str:
-        """解析静态提示词层：先查 prompt_overrides，再回退 i18n/默认模板。"""
+        """只解析内置 i18n/默认模板；不读取任何历史用户覆盖。"""
         if not locale:
-            # #2500 第 2 步：用全码。这个 locale 只喂 ``locale_candidates``（覆盖
-            # 查找 + i18n bundle 查找），两者都是「先精确再逐级回退」，所以给全码
-            # 严格更准：提示词编辑器按前端 locale 存覆盖（可能就是 'zh-TW'），而
-            # 短码 'zh' 的候选链是 zh → zh-CN → en，够不到那份繁体覆盖。
             locale = get_global_language_full()
-        # 初始值：i18n bundle 优先，否则用 Python 默认常量
-        # ⚠️ locale 必须传进去。``PluginI18n.default_locale`` 是 plugin.toml 里写
-        # 死的 "zh-CN"，不跟用户语言走，所以不传等于永远查简体那本。今天这些
-        # 提示词层的 key 一个 bundle 都没有（一律落到 default_template），这行是
-        # 空操作；但 ``get_prompt_editor_state`` 已经传了 locale，两边不一致的话，
-        # 谁往 bundle 里补一条翻译，编辑器显示的和运行时用的就会是两份文本。
         base_text = self.plugin.i18n.t(
             i18n_key, locale=locale, default=default_template,
         )
-        # 检查用户覆盖
-        overrides = (self.plugin._qq_settings or {}).get("prompt_overrides") or {}
-        found = resolve_prompt_override(overrides, locale, i18n_key)
-        if found is not None:
-            base_text = found[1]
         # 必需占位符护栏：身份边界等安全层的 required_placeholders 在
-        # _PROMPT_LAYERS 里声明；覆盖文本（bundle 或用户）缺任一占位符
+        # _PROMPT_LAYERS 里声明；翻译模板缺任一占位符
         # 说明它丢掉了模板承载的身份/场景约束（例如 shared_session 的
         # 弱两行覆盖会让群成员被当成主人）→ 回退到加固默认模板。
         required = self._required_placeholders_by_key().get(i18n_key, ())
@@ -216,7 +171,7 @@ class QQSessionInstructionService:
             missing = [p for p in required if p not in base_text]
             if missing:
                 self.plugin.logger.warning(
-                    f"提示词层 {i18n_key} 的覆盖缺少必需占位符 {missing}，"
+                    f"提示词层 {i18n_key} 的翻译模板缺少必需占位符 {missing}，"
                     f"回退默认模板"
                 )
                 base_text = default_template
@@ -244,41 +199,7 @@ class QQSessionInstructionService:
         template = SESSION_INIT_PROMPT.get(
             normalize_sys_prompt_locale(locale), SESSION_INIT_PROMPT["zh"],
         )
-        # 检查覆盖
-        overrides = (self.plugin._qq_settings or {}).get("prompt_overrides") or {}
-        found = resolve_prompt_override(overrides, locale, "init")
-        return found[1] if found is not None else template
-
-    def _discard_all_sessions_for_prompt_change(self) -> None:
-        """提示词覆盖变更后，清空所有现有 session，下次回复生效。"""
-        # discard_session 是协程——此前直接调用从未执行（协程被丢弃，
-        # session 根本没清）。改为 create_task 并持强引用防 GC。
-        tasks = getattr(self.plugin, "_prompt_change_discard_tasks", None)
-        if tasks is None:
-            tasks = set()
-            self.plugin._prompt_change_discard_tasks = tasks
-        for session_key in list(getattr(self.plugin, "_user_sessions", {}).keys()):
-            # 经 per-session 锁串行化：正在生成的群轮要么完整收尾（成员轮
-            # 落 bucket）要么一致地被排除，绝不在 stream_text 改写历史时
-            # 中途弹出会话。
-            async def _locked_discard(key: str = session_key) -> None:
-                discarded = await self.plugin.session_runtime_service.discard_session(
-                    key, reason="prompt_override_changed",
-                )
-                if discarded is False:
-                    # 结算失败被有意保留：不打粘性标记的话，持续活跃的
-                    # 会话会无限期沿用旧 system prompt（活跃阻止 idle
-                    # finalizer 替换它）。下轮 bootstrap 先重试 discard。
-                    kept = self.plugin._user_sessions.get(key)
-                    if kept is not None:
-                        kept["pending_identity_discard"] = True
-
-            task = asyncio.create_task(
-                self.plugin._run_with_session_lock(session_key, _locked_discard)
-            )
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-        self.plugin._emit_log("INFO", "提示词覆盖已更新，所有现有会话已清除")
+        return template
 
     # ==========================================
     # sticker 目录加载
@@ -546,7 +467,6 @@ class QQSessionInstructionService:
             )
         )
         self._append_blacklist_section(sections)
-        self._append_group_custom_prompt_section(sections, group_id, is_group)
         cross_group_section = self._append_cross_group_section(
             sections, group_id, is_group,
         )
@@ -1114,24 +1034,6 @@ class QQSessionInstructionService:
         context = attention.get_attention_context(str(group_id))
         if context:
             sections.append(context)
-
-    def _append_group_custom_prompt_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
-        """追加按群自定义提示词（仅在群聊场景生效）。"""
-        if not is_group or not group_id:
-            return
-        group_prompts = (self.plugin._qq_settings or {}).get("group_prompts") or {}
-        if not isinstance(group_prompts, dict):
-            return
-        # 认领过的开放平台群沿用原群号下写的提示词（见 ``identity_links``）。
-        links = getattr(self.plugin, "identity_links", None)
-        legacy_group = links.group(group_id) if links is not None else str(group_id)
-        custom_text = str(group_prompts.get(str(group_id), "") or group_prompts.get(legacy_group, "") or "").strip()
-        if custom_text:
-            sections.append(
-                f"## 本群特殊说明（Group-Specific Instructions）\n"
-                f"以下是你在此群中的额外行为准则，请严格遵守：\n\n"
-                f"{custom_text}"
-            )
 
     def _append_role_card_section(
         self,

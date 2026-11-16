@@ -113,7 +113,7 @@ def test_policy_always_in_actual_instruction_bundle(monkeypatch, is_group, needs
     service._build_core_memory_section = AsyncMock(return_value="")
     service._append_user_profile_section = AsyncMock()
     for name in ("_append_role_card_section", "_append_blacklist_section",
-                 "_append_group_custom_prompt_section", "_append_attention_context_section"):
+                 "_append_attention_context_section"):
         setattr(service, name, Mock())
     bundle = asyncio.run(service.build_session_instructions(
         her_name="猫娘", master_name="用户", character_prompt="", character_card_fields={},

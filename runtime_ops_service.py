@@ -308,7 +308,6 @@ class QQRuntimeOpsService:
                     buffer_tasks.append(task)
         pending_tasks = (
             list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
-            + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())
             + list(getattr(gate, "_digest_tasks", ()) or ())
             + list(getattr(gate, "_retro_tasks", ()) or ())
             + buffer_tasks

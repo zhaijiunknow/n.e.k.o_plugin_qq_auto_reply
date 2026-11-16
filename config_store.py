@@ -188,6 +188,10 @@ class QQAutoReplyConfigStore:
         # 它的唯一作用是给 `dormant_until` 写一个未来时刻，那套模型已随键一起删除：
         # 现在休眠就是一个布尔量，醒来只有点名 / 群里热起来两条路。
         "dormancy_auto_wake_seconds",
+        # 提示词编辑已退役：升级时清除全部语言桶和群覆盖，不迁移到别处。
+        # save 同样拒绝旧键，防止旧备份/旧调用方把隐藏训令重新带回来。
+        "prompt_overrides",
+        "group_prompts",
     )
 
     #: 前缀兜底：逐个列名字**必然会漏**（``fatigue_tiers`` 就是这么漏掉的——它只出现
@@ -236,6 +240,7 @@ class QQAutoReplyConfigStore:
         return self._path.is_file()
 
     async def load(self) -> dict[str, Any]:
+        self.migration_applied = False
         if not self._path.is_file():
             return self.default_config()
         payload = await read_json_async(self._path)
@@ -264,7 +269,6 @@ class QQAutoReplyConfigStore:
             merged["reply_mode"] = "voice"
         else:
             merged["reply_mode"] = "text"
-        merged["group_prompts"] = payload.get("group_prompts") if isinstance(payload.get("group_prompts"), dict) else {}
         merged.pop("audio_reply_enabled", None)
         return merged
 
@@ -288,10 +292,6 @@ class QQAutoReplyConfigStore:
                 normalized.get("attention_emotion_multipliers")
             )
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
-            normalized["group_prompts"] = {
-                str(k): str(v) for k, v in (normalized.get("group_prompts") or {}).items()
-                if str(k).strip() and str(v).strip()
-            }
             normalized.pop("audio_reply_enabled", None)
             await atomic_write_json_async(self._path, normalized)
             return normalized

@@ -54,11 +54,11 @@ def test_the_accounts_page_tucks_rarely_used_tools_away():
     assert "getElementById('identity-links-card').style.display=" in HTML, "加载后即显示，纯开放平台用户也能关联"
 
 
-def test_the_prompt_editor_is_gone_from_the_console_but_not_from_the_backend():
-    """提示词编辑从界面上拔掉（使用者 2026-11-16）；后端入口和已保存的覆盖不动。"""
+def test_prompt_editing_is_retired_and_only_read_only_diagnostics_remain():
+    """稳定版不暴露编辑器；后端只保留内置模板的只读诊断，不再读旧覆盖。"""
     assert "prompts" not in HTML and "PromptOverride" not in HTML and "loadPromptEditorState" not in HTML
     source = (pathlib.Path(__file__).resolve().parents[1] / "__init__.py").read_text(encoding="utf-8")
-    assert 'if action == "prompt_editor":' in source and "resolve_prompt_override" in source
+    assert 'if action == "prompt_editor":' in source and "resolve_prompt_override" not in source
 
 
 def test_the_owner_binding_card_is_onebot_only():

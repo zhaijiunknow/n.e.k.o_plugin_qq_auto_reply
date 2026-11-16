@@ -646,11 +646,6 @@ MISC = (
     # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
     SettingSpec("allow_cross_group_context", "bool", False, saveable=True,
                 description="save：允许跨群实时话题上下文", handler="consent_opt_in"),
-    # ── 提示词覆盖 ──
-    # 提示词编辑器覆盖值（locale → layer_id → text）
-    SettingSpec("prompt_overrides", "dict", {},
-                description="提示词编辑器覆盖值（locale → layer_id → text）"),
-    SettingSpec("group_prompts", "dict", {}, description="按群自定义提示词"),
 )
 
 SETTINGS: tuple[SettingSpec, ...] = ATTENTION + ATTENTION_NEW + PACING + OUTBOUND + STICKER + CATCHUP + MISC

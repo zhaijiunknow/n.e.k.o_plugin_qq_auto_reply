@@ -30,7 +30,6 @@ FRONTENDS = ("napcat.html", "open_platform.html", "status.html", "script.js", "n
 DESTRUCTIVE_HANDLERS = (
     ("napcat.html", "deleteSticker"),
     ("napcat.html", "doForgetGroupMemory"),
-    ("napcat.html", "resetPromptOverride"),
     ("open_platform.html", "deleteSticker"),
 )
 

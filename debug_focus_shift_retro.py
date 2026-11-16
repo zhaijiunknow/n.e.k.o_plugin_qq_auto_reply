@@ -101,7 +101,6 @@ def build_facade(data_dir: Path, tmp_dir: Path, config: dict) -> SimpleNamespace
     facade._group_digest_task = None
     facade._user_sessions = {}
     facade._group_memory_sync_tasks = set()
-    facade._prompt_change_discard_tasks = set()
 
     # 回溯补回流水线：拦在 LLM 之前，捕获构造好的请求
     captured = []
