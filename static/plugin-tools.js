@@ -81,10 +81,13 @@
     const host = document.getElementById('page-plugintools');
     if (!host || document.getElementById('pt-zone-available')) return;
     host.innerHTML = MARKUP;
-    // OneBot 将身份绑定放到参数页；没有该容器的开放平台仍保留在插件页。
+    // 「主人绑定」只在 OneBot 控制台出现：那边把它放到参数页的容器里。
+    // 开放平台控制台没有这个容器，卡片整个拿掉 —— 自动背景只对 OneBot 生效，要填的还是
+    // QQ 号（开放平台只有 openid），在那边是一张填了也没用的表单。后端和已保存的绑定不动。
     const bindingHost = document.getElementById('config-companion-context');
     const bindingCard = document.getElementById('cc-card');
     if (bindingHost && bindingCard) bindingHost.appendChild(bindingCard);
+    else if (bindingCard) bindingCard.remove();
     // 注入的节点要自己再翻一次：i18n.js 初始化时扫的是**当时**的 DOM。
     if (window.I18n && typeof window.I18n.scanDOM === 'function') window.I18n.scanDOM(host);
     ['pt-zone-available', 'pt-zone-all', 'pt-zone-admin'].forEach(id => {
@@ -115,7 +118,8 @@
       : 'background:var(--success-tint-strong);border:1px solid var(--success-border);border-left:3px solid var(--success)';
     let entries = (c.entries || []).length;
     let count = entries ? ` · ${t('ui.openplat.plugintools.entry_count', '可用功能 ')}${entries}` : '';
-    let contextHint = (c.context_capabilities || []).map(cap =>
+    // 「自动背景」的标注跟着绑定卡片走：没有那张卡片的控制台（开放平台）上不显示。
+    let contextHint = (document.getElementById('cc-card') ? (c.context_capabilities || []) : []).map(cap =>
       `<div class="form-hint">自动背景：${escapeHtml(cap.label)} · ${cap.available ? '只限绑定主人' : '缺少只读接口，暂不可用'}</div>`
     ).join('');
     let pid = escapeOnclick(c.plugin_id);
@@ -260,6 +264,7 @@
     CC_TEXT.forEach(k => {document.getElementById('cc-' + k).value = config[k] || '';});
   }
   async function ccLoad() {
+    if (!document.getElementById('cc-card')) return;   // 这个控制台上没有绑定卡片：不为它多查一次配置
     if ((ccDirty && ccLoaded) || ccSaving) return;
     const revision = ccRevision;
     try {

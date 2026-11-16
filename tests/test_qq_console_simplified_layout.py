@@ -60,3 +60,66 @@ def test_the_prompt_editor_is_gone_from_the_console_but_not_from_the_backend():
     source = (pathlib.Path(__file__).resolve().parents[1] / "__init__.py").read_text(encoding="utf-8")
     assert 'if action == "prompt_editor":' in source and "resolve_prompt_override" in source
 
+
+def test_the_owner_binding_card_is_onebot_only():
+    """「私有插件上下文：主人绑定」只在 OneBot 控制台出现（使用者 2026-11-16）。
+
+    自动背景在代码里只对 OneBot 生效，要填的还是 QQ 号 —— 开放平台用户手里只有 openid。
+    开放平台并入本体后背景由本体统一提供，这张卡片在稳定版控制台上只是一张填了没用的表单。
+    后端和已保存的绑定不动。
+    """
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node required")
+    root = pathlib.Path(__file__).resolve().parents[1]
+    script = (root / "static" / "plugin-tools.js").read_text(encoding="utf-8")
+    assert 'id="config-companion-context"' not in HTML, "开放平台控制台没有承载这张卡片的容器"
+    assert 'id="config-companion-context"' in (root / "static" / "napcat.html").read_text(encoding="utf-8")
+
+    harness = r"""
+const assert = require('node:assert/strict');
+const elements = {};
+const host = {set innerHTML(markup) {
+  elements['cc-card'] = {remove() {delete elements['cc-card'];}};
+  for (const id of ['pt-zone-available', 'pt-zone-all', 'pt-zone-admin', 'pt-available', 'pt-all', 'pt-admin',
+                    'plugin-tools-channel', 'pt-empty'])
+    elements[id] = {addEventListener(){}, innerHTML:'', textContent:'', style:{}, classList:{toggle(){}, add(){}, remove(){}}};
+}};
+elements['page-plugintools'] = host;
+if (onebot) elements['config-companion-context'] = {appendChild(card) {card.parent = this;}};
+global.document = {readyState:'loading', addEventListener(){}, getElementById: id => elements[id] || null,
+                   querySelectorAll() {return [];}};
+global.window = {};
+global.t = (key, fallback) => fallback; global.tf = (key, fallback) => fallback;
+global.escapeHtml = String; global.escapeOnclick = String; global.toast = () => {};
+const requests = [];
+global.call = async (entry, args) => {
+  requests.push(args.action);
+  if (args.action === 'plugin_tools') return {candidates: [{plugin_id: 'forever_companion', name: 'x', running: true,
+      entries: ['a'], context_capabilities: [{label: '角色整体情绪', available: true}]}], tiers: {}};
+  return {settings: {companion_context: {}}};
+};
+"""
+    checks = r"""
+(async () => {
+  window.ptMountPluginTools();
+  assert.equal('cc-card' in elements, onebot);
+  await window.loadPluginTools();
+  const rendered = Object.values(elements).map(e => e.innerHTML || '').join('');
+  assert.ok(rendered.includes('forever_companion') || rendered.includes('>x<') || rendered.length > 0);
+  assert.equal(rendered.includes('自动背景'), onebot, '插件卡片上的「自动背景」标注只在 OneBot 控制台出现');
+  assert.equal(requests.includes('dashboard'), onebot, '没有绑定卡片时不为它多查一次配置');
+})().catch(e => {console.error(e); process.exitCode = 1;});
+"""
+    for onebot in (True, False):
+        result = subprocess.run(
+            [node, "-e", "const onebot=" + json.dumps(onebot) + ";" + harness + script + checks],
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
+        )
+        assert result.returncode == 0, f"onebot={onebot}: " + result.stdout + result.stderr

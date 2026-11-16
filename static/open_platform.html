@@ -450,7 +450,7 @@ loadBots();
 async function bootstrap(){try{let d=await call('query', {action:'dashboard'});if(!OneBotLegacy.inUse(d)){await call('config', {action:'save', qq_connection_mode:MODE});d=await call('query', {action:'dashboard'})}applyDashboard(d)}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}
 bootstrap();
 </script>
-<script src="plugin-tools.js?v=1"></script>
+<script src="plugin-tools.js?v=2"></script>
 <script src="background-settings.js?v=1"></script>
 </body>
 </html>

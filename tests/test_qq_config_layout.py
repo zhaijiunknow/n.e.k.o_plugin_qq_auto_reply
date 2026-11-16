@@ -63,7 +63,7 @@ let mounts = 0;
 const host = {set innerHTML(markup) {
   mounts++;
   assert.ok(markup.includes('id="cc-card"'));
-  elements['cc-card'] = {parent:host};
+  elements['cc-card'] = {parent:host, remove() {this.parent = null; delete elements['cc-card'];}};
   elements['pt-zone-available'] = {addEventListener(){}};
 }};
 elements['page-plugintools'] = host;
@@ -78,7 +78,10 @@ global.window = {};
 """
     checks = r"""
 window.ptMountPluginTools();
-assert.equal(elements['cc-card'].parent, hasParams ? target : host);
+// OneBot 控制台有参数页容器：卡片搬过去。开放平台控制台没有：卡片整个拿掉 ——
+// 自动背景只在 OneBot 上生效，那边填了也没用（见 test_qq_console_simplified_layout）。
+if (hasParams) assert.equal(elements['cc-card'].parent, target);
+else assert.equal(elements['cc-card'], undefined);
 window.ptMountPluginTools();
 assert.equal(mounts, 1);
 let currentPage='config', currentSub='', loads=0;
