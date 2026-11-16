@@ -324,11 +324,10 @@ STICKER = (
                            hint="ui.napcat.config.sticker_collect.hint")),
 )
 
-#: 断线补消息。
+#: 登录后补消息（启动后第一次连上、掉线后重新连上，各补一轮）。
 #:
-#: 这条链路**只在 NapCat 系通道下真的能用**：开放平台的 `get_friend_msg_history`
-#: / `get_group_msg_history` 是同名空实现（直接返回 ``{}``），补消息会一直失败。
-#: 所以默认开，但失败按"通道不支持"计数，不刷屏。
+#: 这条链路**只在 NapCat 系通道下真的能用**：开放平台没有历史消息接口，
+#: 在那个通道上不会去拉（见 ``catchup_service``）。所以默认开。
 #:
 #: 窗口 12 小时是个折中：一夜断网（路由器重启、电脑睡眠）能全覆盖，再往前补
 #: 就是翻陈年老账，她对着昨天下午的话回一句反而怪。
@@ -344,8 +343,6 @@ CATCHUP = (
                 description="save：单会话最多补几条"),
     SettingSpec("catchup_max_total", "int", 30, saveable=True,
                 description="save：一次重连总共最多补几条"),
-    SettingSpec("catchup_sweep_seconds", "int", 30, saveable=True,
-                description="save：检查连接状态的间隔（秒）"),
 )
 
 #: 其余全部键。``saveable`` 决定是否进白名单/参数页；``handler`` 决定是否走通用路径。

@@ -141,9 +141,9 @@ class QQRuntimeOpsService:
                 except Exception:
                     self.plugin.logger.warning("图库启动失败", exc_info=True)
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())
-            # 断线补消息的轮询循环。放在这里而不是 startup：它要读 `is_connected()`，
-            # 而且只有 `_running` 为真时才该往管线里注入（见 catch_up 里的闸）。
-            # 首次采样只记录不触发——插件刚起来"连上了"不算重连。
+            # 补消息：登录上了补一轮（这次启动后第一次连上、以及之后掉线重连）。
+            # 放在这里而不是 startup：它要读 `is_connected()`，而且只有 `_running`
+            # 为真时才该往管线里注入（见 catch_up 里的闸）。
             catchup = getattr(self.plugin, "catchup_service", None)
             if catchup is not None:
                 try:

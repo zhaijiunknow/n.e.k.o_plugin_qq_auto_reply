@@ -11,13 +11,22 @@
 有未读、哪些消息待审核），数据来源同样是推过来的消息 —— 断线期间它一样空着。
 补消息必须主动去服务端翻历史，是另一条路。
 
-## 怎么知道"刚重连过"
+## 什么时候补：登录上了就补一轮，其余时间不碰历史接口
 
-上游的连接器由 `connector_seam` 构建（可能是宿主第一方包，也可能回退到
-`_vendor` 副本），**不能假设它有"连接建立"回调**。所以这里用轮询：
-定期读 `client.is_connected()`，抓 False → True 的那一次跳变。
+两个时刻算"登录上了"：自动回复启动后**第一次连上**，以及运行中掉线后**重新连上**。
+每次只补一轮；哪个会话这一轮拉不到，记一笔、到此为止，不重试。
 
-轮询而不是回调，代价是最多晚一个周期才知道；好处是不碰连接器，谁构建的都能用。
+连接器由 `connector_seam` 构建（可能是宿主第一方包，也可能回退到 `_vendor` 副本），
+没有"连接建立"回调，OneBot 的 `meta_event` 也被它丢掉了，所以"连上了"是靠隔几秒读一次
+`client.is_connected()` 看出来的 —— **只读本地状态，不发请求**。
+
+以前不是这样（真机 11-15 全天：历史接口 7726 次，其中 5312 次失败，补回 0 条）：
+启动时不补；每 30 秒采样一次；只要哪个会话带着"缺口"标记，就把最近的会话全拉一遍。
+而序号跳一下就会打上标记（多半只是她自己发的那条占了一个号），拉取失败时标记又清不掉，
+于是每个周期都在拉。
+
+启动那一轮只补最近一小时（`STARTUP_WINDOW_SECONDS`）：插件停了半天再启动，她不该对着
+几小时前的话开口。重连那一轮沿用配置的时间窗（默认 12 小时）。
 
 ## 判据
 
@@ -38,6 +47,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -50,7 +60,9 @@ class QQMessageCatchupService:
     """重连后把断线期间漏掉的 QQ 消息补回正常管道。"""
 
     CURSOR_FILENAME = "message_cursor.json"
-    SCHEMA_VERSION = 1
+    #: 2：缺口书签（``pending_seq``）只在掉线 / 启动时记。版本 1 的文件里它还会因为序号
+    #: 跳号被记下、而且可能很久没清过，读进来时一律丢弃（见 `_load`）。
+    SCHEMA_VERSION = 2
 
     #: 一次最多补几个会话。多到没边的话，一次重连要打十几个 QQ 接口，
     #: 既慢又容易被风控，而且补回来的东西她也看不过来。
@@ -63,6 +75,16 @@ class QQMessageCatchupService:
     MAX_RECENT_IDS = 400
     #: 两次补消息之间的最小间隔，防止连接反复抖动时把接口打爆
     MIN_INTERVAL_SECONDS = 30.0
+    #: 隔多久看一眼连接状态（秒）。只读本地状态、不发请求，所以可以密：NapCat 反向 WS
+    #: 断开后几秒就重连，采样比它稀就会整段错过。
+    WATCH_INTERVAL_SECONDS = 3.0
+    #: 启动后那一轮只补这么久以内的消息（秒）；重连那一轮用配置的时间窗。
+    STARTUP_WINDOW_SECONDS = 3600.0
+    #: 连上之后最多等几次采样的登录信息。不知道自己是谁就分不清哪些是她自己发的。
+    LOGIN_WAIT_TICKS = 40
+    #: NapCat 把"这个会话里一条消息都没有"报成错误：它的实现是取回的列表为空就抛
+    #: ``消息<起始序号>不存在``。这是空，不是故障。
+    EMPTY_HISTORY_RE = re.compile(r"消息\S*不存在")
     #: 补回来的消息之间的注入间隔：让下游缓冲有机会把它们合并成一轮。
     #: 0.12 秒是实测值——更密的话每条都单独开一轮生成，看起来像刷屏。
     DEFAULT_STAGGER_SECONDS = 0.12
@@ -93,9 +115,16 @@ class QQMessageCatchupService:
         self._watch_task: Optional[asyncio.Task] = None
         self._last_catchup_at: float = 0.0
         self._last_result: dict[str, Any] = {}
-        #: 上一次轮询看到的连接状态。None 表示还没看过——第一次采样只记录，
-        #: 不触发补消息（插件刚启动时"连上了"不算重连，那时候没有漏的消息）。
+        #: 上一次采样看到的连接状态。None 表示还没看过。
         self._was_connected: Optional[bool] = None
+        #: 这次启动之后还没补过"第一次连上"那一轮。
+        self._first_login_pending = True
+        #: 欠着的一轮：``"startup"`` / ``"reconnect"``；空串 = 不欠。登录信息还没到、
+        #: 或者撞上限流时会欠着，下一次采样再看。
+        self._round_due = ""
+        self._login_waits = 0
+        #: 连接对象不带 ``self_id`` 时，从 ``get_login_info`` 的回包里记下来的那个。
+        self._login_self_id = ""
         #: 分项计数。吞异常必须留数：接口不支持、真没消息、调用失败三种情况
         #: 处置完全不一样，混成一个"补了 0 条"等于没观测。
         self._diag: dict[str, int] = {
@@ -147,6 +176,10 @@ class QQMessageCatchupService:
                     self.logger.warning("[Catchup] 游标文件读取失败，按空处理", exc_info=True)
                 payload = None
         conversations = (payload or {}).get("conversations") if isinstance(payload, dict) else None
+        try:
+            keep_bookmarks = int((payload or {}).get("version") or 0) >= 2
+        except (TypeError, ValueError, AttributeError):
+            keep_bookmarks = False
         if isinstance(conversations, dict):
             for key, rec in conversations.items():
                 if not isinstance(rec, dict):
@@ -163,7 +196,7 @@ class QQMessageCatchupService:
                     "updated": int(rec.get("updated") or 0),
                     "seq_unknown": bool(rec.get("seq_unknown")),
                 }
-                if rec.get("pending_seq") is not None:
+                if keep_bookmarks and rec.get("pending_seq") is not None:
                     self._cursors[str(key)]["pending_seq"] = max(0, int(rec["pending_seq"]))
         ids = (payload or {}).get("recent_ids") if isinstance(payload, dict) else None
         if isinstance(ids, dict):
@@ -246,12 +279,10 @@ class QQMessageCatchupService:
             if seq > 0:
                 # 只在**没被标脏**的时候用 seq 推进。标脏说明之前混进过
                 # 不可比的数，得等下次对账重新对齐，否则会跳到一个错误的位置。
+                #
+                # 序号跳号**不算**漏消息的证据，这里不记缺口：群里她自己发的那条也占一个号，
+                # 每回一句话就会跳一次。缺口的起点只在掉线 / 启动时记（`_bookmark_gaps`）。
                 if not rec.get("seq_unknown") and seq > int(rec.get("seq") or 0):
-                    previous_seq = int(rec.get("seq") or 0)
-                    if previous_seq and seq > previous_seq + 1 and not message.get("_catchup"):
-                        # 实时事件可能先于轮询到达。另存缺口起点，不能让最新
-                        # 消息的高水位覆盖尚未补回的断线消息。
-                        rec.setdefault("pending_seq", previous_seq)
                     rec["seq"] = seq
             else:
                 # 拿不到 message_seq 时**绝对不能拿时间戳凑**。
@@ -276,10 +307,24 @@ class QQMessageCatchupService:
         while len(self._recent_ids) > self.MAX_RECENT_IDS:
             self._recent_ids.popitem(last=False)
 
-    # ── 重连检测 ────────────────────────────────────────────
+    # ── 什么时候补：启动后第一次连上、掉线后重新连上 ─────────
+
+    def _bookmark_gaps(self) -> None:
+        """记下"从这里往后可能有漏的"：每个会话当前处理到的位置。
+
+        掉线时、启动时各记一次。补之前可能先到几条实时消息，把游标推过去；有这个书签，
+        那一轮仍然从掉线 / 上次停下的位置开始找。一轮补完书签就清掉（见 `catch_up`）。
+        """
+        for rec in self._cursors.values():
+            rec.setdefault("pending_seq", int(rec.get("seq") or 0))
+        self._dirty = True
 
     async def start(self) -> None:
         await self._load()
+        self._was_connected = None
+        self._first_login_pending = True
+        self._round_due = ""
+        self._bookmark_gaps()
         if self._flush_task is None or self._flush_task.done():
             self._flush_task = asyncio.create_task(self._flush_loop())
         if self._watch_task is None or self._watch_task.done():
@@ -294,26 +339,29 @@ class QQMessageCatchupService:
         await self._flush(force=True)
 
     async def _watch_loop(self) -> None:
-        """轮询连接状态，抓 False → True 的那次跳变。
+        """隔几秒看一眼连接状态（只读本地状态），看出"连上了"的那一刻。
 
         没用连接器的"连上回调"：连接器可能是宿主第一方包，也可能是 `_vendor`
-        副本，两边不保证都有这个钩子。轮询谁构建的都能用，代价是最多晚一个
-        周期才知道——对补消息来说这点延迟无所谓。
+        副本，两边都没有这个钩子。先看再睡：启动时已经连着的话立刻就补。
         """
-        interval = max(10, int(self._cfg("catchup_sweep_seconds", 30)))
         while True:
             try:
-                await asyncio.sleep(interval)
                 await self._watch_tick()
+                await asyncio.sleep(self.WATCH_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 break
             except Exception:
                 if self.logger:
-                    self.logger.warning("[Catchup] 重连检测循环异常", exc_info=True)
+                    self.logger.warning("[Catchup] 连接状态观察循环异常", exc_info=True)
 
     async def _watch_tick(self) -> None:
-        """一次采样。抽成独立方法是为了能单测——直接调它，不用等轮询周期。"""
+        """一次采样。抽成独立方法是为了能单测——直接调它，不用等采样周期。"""
         if not self._enabled():
+            # 关着的时候不欠账：之后再打开，不该拿启动时的旧书签去翻历史 ——
+            # 中间那些消息早就按实时处理过了。
+            self._first_login_pending = False
+            self._round_due = ""
+            self._clear_bookmarks()
             return
         client = getattr(self.plugin, "qq_client", None)
         if client is None:
@@ -325,20 +373,60 @@ class QQMessageCatchupService:
         previous = self._was_connected
         self._was_connected = connected
         if self._history_unavailable(client):
-            # 补不了的通道：不记新缺口，也不去拉。已有的缺口标记原样留着 ——
-            # 它们多半是 OneBot 时期留下的，换回去之后还要靠它们补。
+            # 补不了的通道：不记缺口，也不去拉。"启动后第一次连上"那一轮留着不消耗 ——
+            # 换回有历史接口的通道后还要用。
             return
-        if previous is None:
-            # 第一次采样只记录。插件刚启动时"连上了"不算重连：
-            # 那时候游标是上次运行留下的，本来就该对齐，但没有"漏的消息"
-            # 这个概念——真断了之后的重连才是要补的。
+        if not connected:
+            if previous:
+                self._bookmark_gaps()
             return
-        if not connected and previous:
-            for rec in self._cursors.values():
-                rec.setdefault("pending_seq", int(rec.get("seq") or 0))
-            self._dirty = True
-        if connected and (not previous or any("pending_seq" in rec for rec in self._cursors.values())):
-            await self.catch_up(reason="reconnect" if not previous else "sequence_gap")
+        if self._first_login_pending:
+            self._first_login_pending = False
+            self._bookmark_gaps()
+            self._round_due, self._login_waits = "startup", 0
+        elif previous is False:
+            self._round_due, self._login_waits = "reconnect", 0
+        if self._round_due:
+            await self._run_due_round(client)
+
+    async def _run_due_round(self, client: Any) -> None:
+        """补欠着的那一轮；登录信息还没到就再等一次采样。"""
+        if not await self._login_ready(client):
+            self._login_waits += 1
+            if self._login_waits >= self.LOGIN_WAIT_TICKS:
+                self._emit("INFO", "[Catchup] 连上之后一直没拿到登录信息，这一轮不补")
+                self._round_due = ""
+                self._clear_bookmarks()
+            return
+        reason = self._round_due
+        result = await self.catch_up(
+            reason=reason,
+            window_seconds=self.STARTUP_WINDOW_SECONDS if reason == "startup" else None,
+        )
+        # 撞上限流就欠着，冷却过了再补；别的结果都算这一轮补完了。
+        if result.get("status") != "throttled":
+            self._round_due = ""
+
+    async def _login_ready(self, client: Any) -> bool:
+        if self._self_id():
+            return True
+        getter = getattr(client, "get_login_info", None)
+        if not callable(getter):
+            return False
+        try:
+            info = await getter()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+        if isinstance(info, dict):
+            self._login_self_id = str(info.get("user_id") or "").strip()
+        return bool(self._self_id())
+
+    def _clear_bookmarks(self, keep: tuple[str, ...] = ()) -> None:
+        for key, rec in self._cursors.items():
+            if key not in keep and rec.pop("pending_seq", None) is not None:
+                self._dirty = True
 
     # ── 主流程 ──────────────────────────────────────────────
 
@@ -361,7 +449,7 @@ class QQMessageCatchupService:
 
     def _self_id(self) -> str:
         client = getattr(self.plugin, "qq_client", None)
-        return str(getattr(client, "self_id", "") or "").strip()
+        return str(getattr(client, "self_id", "") or "").strip() or self._login_self_id
 
     def _conversations_to_check(self, limit: Optional[int] = None) -> list[str]:
         """要补哪些会话：按最近活跃排序，外加管理员私聊兜底。"""
@@ -380,8 +468,13 @@ class QQMessageCatchupService:
                 picked.insert(0, admin_key)
         return picked
 
-    async def catch_up(self, *, reason: str = "manual", force: bool = False) -> dict[str, Any]:
-        """重连后对账补消息。返回这次做了什么，供日志和状态查询用。"""
+    async def catch_up(
+        self, *, reason: str = "manual", force: bool = False, window_seconds: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """补一轮。返回这次做了什么，供日志和状态查询用。
+
+        ``window_seconds`` 给的话把时间窗收到这么短（启动那一轮用），只会比配置的更短。
+        """
         await self._load()
         if self._history_unavailable(getattr(self.plugin, "qq_client", None)):
             self._last_result = {
@@ -397,6 +490,8 @@ class QQMessageCatchupService:
         self._diag["catchup_runs"] += 1
 
         window = float(self._cfg("catchup_window_hours", 12)) * 3600
+        if window_seconds is not None:
+            window = min(window, float(window_seconds))
         limit = int(self._cfg("catchup_max_per_conversation", 12))
         total_cap = int(self._cfg("catchup_max_total", 30))
         stagger = int(self._cfg("catchup_stagger_ms", 120)) / 1000.0
@@ -425,14 +520,20 @@ class QQMessageCatchupService:
             result["skipped"] += int(row.get("skipped") or 0)
             remaining -= injected
 
+        # 这一轮到此为止：书签全部清掉（没轮到的会话也一样）。留着的话，下次登录会从一个
+        # 很旧的位置重新翻，中间那些早就处理过的消息只剩去重名单兜着。唯一留下的是
+        # "投递时出错"的会话 —— 那几条是确知没处理成的。
+        self._clear_bookmarks(keep=tuple(row["key"] for row in result["details"] if row.get("retry")))
         self._last_result = result
         await self._flush()
-        if result["injected"]:
-            self._emit(
-                "INFO",
-                f"[Catchup] 重连补消息（{reason}）：补了 {result['injected']} 条，"
-                f"跳过 {result['skipped']} 条，涉及 {len(result['details'])} 个会话",
-            )
+        failed = [row["key"] for row in result["details"] if row.get("status") in ("failed", "unsupported")]
+        label = {"startup": "启动", "reconnect": "重连", "manual": "手动"}.get(reason, reason)
+        self._emit(
+            "INFO",
+            f"[Catchup] 登录后补消息（{label}）：检查 {len(result['details'])} 个会话，"
+            f"补回 {result['injected']} 条，跳过 {result['skipped']} 条"
+            + (f"，{len(failed)} 个会话没拉到（不重试）" if failed else ""),
+        )
         return result
 
     async def _catch_up_conversation(
@@ -566,7 +667,7 @@ class QQMessageCatchupService:
                 self._dirty = True
                 if self.logger:
                     self.logger.warning(f"[Catchup] 注入 {key} 消息失败", exc_info=True)
-                return {"status": "failed", "injected": injected, "skipped": 0, "pages": pages}
+                return {"status": "failed", "retry": True, "injected": injected, "skipped": 0, "pages": pages}
             if stagger:
                 await asyncio.sleep(stagger)
 
@@ -578,13 +679,10 @@ class QQMessageCatchupService:
         # 游标推到"见过的最大 seq"，包括没注入的（她自己发的、太老的、被限流的）。
         # 不推的话下次重连还会把它们翻出来，白白多打一轮接口。
         max_seq = max((self._seq_of(m) for m in collected), default=0)
-        # 翻页/投递期间仍会收到实时消息，不能把高水位倒退，也不能清掉
-        # 本次历史快照之后的新缺口；下一次轮询继续补那一段。
+        # 翻页/投递期间仍会收到实时消息，不能把高水位倒退。这段时间连接是通的，
+        # 快照之后的消息都走实时那条路，所以这里不再留书签。
         live_seq = int(rec.get("seq") or 0)
-        if live_seq > max_seq:
-            rec["pending_seq"] = max(cursor_seq, max_seq)
-        else:
-            rec.pop("pending_seq", None)
+        rec.pop("pending_seq", None)
         if max_seq > cursor_seq:
             rec["seq"] = max(live_seq, max_seq)
             rec["kind"] = kind
@@ -655,6 +753,8 @@ class QQMessageCatchupService:
             raise
         except Exception as exc:
             text = str(exc)
+            if self.EMPTY_HISTORY_RE.search(text):
+                return [], "ok"
             if any(mark in text for mark in self.UNSUPPORTED_MARKS):
                 self._diag["conv_unsupported"] += 1
                 if self.logger:
