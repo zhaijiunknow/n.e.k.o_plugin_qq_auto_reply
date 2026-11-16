@@ -45,6 +45,7 @@ from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
 from .gallery_service import QQGalleryService
 from .group_permission import DEFAULT_GROUP_LEVEL, GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
+from .identity_links import QQIdentityLinks
 from .memory_bridge import QQMemoryBridge
 from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
@@ -161,6 +162,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.config_store = QQAutoReplyConfigStore(self.data_path())
         self._qq_settings: dict[str, Any] = self.config_store.default_config()
         self.backlog_store = self._create_backlog_store_from_settings(self._qq_settings)
+        # 换通道后的认领别名（openid → 旧 QQ 号 / 群号）。要早于名单与 memory_bridge 的构建。
+        self.identity_links = QQIdentityLinks(self)
         self.settings_service = QQSettingsService(self)
         self.runtime_service = QQRuntimeService(self)
         self.dashboard_service = QQDashboardService(self)
@@ -1510,7 +1513,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             "action": {"type": "string",
                        "enum": ["user_add", "user_remove", "user_nickname",
                                 "group_add", "group_remove", "claims",
-                                "identity_bind", "identity_unbind", "refresh_contacts"],
+                                "identity_bind", "identity_unbind", "refresh_contacts",
+                                "link_code", "links", "unlink"],
                        "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
             "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
@@ -1543,10 +1547,31 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._trust_identity_unbind(kw)
         if action == "refresh_contacts":
             return await self._trust_refresh_contacts(kw)
+        if action in ("link_code", "links", "unlink"):
+            return self._trust_identity_links(action, kw)
         return Err(SdkError(
             f"BAD_ACTION: trust 不支持 {action!r}"
             f"（可选 user_add/user_remove/user_nickname/group_add/group_remove/"
-            f"claims/identity_bind/identity_unbind/refresh_contacts）"))
+            f"claims/identity_bind/identity_unbind/refresh_contacts/link_code/links/unlink）"))
+
+    def _trust_identity_links(self, action: str, kw: dict[str, Any]):
+        """换通道后的认领（见 ``identity_links``）。
+
+        link_code：给名单里的旧 QQ 号（``qq_number``）或群号（``group_id``）发一次性认领码；
+        links：列出已有的映射和可发码的旧账号；unlink：撤销一条（``user_id`` 或 ``group_id``
+        填认领时用的那个 openid）。
+        """
+        qq_number, group_id = str(kw.get("qq_number") or "").strip(), str(kw.get("group_id") or "").strip()
+        if action == "link_code":
+            try:
+                return Ok(self.identity_links.issue_code("group" if group_id else "user", group_id or qq_number))
+            except ValueError as exc:
+                return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
+        if action == "unlink":
+            linked = str(kw.get("user_id") or "").strip()
+            if not self.identity_links.unlink("group" if group_id else "user", group_id or linked):
+                return Err(SdkError("NOT_FOUND: 没有这条认领记录"))
+        return Ok(self.identity_links.snapshot())
 
     async def _trust_user_add(self, kw: dict[str, Any]):
         """把一个 QQ 号加入信任用户列表。"""

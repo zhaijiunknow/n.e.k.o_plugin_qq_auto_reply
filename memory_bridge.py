@@ -25,6 +25,16 @@ class QQMemoryBridge:
         #: 抛异常即视为登记失败 → 调用方 fail-closed（不发 HTTP）。
         #: ⚠️ 只在**写入**路径触发；`post_scoped_forget` 绝不触发（遗忘不该登记坐标）。
         self.on_subject_write: Callable[[dict[str, Any]], None] | None = None
+        # 认领过的 openid 用旧账号的键（见 ``identity_links``）：在实例上把四个拼键的函数
+        # 换成先换算再拼的版本。类级调用（``QQMemoryBridge.group_subject(...)``）不经换算。
+        links = getattr(plugin, "identity_links", None)
+        if links is not None:
+            raw = type(self)
+            self.speaker_account_id = lambda sender_id: raw.speaker_account_id(links.user(sender_id))
+            self.participant_subject = lambda sender_id: raw.participant_subject(links.user(sender_id))
+            self.group_subject = lambda group_id: raw.group_subject(links.group(group_id))
+            self.group_participant_subject = lambda group_id, sender_id: raw.group_participant_subject(
+                links.group(group_id), links.user(sender_id))
 
     @staticmethod
     def _client():

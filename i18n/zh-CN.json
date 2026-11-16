@@ -822,5 +822,22 @@
   "ui.stable.beta_done": "已更新到测试版 {version}。",
   "ui.stable.beta_reload": "刷新页面",
   "ui.stable.beta_failed": "更新到测试版失败：",
-  "errors.invalid_level": "无法识别的权限级别 {level}，可用：{allowed}"
+  "errors.invalid_level": "无法识别的权限级别 {level}，可用：{allowed}",
+  "ui.openplat.links.title": "换通道认领",
+  "ui.openplat.links.hint": "从 OneBot 换到开放平台后，同一个人、同一个群的 ID 都变了，原来的级别、昵称、群设置和记忆对不上。给名单里的旧 QQ 号或群号生成认领码，让对方在这里发「认领 认领码」：私聊发认回这个人，群里 @ 她发则认回他在这个群的身份；群的认领码要在那个群里 @ 她发。认领码 10 分钟有效、只能用一次。认领后沿用旧账号的级别，生成前请确认是本人。",
+  "ui.openplat.links.col_old": "旧账号",
+  "ui.openplat.links.col_new": "已认领的新 ID",
+  "ui.openplat.links.kind_user": "用户",
+  "ui.openplat.links.kind_group": "群",
+  "ui.openplat.links.none": "尚未认领",
+  "ui.openplat.links.empty": "名单里没有 OneBot 时期的 QQ 号或群号，不需要认领",
+  "ui.openplat.links.btn_code": "生成认领码",
+  "ui.openplat.links.btn_unlink": "撤销",
+  "ui.openplat.links.code_confirm": "为 {id} 生成认领码？拿到认领码的人会沿用它的级别和记录，请只发给本人。",
+  "ui.openplat.links.code_shown": "{id} 的认领码：{code}（10 分钟内有效，只能用一次）。让对方发送：认领 {code}",
+  "ui.openplat.links.code_failed": "生成认领码失败: ",
+  "ui.openplat.links.load_failed": "加载认领记录失败: ",
+  "ui.openplat.links.unlink_confirm": "撤销这条认领？这个新 ID 将不再沿用旧账号的级别和记录；旧记录本身不受影响。",
+  "ui.openplat.links.unlink_done": "已撤销",
+  "ui.openplat.links.unlink_failed": "撤销失败: "
 }

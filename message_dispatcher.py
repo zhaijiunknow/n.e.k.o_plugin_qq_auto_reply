@@ -871,6 +871,10 @@ class QQMessageDispatcher:
                 f"用户黑名单过滤: user={blacklist_sender} type={message.get('message_type')}",
             )
             return
+        # 「认领 <码>」：换通道后把人 / 群认回旧账号。处理掉就不再进对话（码不进记忆）。
+        links = getattr(self.plugin, "identity_links", None)
+        if links is not None and await links.handle_message(message):
+            return
         # 戳一戳通知：**一律只跟戳，不回话**（戳她 → 回戳她的人；戳别人 → 跟着戳被戳的人）。
         #
         # 使用者 2026-09-27：「戳戳风暴就不需要回复了，只需要跟戳」，以及追问后选的

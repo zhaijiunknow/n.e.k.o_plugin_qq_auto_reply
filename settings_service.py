@@ -727,6 +727,10 @@ class QQSettingsService:
             config.get("trusted_users", []),
         )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
+        links = getattr(self.plugin, "identity_links", None)
+        if links is not None:
+            self.plugin.permission_mgr.resolve = links.user
+            self.plugin.group_permission_mgr.resolve = links.group
         for kind, manager in (("用户", self.plugin.permission_mgr), ("群", self.plugin.group_permission_mgr)):
             for target, level in manager.invalid_levels:
                 self.plugin.logger.warning(

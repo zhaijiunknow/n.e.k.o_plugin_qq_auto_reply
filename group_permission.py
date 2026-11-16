@@ -38,6 +38,9 @@ class GroupPermissionManager:
         #: 载入时级别认不出来的条目 ``(群号, 原样写的级别)``，已按最低档收录；
         #: 由调用方写进日志，让人去改配置。
         self.invalid_levels: List[tuple[str, str]] = []
+        #: 认领别名的换算（开放平台 openid → 旧账号，见 ``identity_links``）。读名单时，
+        #: 这个 ID 自己没有条目才去查它认领的那个旧账号。默认原样返回。
+        self.resolve = lambda value: str(value or "").strip()
 
         if trusted_groups:
             for group in trusted_groups:
@@ -116,8 +119,13 @@ class GroupPermissionManager:
         }
         return True
 
+    def _entry(self, group_id: str) -> Dict[str, Any]:
+        """读名单用：自己的条目优先，没有再看它认领的旧群号。"""
+        key = str(group_id or "").strip()
+        return self._groups.get(key) or self._groups.get(self.resolve(key)) or {}
+
     def is_sticker_collection_enabled(self, group_id: str) -> bool:
-        group = self._groups.get(str(group_id or "").strip()) or {}
+        group = self._entry(group_id)
         return group.get("sticker_collect_enabled") is True
 
     def set_sticker_collection_enabled(self, group_id: str, enabled: bool) -> None:
@@ -141,12 +149,10 @@ class GroupPermissionManager:
         Returns:
             权限等级: trusted, normal, none
         """
-        group_str = str(group_id or "").strip()
-        group = self._groups.get(group_str) or {}
-        return str(group.get("level") or "none")
+        return str(self._entry(group_id).get("level") or "none")
 
     def get_normal_relay_probability(self, group_id: str) -> Optional[float]:
-        group = self._groups.get(str(group_id or "").strip()) or {}
+        group = self._entry(group_id)
         return self._normalize_probability(group.get("normal_relay_probability"))
 
     def is_trusted_group(self, group_id: str) -> bool:

@@ -1122,7 +1122,10 @@ class QQSessionInstructionService:
         group_prompts = (self.plugin._qq_settings or {}).get("group_prompts") or {}
         if not isinstance(group_prompts, dict):
             return
-        custom_text = str(group_prompts.get(str(group_id), "") or "").strip()
+        # 认领过的开放平台群沿用原群号下写的提示词（见 ``identity_links``）。
+        links = getattr(self.plugin, "identity_links", None)
+        legacy_group = links.group(group_id) if links is not None else str(group_id)
+        custom_text = str(group_prompts.get(str(group_id), "") or group_prompts.get(legacy_group, "") or "").strip()
         if custom_text:
             sections.append(
                 f"## 本群特殊说明（Group-Specific Instructions）\n"
