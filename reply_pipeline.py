@@ -300,67 +300,6 @@ class QQReplyPipelineRunner:
     def _build_delivery_plan(self, request: QQReplyRequest, outcome: QQReplyOutcome):
         return self.plugin.reply_postprocess_node.build_delivery_plan(request, outcome)
 
-    async def _send_ark(self, request: QQReplyRequest, outcome: QQReplyOutcome) -> bool:
-        """发送 Ark 卡片消息"""
-        ark = outcome.parsed_ark
-        title = ark.get("title", "")
-        desc = ark.get("desc", "")
-        pic = ark.get("pic", "")
-        btn = ark.get("btn", "")
-        url = ark.get("url", "")
-        body_text = ark.get("_body", "")
-
-        # 构建 ark payload
-        ark_obj: dict[str, Any] = {"msg_type": 10}
-        if title:
-            ark_obj["ark"] = {
-                "template_id": 37,
-                "kv": [
-                    {"key": "#PROMPT#", "value": body_text or title},
-                    {"key": "#TITLE#", "value": title},
-                    {"key": "#DESC#", "value": desc or body_text},
-                ]
-            }
-            if pic:
-                ark_obj["ark"]["kv"].append({"key": "#IMGPATH#", "value": pic})
-        else:
-            ark_obj["ark"] = {
-                "template_id": 23,
-                "kv": [
-                    {"key": "#TITLE#", "value": body_text or "卡片"},
-                    {"key": "#DESC#", "value": desc},
-                ]
-            }
-            if pic:
-                ark_obj["ark"]["kv"].append({"key": "#IMG#", "value": pic})
-
-        if btn:
-            ark_obj["ark"]["kv"].append({"key": "#SUBTITLE#", "value": btn})
-        if url:
-            ark_obj["ark"]["kv"].append({"key": "#URL#", "value": url})
-
-        if not getattr(self.plugin.qq_client, "supports_ark_cards", False):
-            # OneBot 后端不支持 Ark 卡片，降级为文本发送
-            fallback = body_text or title or desc or ""
-            if fallback:
-                await self.plugin._deliver_group_reply(
-                    str(request.group_id or ""),
-                    fallback,
-                    reply_message_id="",
-                    at_user_id="",
-                    fallback_to_text_on_voice_failure=True,
-                )
-                return True
-            return False
-        try:
-            return await self.plugin.qq_client.send_group_ark_card(
-                str(request.group_id or ""),
-                ark_obj,
-            )
-        except Exception as e:
-            self.plugin.logger.warning(f"[Ark] 发送失败: {e}")
-            return False
-
     #: 合并转发单次最多带多少条原文。**这是防炸的安全阀，不是产品上限** ——
     #: 一个群在 backlog 里能留 200 条，把几小时的闲聊整段抛出去既刷屏也没人看。
     FORWARD_MAX_NODES = 50
