@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """控制台做减法（2026-11-16）：很多用户是学生，不该一进来面对八个入口。
 
-只动布局、不删功能：侧栏只留日常三项，其余收进默认折叠的「高级」；名单页里排查工具和
-认领码收进折叠区；没换过通道的人看不到「换通道认领」。
+侧栏只留日常三项，其余收进默认折叠的「高级」；开放平台名单页的排查工具和认领码
+收进折叠区。两种连接均移除提示词页面，OneBot 保留连接、部署、登录和审阅能力。
 """
 
 from __future__ import annotations
@@ -123,3 +123,109 @@ global.call = async (entry, args) => {
             capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
         assert result.returncode == 0, f"onebot={onebot}: " + result.stdout + result.stderr
+
+
+def test_onebot_uses_the_same_small_sidebar_without_retired_pages():
+    html = (pathlib.Path(__file__).resolve().parents[1] / "static" / "napcat.html").read_text(encoding="utf-8")
+    nav = html.split('<nav aria-label="控制台导航">')[1].split('</nav>')[0]
+    everyday, advanced = nav.split('<details class="nav-advanced"')
+    assert _pages(everyday) == ["status", "config:accounts", "sticker"]
+    assert _pages(advanced) == ["config", "plugintools", "review", "logs", "guide"]
+    assert " open" not in advanced.split("<summary")[0]
+    for target in ("status.html", "open_platform.html"):
+        assert f'data-nav="{target}"' in advanced
+    for removed in ("prompts", "prompt_editor", "loadPromptEditorState", "_promptState", "gotoConfig", "快捷配置"):
+        assert removed not in html
+    for element in ("cfg-backend", "config-backend-process-controls", "backend-process-controls", "qr-img",
+                    "backend-webui-link", "cfg-url", "cfg-token", "user-table", "group-table"):
+        assert f'id="{element}"' in html
+    assert 'layout.css?v=3' in html
+
+
+def test_onebot_navigation_runs_and_preserves_connection_and_review_pages():
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+    from _ui_source import fn_body
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node required")
+    html = (pathlib.Path(__file__).resolve().parents[1] / "static" / "napcat.html").read_text(encoding="utf-8")
+    # Parse all inline JS, not just the navigation functions exercised below.
+    scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, re.S)
+    pages = re.findall(r'id="(page-[^"]+)"', html)
+    nav = html.split('<nav aria-label="控制台导航">')[1].split('</nav>')[0]
+    entries = _pages(nav)
+    functions = "\n".join("function " + signature + "{" + fn_body(html, name) + "}" for name, signature in (
+        ("switchPage", "switchPage(page,sub)"), ("switchSub", "switchSub(sub)"), ("markNav", "markNav()")))
+    listener = next(line for line in html.splitlines() if line.startswith("document.querySelectorAll('#sidebar"))
+    harness = r"""
+const assert = require('node:assert/strict');
+function element() {
+  const classes = new Set();
+  return {style:{}, innerHTML:'', scrollTop:100, dataset:{},
+    classList:{add(x){classes.add(x)}, remove(x){classes.delete(x)},
+      toggle(x,on){if(on)classes.add(x);else classes.delete(x)}, contains(x){return classes.has(x)}},
+    querySelectorAll(){return []}, addEventListener(type,fn){this[type]=fn}};
+}
+const els = Object.fromEntries(pageIds.map(id=>[id,element()]));
+els.content=element(); els['topbar-tabs']=element();
+const navs = entries.map(entry=>{
+  const el=element(), parts=entry.split(':');
+  el.dataset={page:parts[0]}; if(parts[1])el.dataset.sub=parts[1]; return el;
+});
+const external=element(); // data-nav links must not get an undefined page click handler.
+const adv={open:false, querySelector(){return navs.slice(3).find(el=>el.classList.contains('active'))||null}};
+els['nav-advanced']=adv;
+global.document={getElementById(id){return els[id]||null},
+  querySelectorAll(sel){
+    if(sel==='#sidebar .nav-item[data-page]')return navs;
+    if(sel==='#sidebar .nav-item')return [...navs,external];
+    if(sel==='.page')return pageIds.map(id=>els[id]);
+    if(sel==='.page.active')return pageIds.map(id=>els[id]).filter(el=>el.classList.contains('active'));
+    return [];
+  },
+  querySelector(sel){const page=sel.match(/data-page="([^"]+)"/)[1], sub=sel.match(/data-sub="([^"]*)"/)[1];
+    return navs.find(el=>el.dataset.page===page&&el.dataset.sub===sub)||null;}
+};
+let currentPage='status',currentSub='overview',_settingsDirty=true;
+const calls=[];
+const t=(key,fallback)=>fallback;
+function loadDashboard(){calls.push('dashboard')} function updateGuide(){}
+function loadStickers(){calls.push('stickers')} function loadBacklog(){calls.push('backlog')}
+function loadGroupMemory(){calls.push('memory')} function loadUserProfiles(){calls.push('profiles')}
+function loadLogs(){} function startLogPoll(){calls.push('log-start')} function stopLogPoll(){calls.push('log-stop')}
+function loadPluginTools(){} function ptScheduleRefresh(){} function ptStopRefresh(){} function ccLoad(){}
+"""
+    checks = r"""
+function shown(id){assert.ok(els['page-'+id].classList.contains('active'));
+  assert.equal(pageIds.filter(id=>els[id].classList.contains('active')).length,1)}
+function active(entry){assert.deepEqual(navs.filter(el=>el.classList.contains('active')).map(el=>
+  el.dataset.page+(el.dataset.sub?':'+el.dataset.sub:'')),[entry])}
+navs[1].click(); shown('config-accounts'); active('config:accounts');
+assert.equal(adv.open,false); assert.equal(_settingsDirty,false);
+switchSub('groups'); shown('config-groups'); active('config:accounts'); assert.equal(adv.open,false);
+navs[3].click(); shown('config-connection'); active('config'); assert.equal(adv.open,true);
+switchSub('params'); shown('config-params'); active('config');
+navs[1].click(); assert.equal(adv.open,true,'keep manually opened Advanced');
+adv.open=false;
+navs[0].click(); shown('status-overview'); active('status');
+switchSub('traces'); shown('status-traces'); active('status'); assert.equal(adv.open,false);
+switchPage('review'); shown('review-overview'); active('review'); assert.equal(adv.open,true);
+switchSub('memory'); shown('review-memory'); assert.ok(calls.includes('memory'));
+switchSub('profiles'); shown('review-profiles'); assert.ok(calls.includes('profiles'));
+switchPage('logs'); assert.equal(calls.at(-1),'log-start');
+switchPage('sticker'); shown('sticker'); active('sticker'); assert.equal(calls.at(-1),'log-stop');
+switchPage('guide'); shown('guide'); active('guide');
+assert.equal(external.click,undefined);
+"""
+    result = subprocess.run(
+        [node], input="const pageIds=" + json.dumps(pages) + ";const entries=" + json.dumps(entries) + ";"
+         + "for(const script of " + json.dumps(scripts) + ")new Function(script);"
+         + harness + functions + "\n" + listener + "\n" + checks,
+        capture_output=True, text=True, encoding="utf-8", timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

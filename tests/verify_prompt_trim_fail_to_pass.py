@@ -9,7 +9,7 @@
 5. `_resolve_time_section` 不许再出现第二个 return（死代码）；
 6. 每个静态层都要有默认模板（否则编辑器空白）；
 7. 同一主题不许被说三遍以上；
-8. 编辑器层名与层表一一对应（不许留死键）。
+8. 已移除的提示词界面不许留下死翻译键。
 
 八处变异 + 一处对照。铁律同 verify_no_reply_strategy_fail_to_pass.py：
 目标用例干净树上先绿、锚点唯一、恢复放 finally 并逐字节核对、每轮跑控制组。
@@ -89,9 +89,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "i18n/zh-CN.json",
         "把已删除层的标签名加回中文包（死键）",
-        '  "ui.napcat.prompts.layer.output.name": "输出格式",',
+        '  "ui.layout.roster": "名单",',
         '  "ui.napcat.prompts.layer.role.name": "角色",\n'
-        '  "ui.napcat.prompts.layer.output.name": "输出格式",',
+        '  "ui.layout.roster": "名单",',
     ),
     (
         "prompt_fragment_templates.py",

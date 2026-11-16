@@ -86,6 +86,7 @@ window.ptMountPluginTools();
 assert.equal(mounts, 1);
 let currentPage='config', currentSub='', loads=0;
 function ccLoad(){loads++;}
+function markNav(){}
 elements.content={scrollTop:100};
 elements['page-config-params']={classList:{add(){}}};
 switchSub('params');

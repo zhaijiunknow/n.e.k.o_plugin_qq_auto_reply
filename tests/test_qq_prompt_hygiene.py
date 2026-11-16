@@ -225,16 +225,11 @@ def test_topic_initiation_prefers_sharing_over_asking():
         assert old not in text, f"旧的提问友好措辞回来了: {old}"
 
 
-# ── 6. 编辑器与层表一致 ─────────────────────────────────────────────
+# ── 6. 提示词界面已移除，不留死翻译键 ────────────────────────────────
 
-def test_layer_name_i18n_keys_match_the_layer_table():
-    """`ui.napcat.prompts.layer.<id>.name` 必须与层表一一对应（多的是死键，少的是空白标签）。"""
+def test_retired_prompt_ui_has_no_i18n_keys():
+    """两种连接均不再提供提示词页；只读模板诊断保留在后端。"""
     for locale in ("zh-CN", "en"):
         bundle = json.loads((PLUGIN / "i18n" / f"{locale}.json").read_text(encoding="utf-8"))
-        keys = {
-            key.split("ui.napcat.prompts.layer.")[1][:-len(".name")]
-            for key in bundle if key.startswith("ui.napcat.prompts.layer.") and key.endswith(".name")
-        }
-        ids = {layer["id"] for layer in LAYERS}
-        assert not (keys - ids), f"{locale} 里还有已删除层的标签名（死键）: {sorted(keys - ids)}"
-        assert not (ids - keys), f"{locale} 缺少这些层的标签名（编辑器会显示英文 id）: {sorted(ids - keys)}"
+        assert not [key for key in bundle if key.startswith("ui.napcat.prompts.")]
+        assert "ui.napcat.sidebar.prompts" not in bundle
