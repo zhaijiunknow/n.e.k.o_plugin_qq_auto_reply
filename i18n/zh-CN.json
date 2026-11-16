@@ -801,9 +801,9 @@
   "ui.stable.switch_ok": "继续扫码",
   "ui.stable.switch_cancelled": "已取消，OneBot 连接保持不变",
   "ui.stable.state_unknown": "读取当前连接状态失败，请刷新后重试",
-  "ui.status.flow_openplat.lead": "流程：扫码绑定 → 自动写入凭据并启动自动回复，",
-  "ui.status.flow_openplat.admin": "扫码的人会自动成为管理员",
-  "ui.status.flow_openplat.tail": "。群里其他人的 openid 与 QQ 号对不上，需要手动「合并身份」才会被当成同一个人。",
+  "ui.status.flow_openplat.lead": "扫码 → 自动连接 → 开始聊天。",
+  "ui.status.flow_openplat.admin": "扫码的人就是管理员",
+  "ui.status.flow_openplat.tail": "。",
   "ui.stable.manual_switch": "改用 QQ 开放平台",
   "ui.stable.manual_switch_done": "已改用 QQ 开放平台",
   "ui.stable.manual_switch_started": "，自动回复已按开放平台重新启动",
@@ -824,7 +824,7 @@
   "ui.stable.beta_failed": "更新到测试版失败：",
   "errors.invalid_level": "无法识别的权限级别 {level}，可用：{allowed}",
   "ui.openplat.links.title": "换通道认领",
-  "ui.openplat.links.hint": "从 OneBot 换到开放平台后，同一个人、同一个群的 ID 都变了，原来的级别、昵称、群设置和记忆对不上。管理员自己会自动匹配（名单里只有一个 QQ 号管理员时）。其他人和群有两种办法：在下面「还没匹配的 ID」里直接点选匹配；或者给旧 QQ 号、群号生成认领码，让对方发「认领 认领码」（私聊发认回本人，群里 @ 她发认回他在这个群的身份，群的认领码要在那个群里 @ 她发；10 分钟有效、只能用一次）。匹配后沿用旧账号的级别，请确认是同一个人。",
+  "ui.openplat.links.hint": "换到开放平台后大家的 ID 都变了。让对方在这里说一句话，再在下面选「这是谁」，就能接回原来的级别和记忆。管理员本人会自动匹配。",
   "ui.openplat.links.col_old": "旧账号",
   "ui.openplat.links.col_new": "已认领的新 ID",
   "ui.openplat.links.kind_user": "用户",
@@ -851,5 +851,9 @@
   "ui.openplat.links.no_target": "名单里没有可匹配的旧账号",
   "ui.openplat.links.match_confirm": "把这个新 ID 匹配到 {target}？它会沿用 {target} 的级别和记录，请确认是同一个人（或同一个群）。",
   "ui.openplat.links.match_done": "已匹配",
-  "ui.openplat.links.match_failed": "匹配失败: "
+  "ui.openplat.links.match_failed": "匹配失败: ",
+  "ui.layout.roster": "名单",
+  "ui.layout.advanced": "高级",
+  "ui.openplat.config.probe_summary": "排查工具（群里认不出管理员时用）",
+  "ui.openplat.links.more": "已匹配的记录 / 用认领码让对方自己认领"
 }

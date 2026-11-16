@@ -5,6 +5,9 @@
 .console-layout .nav-section { padding:18px 12px 6px; font-size:11px; font-weight:700; color:var(--text-secondary); letter-spacing:.08em; }
 .console-layout #sidebar nav .nav-item { padding:9px 12px; font-size:13px; text-decoration:none; }
 .console-layout #sidebar nav .setup-nav { margin-top:10px; border:1px solid var(--border); }
+.console-layout #sidebar .nav-advanced { margin-top:10px; padding-top:6px; border-top:1px solid var(--border); }
+.console-layout #sidebar .nav-advanced > summary { padding:9px 12px; font-size:12px; color:var(--text-secondary); cursor:pointer; user-select:none; }
+.console-layout #sidebar .nav-advanced .nav-item { margin-top:4px; }
 .console-layout #sidebar .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:14px 12px; }
 .console-layout #sidebar .actions .btn-save { grid-column:1 / -1; padding:11px; }
 .console-layout #sidebar .actions .btn-stop { background:var(--danger-tint); color:var(--danger-on-tint); }

@@ -801,9 +801,9 @@
   "ui.stable.switch_ok": "Continue",
   "ui.stable.switch_cancelled": "Cancelled. The OneBot connection is unchanged.",
   "ui.stable.state_unknown": "Could not read the current connection state. Refresh and try again.",
-  "ui.status.flow_openplat.lead": "Flow: scan to bind → credentials are written and auto-reply starts; ",
-  "ui.status.flow_openplat.admin": "whoever scans becomes the admin automatically",
-  "ui.status.flow_openplat.tail": ". Other people's group openids do not match QQ numbers — merge their identity manually to treat them as the same person.",
+  "ui.status.flow_openplat.lead": "Scan → connects automatically → start chatting. ",
+  "ui.status.flow_openplat.admin": "Whoever scans is the admin",
+  "ui.status.flow_openplat.tail": ".",
   "ui.stable.manual_switch": "Switch to QQ Open Platform",
   "ui.stable.manual_switch_done": "Now using the QQ Open Platform",
   "ui.stable.manual_switch_started": "; auto-reply restarted on the Open Platform",
@@ -824,7 +824,7 @@
   "ui.stable.beta_failed": "Update to beta failed: ",
   "errors.invalid_level": "Unrecognised permission level {level}; allowed: {allowed}",
   "ui.openplat.links.title": "Claim after switching channels",
-  "ui.openplat.links.hint": "After moving from OneBot to the Open Platform every person and group has a new ID, so their level, nickname, group settings and memory no longer match. The admin is matched automatically (when the roster has exactly one admin QQ number). For everyone else there are two ways: pick a match under \"IDs not matched yet\" below, or generate a claim code for an old QQ number or group number and have them send \"claim CODE\" (in a private chat it links that person; in a group, mentioning her, it links their identity in that group; a group's code must be sent in that group, mentioning her; valid for 10 minutes, works once). A matched ID inherits the old account's level, so make sure it is the same person.",
+  "ui.openplat.links.hint": "After moving to the Open Platform everyone has a new ID. Have them say something here, then pick who they are below to restore their level and memory. The admin is matched automatically.",
   "ui.openplat.links.col_old": "Old account",
   "ui.openplat.links.col_new": "Claimed new IDs",
   "ui.openplat.links.kind_user": "User",
@@ -851,5 +851,9 @@
   "ui.openplat.links.no_target": "The roster has no old account to match to",
   "ui.openplat.links.match_confirm": "Match this new ID to {target}? It will inherit {target}'s level and records, so make sure it is the same person (or the same group).",
   "ui.openplat.links.match_done": "Matched",
-  "ui.openplat.links.match_failed": "Could not match: "
+  "ui.openplat.links.match_failed": "Could not match: ",
+  "ui.layout.roster": "People",
+  "ui.layout.advanced": "Advanced",
+  "ui.openplat.config.probe_summary": "Troubleshooting (when a group does not recognise the admin)",
+  "ui.openplat.links.more": "Matched records / let them claim with a code"
 }
