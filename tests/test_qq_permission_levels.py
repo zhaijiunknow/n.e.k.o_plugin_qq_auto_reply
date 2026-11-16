@@ -140,15 +140,14 @@ def test_group_level_defaults_to_trusted():
     """群名单「没写级别」＝ 信任群，只有显式写 normal 才是仅转发。
 
     `normal` 的语义是「没被 @ 就只按低概率转发给主人」，接近不说话；把它当默认档，
-    用户加了群却看不到她开口（真机踩过这个静默默认）。漏写 / 写空 / 写错级别都不该
-    把群降级成普通群 —— 想降级请显式写 ``"level": "normal"``。
+    用户加了群却看不到她开口（真机踩过这个静默默认）。漏写 / 写空都按默认档 ——
+    想降级请显式写 ``"level": "normal"``。写了但认不出来的级别是另一回事，见下一条。
     """
     from plugin.plugins.qq_auto_reply.group_permission import DEFAULT_GROUP_LEVEL
 
     assert DEFAULT_GROUP_LEVEL == "trusted"
     assert GroupPermissionManager([{"group_id": "1"}]).get_group_level("1") == "trusted"
     assert GroupPermissionManager([{"group_id": "1", "level": ""}]).get_group_level("1") == "trusted"
-    assert GroupPermissionManager([{"group_id": "1", "level": "trused"}]).get_group_level("1") == "trusted"
     assert GroupPermissionManager(["1"]).get_group_level("1") == "trusted"
     assert GroupPermissionManager._normalize_level(None) == "trusted"
     assert GroupPermissionManager._normalize_level("") == "trusted"
@@ -166,3 +165,55 @@ def test_group_level_defaults_to_trusted():
         {"group_id": "2", "level": "trusted", "sticker_collect_enabled": False},
         {"group_id": "3", "level": "normal", "sticker_collect_enabled": False},
     ]
+
+
+# ── 认不出来的级别不升权 ─────────────────────────────────────────────
+#
+# 以前「认不出来」和「没写」走同一支，都落到 trusted：群名单里一个错别字就是信任群，
+# 用户名单里把 blacklist 写错一个字母，这个人反而成了信任用户。没写按默认档是约定；
+# 写了却认不出来不能当成默认档 —— 落到权限最低的有效档，并且留下记录让人去改。
+
+@pytest.mark.parametrize("level", ["trused", "admin", "blacklist", "none", "TRUSTED!", 3])
+def test_an_unrecognised_group_level_is_not_promoted_to_trusted(level):
+    manager = GroupPermissionManager([{"group_id": "1", "level": level}])
+    assert manager.get_group_level("1") == "normal"
+    assert manager.invalid_levels == [("1", str(level))]
+    assert GroupPermissionManager._normalize_level(level) == "normal"
+
+
+@pytest.mark.parametrize("level", ["blacklsit", "owner", "none", "truth", "open", 7])
+def test_an_unrecognised_user_level_is_not_promoted_to_trusted(level):
+    manager = PermissionManager([{"qq": "10001", "level": level}])
+    assert manager.get_permission_level("10001") == "normal"
+    assert manager.invalid_levels == [("10001", str(level))]
+    assert PermissionManager._normalize_level(level) == "normal"
+
+
+def test_missing_levels_and_legacy_aliases_keep_their_meaning():
+    """没写 = 默认档；历史别名照旧。这两样不算「认不出来」，也不进记录。"""
+    groups = GroupPermissionManager([
+        {"group_id": "1"}, {"group_id": "2", "level": ""}, {"group_id": "3", "level": "  "},
+        {"group_id": "4", "level": "open"}, {"group_id": "5", "level": "Truth"}, "6",
+    ])
+    assert [groups.get_group_level(str(n)) for n in range(1, 7)] == ["trusted"] * 6
+    assert groups.invalid_levels == []
+    users = PermissionManager([{"qq": "1"}, {"qq": "2", "level": None}, {"qq": "3", "level": " "},
+                               {"qq": "4", "level": "BLACKLIST"}, "5"])
+    assert [users.get_permission_level(str(n)) for n in range(1, 6)] == [
+        "trusted", "trusted", "trusted", "blacklist", "trusted"]
+    assert users.invalid_levels == []
+
+
+def test_writing_an_unrecognised_level_is_refused_and_changes_nothing():
+    """界面 / 入口写进来的级别认不出来：拒绝，而不是悄悄存成别的档。"""
+    groups = GroupPermissionManager([{"group_id": "1", "level": "normal"}])
+    assert groups.add_group("1", "trused") is False
+    assert groups.add_group("2", "admin") is False
+    assert groups.get_group_level("1") == "normal" and groups.get_group_level("2") == "none"
+    assert groups.add_group("2", "open") is True and groups.get_group_level("2") == "trusted"
+
+    users = PermissionManager([{"qq": "1", "level": "blacklist"}])
+    assert users.add_user("1", "blacklsit") is False
+    assert users.add_user("2", "owner") is False
+    assert users.get_permission_level("1") == "blacklist" and users.get_permission_level("2") == "none"
+    assert users.add_user("2", "Admin") is True and users.get_permission_level("2") == "admin"

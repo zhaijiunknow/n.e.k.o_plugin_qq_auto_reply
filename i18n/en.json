@@ -821,5 +821,6 @@
   "ui.stable.beta_progress": "Updating to beta {version}, please wait…",
   "ui.stable.beta_done": "Updated to beta {version}.",
   "ui.stable.beta_reload": "Reload",
-  "ui.stable.beta_failed": "Update to beta failed: "
+  "ui.stable.beta_failed": "Update to beta failed: ",
+  "errors.invalid_level": "Unrecognised permission level {level}; allowed: {allowed}"
 }

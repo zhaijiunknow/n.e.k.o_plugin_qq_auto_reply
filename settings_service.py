@@ -727,6 +727,12 @@ class QQSettingsService:
             config.get("trusted_users", []),
         )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
+        for kind, manager in (("用户", self.plugin.permission_mgr), ("群", self.plugin.group_permission_mgr)):
+            for target, level in manager.invalid_levels:
+                self.plugin.logger.warning(
+                    f"[Permission] {kind} {target} 的权限级别 {level!r} 无法识别，已按 normal 处理；"
+                    "请到名单里改成有效的级别"
+                )
         self.plugin._refresh_admin_qq()
 
     @asynccontextmanager

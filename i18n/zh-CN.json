@@ -821,5 +821,6 @@
   "ui.stable.beta_progress": "正在更新到测试版 {version}，请稍候…",
   "ui.stable.beta_done": "已更新到测试版 {version}。",
   "ui.stable.beta_reload": "刷新页面",
-  "ui.stable.beta_failed": "更新到测试版失败："
+  "ui.stable.beta_failed": "更新到测试版失败：",
+  "errors.invalid_level": "无法识别的权限级别 {level}，可用：{allowed}"
 }

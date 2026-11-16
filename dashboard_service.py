@@ -363,6 +363,13 @@ class QQDashboardService:
         payload.update(result)
         return Ok(self._inject_business_permissions(payload))
 
+    def _invalid_level_error(self, level: Any, allowed: str) -> Err:
+        """认不出来的权限级别 → INVALID_ARGUMENT，名单不动（以前会悄悄存成信任档）。"""
+        msg = self.plugin.i18n.t("errors.invalid_level", default="无法识别的权限级别 {level}，可用：{allowed}")
+        return Err(SdkError(
+            "INVALID_ARGUMENT: " + str(msg).replace("{level}", repr(str(level))).replace("{allowed}", allowed)
+        ))
+
     def _nickname_invalid_error(self, reason: str) -> Err:
         """昵称校验失败 → INVALID_ARGUMENT（而不是笼统的 SET_FAILED）。"""
         if reason == "too_long":
@@ -384,6 +391,8 @@ class QQDashboardService:
     ):
         if not self.plugin.permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.permission_manager_not_initialized', default='权限管理器未初始化')}"))
+        if self.plugin.permission_mgr.recognise_level(level) is None:
+            return self._invalid_level_error(level, "admin / trusted / normal / blacklist")
         normalized_nickname = "" if level == "admin" else nickname
         if normalized_nickname and self.plugin.permission_mgr:
             reason = self.plugin.permission_mgr.validate_nickname(normalized_nickname)
@@ -816,6 +825,8 @@ class QQDashboardService:
                 return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
         if sticker_collect_enabled is not None and not isinstance(sticker_collect_enabled, bool):
             return Err(SdkError("INVALID_ARGUMENT: sticker_collect_enabled 必须是布尔值"))
+        if self.plugin.group_permission_mgr.recognise_level(level) is None:
+            return self._invalid_level_error(level, "trusted / normal")
         async with self._group_edit_lock:
             manager = self.plugin.group_permission_mgr
             # Disabling is immediate; enabling is published only after a durable save.

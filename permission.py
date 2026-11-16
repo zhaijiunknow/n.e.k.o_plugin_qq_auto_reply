@@ -34,6 +34,9 @@ class PermissionManager:
         `speaker_trust_profiles` 键原样保留，只做一次性迁移源。
         """
         self._users: Dict[str, Dict[str, Any]] = {}  # {qq: {level, nickname?, normal_relay_probability?}}
+        #: 载入时级别认不出来的条目 ``(QQ 号, 原样写的级别)``，已按最低档收录；
+        #: 由调用方写进日志，让人去改配置。
+        self.invalid_levels: List[tuple[str, str]] = []
 
         if trusted_users:
             for user in trusted_users:
@@ -50,6 +53,8 @@ class PermissionManager:
                         }
                     continue
                 qq = self._normalize_qq(user.get("qq", ""))
+                if qq and self.recognise_level(user.get("level")) is None:
+                    self.invalid_levels.append((qq, str(user.get("level"))))
                 level = self._normalize_level(user.get("level", "trusted"))
                 nickname = str(user.get("nickname", "") or "").strip()
                 normal_relay_probability = self._normalize_probability(user.get("normal_relay_probability"))
@@ -65,9 +70,18 @@ class PermissionManager:
         return str(qq_number or "").strip()
 
     @classmethod
+    def recognise_level(cls, level: Any) -> Optional[str]:
+        """没写（None / 空白）→ ``trusted``；认得出来 → 那一档；写了却认不出来 → None。"""
+        level_text = str(level if level is not None else "").strip().lower()
+        if not level_text:
+            return "trusted"
+        return level_text if level_text in cls.VALID_LEVELS else None
+
+    @classmethod
     def _normalize_level(cls, level: str) -> str:
-        level_text = str(level or "trusted").strip().lower()
-        return level_text if level_text in cls.VALID_LEVELS else "trusted"
+        # 写了却认不出来的级别落到 ``normal``（权限最低的有效档），不是 ``trusted``：
+        # 以前把 blacklist 写错一个字母，这个人反而成了信任用户。
+        return cls.recognise_level(level) or "normal"
 
     @staticmethod
     def _normalize_probability(value: Any) -> Optional[float]:
@@ -129,7 +143,10 @@ class PermissionManager:
         qq_str = self._normalize_qq(qq_number)
         if not qq_str:
             return False
-        normalized_level = self._normalize_level(level)
+        normalized_level = self.recognise_level(level)
+        if normalized_level is None:
+            # 认不出来的级别：拒绝，名单不动（不悄悄存成别的档）。
+            return False
         normalized_nickname = (
             "" if normalized_level == "admin"
             else self._normalize_nickname_for_write(nickname)
