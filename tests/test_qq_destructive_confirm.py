@@ -32,7 +32,6 @@ DESTRUCTIVE_HANDLERS = (
     ("napcat.html", "doForgetGroupMemory"),
     ("napcat.html", "resetPromptOverride"),
     ("open_platform.html", "deleteSticker"),
-    ("open_platform.html", "resetPromptOverride"),
 )
 
 #: 需要加载确认框的页面。

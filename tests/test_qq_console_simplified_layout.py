@@ -22,13 +22,13 @@ def _pages(fragment: str) -> list[str]:
 def test_the_sidebar_shows_three_everyday_entries():
     everyday, advanced = NAV.split('<details class="nav-advanced"')
     assert _pages(everyday) == ["status", "config:accounts", "sticker"]
-    assert _pages(advanced) == ["config", "plugintools", "prompts", "logs", "guide"]
+    assert _pages(advanced) == ["config", "plugintools", "logs", "guide"]
     assert 'data-nav="status.html"' in advanced, "重新扫码绑定的入口还在（收在高级里）"
     assert "<details" in NAV and " open" not in NAV.split("<summary")[0].split("<details")[1], "高级默认折叠"
 
 
 def test_every_page_is_still_reachable():
-    for page in ("status", "config", "sticker", "plugintools", "prompts", "logs", "guide"):
+    for page in ("status", "config", "sticker", "plugintools", "logs", "guide"):
         assert f'data-page="{page}"' in NAV
 
 
@@ -52,3 +52,11 @@ def test_the_accounts_page_tucks_rarely_used_tools_away():
     )
     assert 'id="identity-links-card" style="display:none"' in page
     assert "getElementById('identity-links-card').style.display=" in HTML, "名单里没有旧账号时整张卡片不出现"
+
+
+def test_the_prompt_editor_is_gone_from_the_console_but_not_from_the_backend():
+    """提示词编辑从界面上拔掉（使用者 2026-11-16）；后端入口和已保存的覆盖不动。"""
+    assert "prompts" not in HTML and "PromptOverride" not in HTML and "loadPromptEditorState" not in HTML
+    source = (pathlib.Path(__file__).resolve().parents[1] / "__init__.py").read_text(encoding="utf-8")
+    assert 'if action == "prompt_editor":' in source and "resolve_prompt_override" in source
+
