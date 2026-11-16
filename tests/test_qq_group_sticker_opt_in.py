@@ -365,3 +365,15 @@ async def test_global_off_blocks_group_image_even_when_group_opted_in(tmp_path):
     gallery.plugin._qq_settings = {"sticker_collect_policy": "off"}
     assert await gallery.remember_bytes(_png(), group_id="111") is None
     assert not gallery.store.index.exists()
+
+
+@pytest.mark.parametrize("level", ["trused", "admin", "blacklist"])
+async def test_dashboard_rejects_an_unrecognised_group_level(tmp_path, level):
+    """认不出来的级别在入口就退回去，名单不动（以前会悄悄存成信任群）。"""
+    service, plugin = dashboard(tmp_path)
+    plugin.i18n = SimpleNamespace(t=lambda key, default=None: default or key)
+    plugin.group_permission_mgr.add_group("111", "normal")
+    assert (await service.add_trusted_group(group_id="111", level=level)).is_err()
+    assert plugin.group_permission_mgr.get_group_level("111") == "normal"
+    assert (await service.add_trusted_group(group_id="222", level=level)).is_err()
+    assert plugin.group_permission_mgr.get_group_level("222") == "none"

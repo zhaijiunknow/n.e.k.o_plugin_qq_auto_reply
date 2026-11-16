@@ -86,16 +86,28 @@ async def _describe_video(content: list[dict[str, Any]], authorized: Callable[[]
     return text.strip()[:6000]
 
 
-async def analyze_qq_video(plugin: Any, params: dict[str, Any], authorized: Callable[[], bool]) -> str:
+#: 看视频插件里只把抽帧图片交回来、不往桌面推的入口。0.3.0 是专用的 ``prepare_for_qq``；
+#: 0.3.1 起只剩 ``analyze``，要带 ``return_images=true`` 才是这个行为。
+IMAGE_ONLY_ENTRIES = ("prepare_for_qq", "analyze")
+
+
+async def analyze_qq_video(
+    plugin: Any, params: dict[str, Any], authorized: Callable[[], bool], *, entry: str = "prepare_for_qq",
+) -> str:
     """No messages are sent here; existing QQ pipeline owns final delivery/consent."""
     try:
+        if entry not in IMAGE_ONLY_ENTRIES:
+            raise ValueError("unsupported video entry")
         if not authorized():
             return REVOKED
         # No _ctx, local-path permission overrides, callbacks or other model-supplied keys.
         clean = {key: params[key] for key in ("source", "question", "start_seconds", "seconds") if key in params}
+        if entry == "analyze":
+            # Forced here, never taken from the model: without it this entry pushes to the desktop.
+            clean["return_images"] = True
         async with asyncio.timeout(VIDEO_ENTRY_TIMEOUT_SECONDS):
             result = await plugin.plugins.call_entry(
-                "video_reader:prepare_for_qq", clean, timeout=VIDEO_ENTRY_TIMEOUT_SECONDS,
+                f"video_reader:{entry}", clean, timeout=VIDEO_ENTRY_TIMEOUT_SECONDS,
             )
         if not authorized():
             return REVOKED

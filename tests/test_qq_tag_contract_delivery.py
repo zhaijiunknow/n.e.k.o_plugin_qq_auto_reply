@@ -2,8 +2,9 @@
 
 两处缺陷（都来自一次提示词⇄解析器审计，均已实测复现）：
 
-1. **`<ark>` 内容泄漏**：Ark 卡片没有投递实现（`reply_delivery_node` 的
-   `if block.ark:` 只记一条 warning）。模型按开放平台格式段写出块外的
+1. **`<ark>` 内容泄漏**：当时 Ark 卡片没有投递实现（`reply_delivery_node` 的
+   `if block.ark:` 只记一条 warning；现在卡片会真的发出去，见
+   `test_qq_card_delivery.py`）。模型按开放平台格式段写出块外的
    `<ark title="…" desc="…">正文</ark>` 时，标签壳不在清洗白名单里 →
    **整段原始 XML 原样发到群里**。这是泄漏，不是丢弃。
 

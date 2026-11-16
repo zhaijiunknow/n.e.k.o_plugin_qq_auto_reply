@@ -19,7 +19,17 @@ def current_conversation_permission(plugin: Any, conversation: dict | None) -> s
 
     Group tool authority belongs to the group, but a blacklisted sender must
     never retain it. Missing/unavailable rosters fail closed.
+
+    One exception, by the owner's decision (2026-11-16): on the QQ Open Platform
+    the group roster is not consulted. Groups there are opaque openids with no
+    place in the UI to register them, so the roster only ever holds QQ group
+    numbers and every tool call in an open-platform group was refused after
+    being mounted. Which groups the bot serves is managed on the QQ side. The
+    ceiling stays "trusted" -- a group never carries admin authority -- and the
+    turn's original authority still bounds the result.
     """
+    from .media_seam import is_open_platform
+
     convo = conversation or {}
     sender = str(convo.get("sender_id") or "").strip()
     if not sender:
@@ -34,9 +44,12 @@ def current_conversation_permission(plugin: Any, conversation: dict | None) -> s
             group_id = str(convo.get("group_id") or "").strip()
             if not group_id:
                 return "none"
-            level = str(
-                plugin.group_permission_mgr.get_group_level(group_id) or "none"
-            ).strip().lower()
+            if is_open_platform(getattr(plugin, "qq_client", None)):
+                level = "trusted"
+            else:
+                level = str(
+                    plugin.group_permission_mgr.get_group_level(group_id) or "none"
+                ).strip().lower()
     except Exception:
         return "none"
     ranks = {"none": 0, "normal": 1, "trusted": 2, "admin": 3}

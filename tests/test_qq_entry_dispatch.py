@@ -27,17 +27,13 @@ def _plugin(**service_methods):
 async def test_routes_each_action_to_its_service_method():
     p = _plugin(add_trusted_user=None, remove_trusted_user=None, add_trusted_group=None,
                 remove_trusted_group=None, set_user_nickname=None,
-                list_identity_claims=None, bind_identity_account=None,
-                unbind_identity_account=None, refresh_actual_contacts=None)
+                refresh_actual_contacts=None)
 
     await p.trust(action="user_add", qq_number="111")
     await p.trust(action="user_remove", qq_number="111")
     await p.trust(action="user_nickname", qq_number="111", nickname="阿喵")
     await p.trust(action="group_add", group_id="222")
     await p.trust(action="group_remove", group_id="222")
-    await p.trust(action="claims")
-    await p.trust(action="identity_bind", user_id="A", target_user_id="B")
-    await p.trust(action="identity_unbind", user_id="A")
     await p.trust(action="refresh_contacts")
 
     for name, called in (
@@ -48,9 +44,6 @@ async def test_routes_each_action_to_its_service_method():
         ("add_trusted_group", dict(group_id="222", level="trusted",
                                    normal_relay_probability=None, sticker_collect_enabled=None)),
         ("remove_trusted_group", dict(group_id="222")),
-        ("list_identity_claims", dict()),
-        ("bind_identity_account", dict(user_id="A", target_user_id="B")),
-        ("unbind_identity_account", dict(user_id="A")),
         ("refresh_actual_contacts", dict()),
     ):
         getattr(p.dashboard_service, name).assert_awaited_once_with(**called)
@@ -82,14 +75,6 @@ async def test_missing_required_params_never_reach_the_service():
     p.dashboard_service.remove_trusted_group.assert_not_awaited()
 
 
-async def test_identity_bind_requires_both_ids():
-    p = _plugin(bind_identity_account=None)
-    r = await p.trust(action="identity_bind", user_id="A")
-
-    assert r.is_err() and "INVALID_INPUT" in str(r.error)
-    p.dashboard_service.bind_identity_account.assert_not_awaited()
-
-
 # ── 入口对 agent 的可见性 ───────────────────────────────────
 
 def test_trust_entry_is_visible_to_the_agent():
@@ -114,10 +99,12 @@ DEEPCHAT_ENTRIES = {
     "dc_forget_user",
 }
 INTER_PLUGIN_ENTRIES = {"account_identity"}
-EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES
+#: 只给控制台用的入口（对 agent 隐藏）：换通道认领能把任意 ID 匹配到管理员旧账号。
+CONSOLE_ONLY_ENTRIES = {"identity_link"}
+EXPECTED_ENTRIES = LEGACY_ENTRIES | DEEPCHAT_ENTRIES | INTER_PLUGIN_ENTRIES | CONSOLE_ONLY_ENTRIES
 
 #: 对 agent 隐藏的入口（braid/task_executor.py 的 _is_plugin_entry_agent_hidden 读这个标记）
-AGENT_HIDDEN = {"asset", "deploy", "account_identity"}
+AGENT_HIDDEN = {"asset", "deploy", "account_identity", "identity_link"}
 
 
 def _entry_attr_map() -> dict[str, str]:
@@ -250,3 +237,22 @@ def test_deploy_declares_a_timeout_long_enough_for_its_own_download():
         f"退回宿主默认的 {PLUGIN_EXECUTION_TIMEOUT} 秒了 —— 一次稍慢的下载就会把一键部署掐死")
     assert resolved >= napcat_install.DOWNLOAD_TIMEOUT_SECONDS, (
         "入口超时不该比它内部允许的下载超时还短")
+
+
+async def test_trust_no_longer_accepts_the_claim_actions():
+    """认领的动作搬到了对 agent 隐藏的 identity_link：trust 上再调就是 BAD_ACTION。"""
+    p = _plugin()
+    for action in ("link", "link_code", "links", "unlink"):
+        r = await p.trust(action=action, user_id="A", target_user_id="1")
+        assert r.is_err() and "BAD_ACTION" in str(r.error), action
+
+
+async def test_retired_identity_actions_are_not_exposed_or_dispatched():
+    from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
+    p = _plugin()
+    for action in ("claims", "identity_bind", "identity_unbind"):
+        result = await p.trust(action=action, user_id="A", target_user_id="B")
+        assert result.is_err() and "BAD_ACTION" in str(result.error)
+        assert not hasattr(QQAutoReplyPlugin, "_trust_" + action)
+    meta = getattr(QQAutoReplyPlugin.trust, EVENT_META_ATTR)
+    assert "identity_bind" not in str(meta.input_schema)

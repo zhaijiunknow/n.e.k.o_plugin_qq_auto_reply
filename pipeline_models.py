@@ -79,6 +79,22 @@ BUFFER_INTERNAL_SOURCE_KINDS = frozenset({
 })
 
 
+def card_text(ark, *, with_link: bool = False) -> str:
+    """一张卡片（``<ark>`` 的属性表）说了什么：标题 / 描述 / 正文，各占一行。
+
+    两处用它：发不了卡片时按这段文字发出去（``with_link`` 把链接也带上，否则降级后链接
+    就丢了），以及记账时把卡片内容算进"她说过的话"。按钮文案不算 —— 图文卡片上没有按钮。
+    """
+    if not isinstance(ark, dict):
+        return ""
+    lines: list[str] = []
+    for key in ("title", "desc", "_body") + (("url",) if with_link else ()):
+        value = str(ark.get(key) or "").strip()
+        if value and value not in lines:
+            lines.append(value)
+    return "\n".join(lines)
+
+
 def delivered_blocks_text(blocks) -> str:
     """All user-visible text of a plan, not just the first block.
 
@@ -92,7 +108,7 @@ def delivered_blocks_text(blocks) -> str:
         # 所以两段都要记进记忆与 mention 计数。以前只记 record，是因为那会儿
         # 文字根本发不出去（投递侧 record 分支直接 continue）。
         record = str(getattr(block, "record", "") or "").strip()
-        for value in (str(getattr(block, "text", "") or "").strip(), record):
+        for value in (str(getattr(block, "text", "") or "").strip(), record, card_text(getattr(block, "ark", None))):
             if value:
                 parts.append(value)
         # 选项文案在**文本块**上才会送到用户面前（开放平台渲染成按钮，

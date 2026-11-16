@@ -12,6 +12,7 @@ from .pipeline_models import (
     QQModelResult,
     QQReplyContext,
     QQReplyOutcome,
+    card_text,
 )
 from .reply_protocol import extract_feeling, strip_feeling_tags
 
@@ -65,6 +66,11 @@ class QQReplyPostprocessNode:
 
         # 检查是否包含 <msg> 标签 → XML 解析
         if "<msg>" not in text and "<msg " not in text:
+            # 不包 `<msg>` 的 `<ark …>`：提示词里的示例就是这个写法。以前它不在下面那份
+            # 旧式标签名单里，整段被当成纯文本，标签壳在投递时剥掉 —— 卡片成了一句普通的话。
+            bare_ark = QQReplyPostprocessNode._parse_bare_ark(text)
+            if bare_ark is not None:
+                return bare_ark
             # 检查是否使用旧式标签（<reply> <at> <sticker> <poke> <record> <keyboard>）
             if any(tag in text for tag in ("<reply>", "<at>", "<sticker>", "<poke>", "<record>", "<keyboard>")):
                 return QQReplyPostprocessNode._parse_legacy_tags(text)
@@ -178,6 +184,33 @@ class QQReplyPostprocessNode:
         if not blocks:
             return [QQMessageBlock(text=text)]
 
+        return blocks
+
+    @staticmethod
+    def _parse_bare_ark(text: str) -> list[QQMessageBlock] | None:
+        """块外的 `<ark 属性…>正文</ark>`（或自闭合）→ 卡片块；它前后的文字各成一块。
+
+        没有 `<ark` 时返回 None，交回给原来的解析。
+        """
+        import html
+        import re
+
+        match = re.search(r"<ark\b([^>]*?)(?:/>|>(.*?)</ark\s*>)", text, re.IGNORECASE | re.DOTALL)
+        if match is None:
+            return None
+        ark = {
+            name.lower(): html.unescape(double if double is not None else single)
+            for name, double, single in re.findall(r"""([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""", match.group(1))
+        }
+        body = html.unescape(match.group(2) or "").strip()
+        if body:
+            ark["_body"] = body
+        blocks: list[QQMessageBlock] = []
+        for part, is_card in ((text[:match.start()], False), ("", True), (text[match.end():], False)):
+            if is_card:
+                blocks.append(QQMessageBlock(ark=ark))
+            elif part.strip():
+                blocks.extend(QQReplyPostprocessNode._parse_blocks(part))
         return blocks
 
     @staticmethod
@@ -432,7 +465,7 @@ class QQReplyPostprocessNode:
                         blocks = prefix_blocks + repaired_blocks
                         reply_text = repaired
             # 构建人类可读的 reply_text（首个块的文本）
-            first_text = blocks[0].text if blocks else ""
+            first_text = (blocks[0].text or card_text(blocks[0].ark)) if blocks else ""
             reply_text = first_text or reply_text
 
             # 全是空块（典型 `<msg></msg>`）⇒ 模型说了个空消息 = 它选择不说话。
@@ -601,7 +634,7 @@ class QQReplyPostprocessNode:
         if (getattr(request, "source_kind", KIND_INCOMING) in {KIND_INCOMING, KIND_INCOMING_GROUP} and message_id
                 and not any(block.reply_to or "[CQ:reply," in block.text for block in result)):
             for block in result:
-                if block.text or block.emoji:
+                if block.text or block.emoji or block.ark:
                     block.reply_to = message_id
                     break
         return result

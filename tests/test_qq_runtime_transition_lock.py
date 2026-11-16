@@ -87,7 +87,6 @@ def _plugin(client, *, mode: str = "open_platform"):
         _session_locks={},
         _user_sessions={},
         _group_memory_sync_tasks=[],
-        _prompt_change_discard_tasks=[],
         attention_service=None,
         attention_gate_service=None,
         reply_buffer_service=None,

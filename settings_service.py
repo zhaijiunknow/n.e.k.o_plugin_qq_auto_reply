@@ -607,8 +607,11 @@ class QQSettingsService:
             # 信任名单——真机事故：管理员与两个群被一次启动清空。
             # 该参数会把「加载进来的原值」保留在 payload 与内存快照里。
             try:
-                await self._persist_business_config_locked(preserve_published_permissions=True)
-                self.plugin._emit_log("INFO", "配置迁移已落盘：旧键已清理（注意力两代命名 / 已删功能）")
+                persisted = await self._persist_business_config_locked(preserve_published_permissions=True)
+                if persisted:
+                    self.plugin._emit_log("INFO", "配置迁移已落盘：旧键已清理（含已退役的提示词覆盖）")
+                else:
+                    self.plugin._emit_log("WARN", "配置迁移落盘失败：旧配置在内存中已禁用，下次启动重试")
             except Exception as exc:
                 self.plugin._emit_log("WARN", f"配置迁移落盘失败（内存视图仍正确）: {exc}")
         return dict(self.plugin._qq_settings)
@@ -727,6 +730,16 @@ class QQSettingsService:
             config.get("trusted_users", []),
         )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
+        links = getattr(self.plugin, "identity_links", None)
+        if links is not None:
+            self.plugin.permission_mgr.resolve = links.user
+            self.plugin.group_permission_mgr.resolve = links.group
+        for kind, manager in (("用户", self.plugin.permission_mgr), ("群", self.plugin.group_permission_mgr)):
+            for target, level in manager.invalid_levels:
+                self.plugin.logger.warning(
+                    f"[Permission] {kind} {target} 的权限级别 {level!r} 无法识别，已按 normal 处理；"
+                    "请到名单里改成有效的级别"
+                )
         self.plugin._refresh_admin_qq()
 
     @asynccontextmanager

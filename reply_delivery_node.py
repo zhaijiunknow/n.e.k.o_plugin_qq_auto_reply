@@ -13,6 +13,7 @@ from .pipeline_models import (
     QQDeliveryResult,
     QQMessageBlock,
     backlog_sender_label,
+    card_text,
 )
 from .reply_protocol import strip_feeling_tags
 from .reply_sentence_split import split_text_blocks
@@ -114,6 +115,16 @@ class QQReplyDeliveryNode:
                     decoration_sent = True
                 continue
 
+            if block.ark:
+                # 卡片块：能发卡片的地方发卡片，别处按文字发（见 `_send_card`）。
+                content_attempted = True
+                shown = await self._send_card(plan, block)
+                if not shown:
+                    content_sent = False
+                elif i == 0:
+                    first_text = shown
+                continue
+
             # 文本块（可含 emoji + at + reply + keyboard）
             text = self._compose_text(block)
             if not text and block.keyboard and plan.target_type != "group":
@@ -161,16 +172,6 @@ class QQReplyDeliveryNode:
                     content_sent = False
                 continue
             if not text:
-                if block.ark:
-                    # Ark 卡片目前没有投递实现（_send_ark 自 #2429 起无
-                    # 调用方，属本 PR 之外的既有缺陷）：这里只保证记忆侧
-                    # 不把"什么都没发"记成已投递——草稿保持排除、不记
-                    # mention。真正的卡片发送要另行接回。
-                    content_attempted = True
-                    content_sent = False
-                    self.plugin.logger.warning(
-                        "Ark 卡片块没有投递实现，未发送（记忆按未投递处理）"
-                    )
                 continue
             if i == 0:
                 first_text = text
@@ -591,6 +592,61 @@ class QQReplyDeliveryNode:
             self.plugin.logger.info(f"合并转发未被确认（target={target_id}）")
             return False
         return True
+
+    def _supports_cards(self) -> bool:
+        """这个连接能不能发卡片。
+
+        看的是 ``supports_card_messages``，**不是** ``supports_ark_cards``：官方 v2 的发送侧
+        已经没有 ark，新适配器如实把后者报成 False，而图文卡片（``msg_type=8``）仍然能发、
+        ``send_group_ark_card`` 也还在。按后者判断的话，官方通道上每张卡片都会降级成文字。
+        还没带这个新标志的旧适配器不当成能发 —— 它那套 ark 模板本来就已经发不出去了。
+        """
+        return getattr(self.plugin.qq_client, "supports_card_messages", False) is True
+
+    async def _send_card(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> str:
+        """投递一个卡片块。返回送到对方面前的文字；没送到返回空串。
+
+        卡片只有官方通道的群聊能发。OneBot、私聊、只发语音的模式下内容照发，按文字；
+        卡片发送失败也改发文字 —— 这时不再过一遍出站守门和额度：刚才已经过了，再查一次
+        会被当成"重复发言"拦掉。
+        """
+        ark = block.ark
+        shown = card_text(ark)
+        if not shown:
+            return ""
+        voice_only = self.plugin._get_reply_mode() == "voice"
+        fallback = replace(block, text=card_text(ark, with_link=not voice_only), ark={})
+        if plan.target_type != "group" or voice_only or not self._supports_cards():
+            return shown if await self._send_text(plan, fallback, self._compose_text(fallback)) else ""
+        if not self._outbound_allowed(plan.target_type, plan.target_id, shown):
+            return ""
+        if not self._admit_message(plan):
+            return ""
+        title = str(ark.get("title") or "").strip()
+        details = [
+            value for value in (str(ark.get(key) or "").strip() for key in ("desc", "_body")) if value
+        ]
+        if not title:
+            title = details.pop(0)
+        card = {
+            "title": title, "description": "\n".join(details),
+            "url": str(ark.get("url") or "").strip(), "pic_url": str(ark.get("pic") or "").strip(),
+        }
+        # 带上被动回复的锚点：没有它卡片会按主动消息发，占额度，关了主动消息的群还会拒收。
+        anchor = {"reply_message_id": block.reply_to} if block.reply_to else {}
+        try:
+            sent = await self.plugin.qq_client.send_group_ark_card(plan.target_id, card, **anchor)
+        except Exception as exc:
+            sent = False
+            self.plugin.logger.warning(f"[Card] 卡片发送失败（{type(exc).__name__}），改发文字")
+        if self._confirm_platform_result(sent):
+            return shown
+        segments: list[dict[str, Any]] = []
+        if block.reply_to:
+            segments.append({"type": "reply", "data": {"id": block.reply_to}})
+        segments.append({"type": "text", "data": {"text": fallback.text}})
+        result = await self.plugin.qq_client.send_group_message_segments(plan.target_id, segments)
+        return shown if self._confirm_platform_result(result) else ""
 
     def _supports_keyboard(self) -> bool:
         """Only the Open Platform renders official keyboard buttons.

@@ -91,8 +91,6 @@ FROZEN_DEFAULTS: dict[str, object] = {
     "group_member_memory_enabled": False,
     "private_participant_memory_enabled": False,
     "allow_cross_group_context": False,
-    "prompt_overrides": {},
-    "group_prompts": {},
 }
 
 

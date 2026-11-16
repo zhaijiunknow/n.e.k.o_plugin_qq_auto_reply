@@ -6,7 +6,7 @@
 拆开，确认拆掉就会红：
 
 - 裸条目（漏写 level）又降级；
-- 空值 / 写错的级别又降级；
+- 没写级别（None / 空串）又降级；
 - 手写字符串条目（PR #1 的容错分支）又降级；
 - `add_group()` 的默认参数又变回普通群；
 - 入口 `group_add` 省略 level 时又降级；
@@ -45,15 +45,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ),
     (
         "group_permission.py",
-        "空值 / 写错的级别重新降级成普通群",
-        "        return normalized if normalized in cls.VALID_LEVELS else DEFAULT_GROUP_LEVEL",
-        '        return normalized if normalized in cls.VALID_LEVELS else "normal"',
-    ),
-    (
-        "group_permission.py",
-        "level 为空串时又降级（str(level or ...) 这一支）",
-        "        normalized = str(level or DEFAULT_GROUP_LEVEL).strip().lower()",
-        '        normalized = str(level or "normal").strip().lower()',
+        "没写级别（None / 空串）时又降级成普通群",
+        "        if not normalized:\n            return DEFAULT_GROUP_LEVEL",
+        '        if not normalized:\n            return "normal"',
     ),
     (
         "group_permission.py",

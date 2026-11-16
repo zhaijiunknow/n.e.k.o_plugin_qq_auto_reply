@@ -45,6 +45,7 @@ from .feedback_classifier import QQFeedbackClassifier as QQFeedbackClassifier
 from .gallery_service import QQGalleryService
 from .group_permission import DEFAULT_GROUP_LEVEL, GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
+from .identity_links import QQIdentityLinks
 from .memory_bridge import QQMemoryBridge
 from .memory_tool_service import QQMemoryToolService
 from .message_dispatcher import QQMessageDispatcher
@@ -78,10 +79,7 @@ from .runtime_transition import runtime_transition_guard
 from .session import QQAutoReplySessionMixin
 from .session_bootstrap_service import QQSessionBootstrapService
 from .session_handoff_service import QQSessionHandoffService
-from .session_instruction_service import (
-    QQSessionInstructionService,
-    resolve_prompt_override,
-)
+from .session_instruction_service import QQSessionInstructionService
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
@@ -161,6 +159,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.config_store = QQAutoReplyConfigStore(self.data_path())
         self._qq_settings: dict[str, Any] = self.config_store.default_config()
         self.backlog_store = self._create_backlog_store_from_settings(self._qq_settings)
+        # 换通道后的认领别名（openid → 旧 QQ 号 / 群号）。要早于名单与 memory_bridge 的构建。
+        self.identity_links = QQIdentityLinks(self)
         self.settings_service = QQSettingsService(self)
         self.runtime_service = QQRuntimeService(self)
         self.dashboard_service = QQDashboardService(self)
@@ -776,16 +776,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _persist_business_config(self) -> bool:
         return await self.settings_service.persist_business_config()
 
-    async def _mutate_business_config(self, mutation) -> bool:
-        """Route direct action mutations through the serialized writer."""
-        settings_service = getattr(self, "settings_service", None)
-        if settings_service is not None:
-            return await settings_service.mutate_business_config(mutation)
-        # Preserve the established lightweight-host seam used by unit tests.
-        if not mutation(self._qq_settings):
-            return True
-        return await self._persist_business_config()
-
     def _ensure_qq_client_initialized(self) -> None:
         if self.qq_client is not None:
             return
@@ -1111,10 +1101,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if self.attention_gate_service:
             await self.attention_gate_service.stop_proactive_loop()
         await self._stop_auto_reply_runtime(stop_napcat=True)
-        sync_tasks = (
-            list(getattr(self, "_group_memory_sync_tasks", ()) or ())
-            + list(getattr(self, "_prompt_change_discard_tasks", ()) or ())
-        )
+        sync_tasks = list(getattr(self, "_group_memory_sync_tasks", ()) or ())
         if sync_tasks:
             # 隐私关键的开关转变任务在关机 flush 前 join（限 1s），避免
             # 结算做到一半被进程退出截断。
@@ -1499,26 +1486,23 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     # ── trust：名单与身份 ───────────────────────────────────────
     #
-    # 信任用户/群、用户昵称、开放平台身份合并，以及联系人刷新。对 agent 可见。
+    # 信任用户/群、用户昵称与联系人刷新。身份关联独立于 agent 可见的名册操作。
 
-    @ui.action(id="trust", label=tr("entries.trust.name", default="信任名单与身份"), refresh_context=True)
+    @ui.action(id="trust", label=tr("entries.trust.name", default="信任名单"), refresh_context=True)
     @plugin_entry(
         id="trust",
-        name=tr("entries.trust.name", default="信任名单与身份"),
-        description=tr("entries.trust.description", default="管理信任用户/群、用户昵称，以及开放平台身份合并。action 取 user_add / user_remove / user_nickname / group_add / group_remove / claims / identity_bind / identity_unbind / refresh_contacts。"),
+        name=tr("entries.trust.name", default="信任名单"),
+        description=tr("entries.trust.description", default="管理信任用户/群和昵称。action 取 user_add / user_remove / user_nickname / group_add / group_remove / refresh_contacts。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["user_add", "user_remove", "user_nickname",
-                                "group_add", "group_remove", "claims",
-                                "identity_bind", "identity_unbind", "refresh_contacts"],
-                       "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；claims=列出未认领的群内 ID；identity_bind=合并到已有身份；identity_unbind=撤销合并；refresh_contacts=从 OneBot 重新拉联系人"},
+                                "group_add", "group_remove", "refresh_contacts"],
+                       "description": "user_add=加信任用户；user_remove=移除；user_nickname=改昵称；group_add=加信任群；group_remove=移除；refresh_contacts=从 OneBot 重新拉联系人"},
             "qq_number": {"type": "string", "description": "user_add / user_remove / user_nickname：QQ 号"},
             "nickname": {"type": "string", "description": "user_add / user_nickname：显示昵称"},
             "level": {"type": "string", "description": "user_add / group_add：权限等级（用户：admin / trusted / normal / blacklist，blacklist＝不处理这个人的消息；群：trusted / normal，群省略 level 时默认 trusted＝正常参与，只有显式 normal 才是仅转发）"},
             "normal_relay_probability": {"type": "number", "description": "user_add / group_add：普通转发概率"},
             "group_id": {"type": "string", "description": "group_add / group_remove：群号"},
-            "user_id": {"type": "string", "description": "identity_bind / identity_unbind：群内 ID"},
-            "target_user_id": {"type": "string", "description": "identity_bind：要并入的已有身份"},
         }, "required": ["action"], "additionalProperties": False},
     )
     async def trust(self, action: str = "", **kw):
@@ -1535,18 +1519,65 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._trust_group_add(kw)
         if action == "group_remove":
             return await self._trust_group_remove(kw)
-        if action == "claims":
-            return await self._trust_claims(kw)
-        if action == "identity_bind":
-            return await self._trust_identity_bind(kw)
-        if action == "identity_unbind":
-            return await self._trust_identity_unbind(kw)
         if action == "refresh_contacts":
             return await self._trust_refresh_contacts(kw)
         return Err(SdkError(
             f"BAD_ACTION: trust 不支持 {action!r}"
             f"（可选 user_add/user_remove/user_nickname/group_add/group_remove/"
-            f"claims/identity_bind/identity_unbind/refresh_contacts）"))
+            f"refresh_contacts）"))
+
+    # ── identity_link：账号关联（只给控制台用）──────────────────
+    #
+    # **对 agent 隐藏**（`agent_auto: False`）：这里能把任意 ID 关联到名单里的已有账号，
+    # 关联到管理员账号就等于拿到管理员的权限和记忆。这不该是模型自己能调的。
+
+    @ui.action(id="identity_link", label=tr("entries.identity_link.name", default="账号关联"), refresh_context=True)
+    @plugin_entry(
+        id="identity_link",
+        name=tr("entries.identity_link.name", default="账号关联"),
+        description=tr("entries.identity_link.description", default="把新 ID 关联到名册中的已有用户或群，不迁移历史账本。action 取 links / link / link_code / unlink。"),
+        input_schema={"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["links", "link", "link_code", "unlink"],
+                       "description": "links=列出现有关联、最近出现的 ID 和目标账号；link=直接关联；link_code=为目标生成一次性认领码；unlink=解除关联（不拆回历史数据）"},
+            "qq_number": {"type": "string", "description": "link_code：名单中的目标用户 ID"},
+            "group_id": {"type": "string", "description": "link_code：名单中的目标群 ID；link / unlink：新通道的群 ID"},
+            "user_id": {"type": "string", "description": "link / unlink：新通道的用户 ID"},
+            "target_user_id": {"type": "string", "description": "link：目标用户 ID（QQ 号或 openid）"},
+            "target_group_id": {"type": "string", "description": "link：目标群 ID（群号或 openid）"},
+        }, "required": ["action"], "additionalProperties": False},
+        metadata={"agent_auto": False},
+    )
+    async def identity_link(self, action: str = "", **kw):
+        action = str(action or "").strip()
+        if action not in ("links", "link", "link_code", "unlink"):
+            return Err(SdkError(f"BAD_ACTION: identity_link 不支持 {action!r}（可选 links/link/link_code/unlink）"))
+        return await self._identity_link_dispatch(action, kw)
+
+    async def _identity_link_dispatch(self, action: str, kw: dict[str, Any]):
+        """唯一的账号关联管理入口；不调用宿主账本合并/拆分接口。"""
+        user = str(kw.get("user_id") or "").strip()
+        group = str(kw.get("group_id") or "").strip()
+        qq = str(kw.get("qq_number") or "").strip()
+        target_user = str(kw.get("target_user_id") or "").strip()
+        target_group = str(kw.get("target_group_id") or "").strip()
+        if (group or target_group) and (user or qq or target_user):
+            return Err(SdkError("INVALID_ARGUMENT: 用户和群不能混合关联"))
+        try:
+            if action == "link_code":
+                return Ok(self.identity_links.issue_code("group" if group else "user", group or qq))
+            if action == "link":
+                await self.identity_links.link(
+                    "group" if group or target_group else "user",
+                    group or user, target_group or target_user,
+                )
+            if action == "unlink":
+                if not await self.identity_links.unlink("group" if group else "user", group or user):
+                    return Err(SdkError("NOT_FOUND: 没有这条关联记录"))
+            return Ok(self.identity_links.snapshot())
+        except ValueError as exc:
+            return Err(SdkError(f"INVALID_ARGUMENT: {exc}"))
+        except OSError:
+            return Err(SdkError("NOT_PERSISTED: 读取或保存关联失败，身份没有改变，请重试"))
 
     async def _trust_user_add(self, kw: dict[str, Any]):
         """把一个 QQ 号加入信任用户列表。"""
@@ -1594,45 +1625,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError("INVALID_INPUT: group_remove 需要 group_id"))
         return await self.dashboard_service.remove_trusted_group(group_id=group_id)
 
-    async def _trust_claims(self, kw: dict[str, Any]):
-        """列出开放平台上出现过、但还不在名册里的群内 ID。"""
-        return await self.dashboard_service.list_identity_claims()
-
-    async def _trust_identity_bind(self, kw: dict[str, Any]):
-        """把一个群内 ID 的信赖度账本并入已有身份。只能由人触发。"""
-        user_id = str(kw.get("user_id") or "")
-        target_user_id = str(kw.get("target_user_id") or "")
-        if not user_id or not target_user_id:
-            return Err(SdkError("INVALID_INPUT: identity_bind 需要 user_id 与 target_user_id"))
-        return await self.dashboard_service.bind_identity_account(
-            user_id=user_id, target_user_id=target_user_id)
-
-    async def _trust_identity_unbind(self, kw: dict[str, Any]):
-        """把一个群内 ID 从被合并进的身份里拆回独立身份（误合并的唯一回滚方式）。"""
-        user_id = str(kw.get("user_id") or "")
-        if not user_id:
-            return Err(SdkError("INVALID_INPUT: identity_unbind 需要 user_id"))
-        return await self.dashboard_service.unbind_identity_account(user_id=user_id)
 
     async def _trust_refresh_contacts(self, kw: dict[str, Any]):
         """重新从 OneBot 拉取好友与群列表。"""
         return await self.dashboard_service.refresh_actual_contacts()
 
 
-
-
-
-
-
-
-
     # ── QQ 开放平台：扫码创建 / 复用机器人 ────────────────────
-
-
-
-
-
-
 
 
     # ── query：状态读取 ─────────────────────────────────────────
@@ -1654,11 +1653,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="query",
         name=tr("entries.query.name", default="查询状态"),
-        description=tr("entries.query.description", default="只读查询：控制面板状态、缓冲、日志、提示词、用户画像、待审阅、NapCat WebUI、机器人账本。action 取 dashboard / buffer / logs / prompt_editor / group_prompts / user_profiles / backlog_summary / backlog_detail / napcat_webui / bots。"),
+        description=tr("entries.query.description", default="只读查询：控制面板状态、缓冲、日志、提示词、用户画像、待审阅、NapCat WebUI、机器人账本。action 取 dashboard / buffer / logs / prompt_editor / user_profiles / backlog_summary / backlog_detail / napcat_webui / bots。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["dashboard", "buffer", "logs", "prompt_editor",
-                                "group_prompts", "user_profiles",
+                                "user_profiles",
                                 "backlog_summary", "backlog_detail",
                                 "napcat_webui", "bots"],
                        "description": "要读哪一份状态"},
@@ -1681,8 +1680,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._query_logs(kw)
         if action == "prompt_editor":
             return await self._query_prompt_editor(kw)
-        if action == "group_prompts":
-            return await self._query_group_prompts(kw)
         if action == "user_profiles":
             return await self._query_user_profiles(kw)
         if action == "backlog_summary":
@@ -1701,7 +1698,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Ok(self.proactive_initiative_service.snapshot())
         return Err(SdkError(
             f"BAD_ACTION: query 不支持 {action!r}"
-            f"（可选 dashboard/buffer/logs/prompt_editor/group_prompts/"
+            f"（可选 dashboard/buffer/logs/prompt_editor/"
             f"user_profiles/backlog_summary/backlog_detail/napcat_webui/bots/plugin_tools）"))
 
     async def _query_plugin_tools(self, kw: dict[str, Any]):
@@ -1783,12 +1780,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _query_backlog_summary(self, kw: dict[str, Any]):
         _ = kw
         return Ok(await self.backlog_service.get_summary_payload())
-
-    async def _query_group_prompts(self, kw: dict[str, Any]):
-        _ = kw
-        """获取所有群的专属提示词映射。"""
-        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
-        return Ok({"group_prompts": group_prompts})
 
     async def _process_messages(self):
         await self.message_dispatcher.process_messages()
@@ -1895,7 +1886,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"profiles": profiles, "count": len(profiles), "cached_count": sum(1 for p in profiles if p["cached"])})
 
     # ==========================================
-    # 提示词编辑器
+    # 提示词只读诊断（保留 prompt_editor 查询名兼容旧控制台）
     # ==========================================
 
     async def _query_prompt_editor(self, kw: dict[str, Any]):
@@ -1906,16 +1897,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         mode = frontend_mode if frontend_mode in ("napcat", "napcat_forward", "open_platform") else stored_mode
         from utils.language_utils import get_global_language_full
         frontend_locale = str(locale or "").strip()
-        # #2500 第 2 步：兜底也用全码。这个 locale 有两个身份——查 i18n bundle 的
-        # 键，以及回传给前端、被 save_prompt_override 原样当作覆盖的存储键。短码
-        # 'zh' 会让繁中用户在编辑器里看到（并覆盖）简体那份。
-        # ⚠️ 必须和 session_instruction_service._resolve_static_layer 的兜底同时
-        # 翻：写侧用 'zh-TW' 存、读侧还按 'zh' 的候选链找，覆盖会静默失效。
+        # 与运行时使用相同的语言和模板解析器；此接口仅供只读诊断。
         locale = frontend_locale if frontend_locale else get_global_language_full()
         is_napcat = mode in ("napcat", "napcat_forward")
-        overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
-        if not isinstance(overrides, dict):
-            overrides = {}
         layers = []
         for layer_def in self.session_instruction_service._PROMPT_LAYERS:
             lid = layer_def["id"]
@@ -1948,19 +1932,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 from .prompt_fragment_templates import layer_default_templates
 
                 default_text = layer_default_templates().get(i18n_key, "")
-            has_override = False
             effective_text = ""
-            if not is_runtime:
-                # ⚠️ 走候选链而不是精确匹配 ``overrides[locale]``：覆盖桶的键是
-                # 存的时候那次的 locale，未必等于现在解析出来的（#2500 之前繁中
-                # 用户的兜底是短码 'zh'）。运行时按候选链读，编辑器精确匹配的
-                # 话，那份覆盖照样生效、编辑器却报「未修改」。
-                found = resolve_prompt_override(overrides, locale, i18n_key)
-                if found is not None:
-                    has_override = True
-                    effective_text = str(found[1] or "")
-                else:
-                    effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
+            if lid == "init":
+                default_text = self.session_instruction_service._resolve_init_template(locale)
+                effective_text = default_text
+            elif not is_runtime:
+                effective_text = self.session_instruction_service._resolve_static_layer(
+                    i18n_key, default_text, locale,
+                )
             if lid == "time":
                 effective_text = build_time_context()
             layers.append({
@@ -1969,7 +1948,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "is_runtime": is_runtime,
                 "required_placeholders": layer_def.get("required_placeholders", []),
                 "format_after": layer_def.get("format_after", False),
-                "has_override": has_override,
+                "read_only": True,
                 "default_text": default_text,
                 "effective_text": effective_text,
             })
@@ -2131,190 +2110,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
             return Err(SdkError(f"FORGET_FAILED: {exc}"))
 
-    async def _config_prompt_save(self, kw: dict[str, Any]):
-        locale = str(kw.get("locale") or "")
-        layer_id = str(kw.get("layer_id") or "")
-        text = kw.get("text")
-        locale = str(locale or "").strip()
-        layer_id = str(layer_id or "").strip()
-        text_val = str(text or "")
-        if not locale:
-            return Err(SdkError("INVALID_INPUT: locale 不能为空"))
-        if not layer_id:
-            return Err(SdkError("INVALID_INPUT: layer_id 不能为空"))
-        # 验证 layer_id 存在且非 runtime
-        layer_def = next((ld for ld in self.session_instruction_service._PROMPT_LAYERS if ld["id"] == layer_id), None)
-        if layer_def is None:
-            return Err(SdkError(f"INVALID_INPUT: 未知的提示词层: {layer_id}"))
-        if layer_def.get("runtime"):
-            return Err(SdkError(f"INVALID_INPUT: 运行时层不可编辑: {layer_id}"))
-        def _save_override(settings):
-            raw_overrides = settings.get("prompt_overrides") or {}
-            overrides = (
-                dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
-            )
-            overrides.setdefault(locale, {})
-            overrides[locale] = dict(overrides[locale])
-            overrides[locale][layer_def["i18n_key"]] = (
-                text_val if text_val.strip() else ""
-            )
-            settings["prompt_overrides"] = overrides
-            return True
-
-        success = await QQAutoReplyPlugin._mutate_business_config(
-            self, _save_override,
-        )
-        if success:
-            self.session_instruction_service._discard_all_sessions_for_prompt_change()
-        return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
-
-    async def _config_prompt_reset(self, kw: dict[str, Any]):
-        locale = str(kw.get("locale") or "")
-        layer_id = str(kw.get("layer_id") or "")
-        locale = str(locale or "").strip()
-        layer_id = str(layer_id or "").strip()
-        if not locale or not layer_id:
-            return Err(SdkError("INVALID_INPUT"))
-        layer_def = next((ld for ld in self.session_instruction_service._PROMPT_LAYERS if ld["id"] == layer_id), None)
-        if layer_def is None or layer_def.get("runtime"):
-            return Err(SdkError(f"INVALID_INPUT: 无法重置的层: {layer_id}"))
-        override_found = False
-
-        def _reset_override(settings):
-            nonlocal override_found
-            raw_overrides = settings.get("prompt_overrides") or {}
-            overrides = {
-                bucket: (dict(entries) if isinstance(entries, dict) else entries)
-                for bucket, entries in (
-                    raw_overrides.items() if isinstance(raw_overrides, dict) else ()
-                )
-            }
-            i18n_key = layer_def["i18n_key"]
-            removed = False
-
-            # 先删精确桶。它可能存着空串（编辑器清空时的存法），resolve 看不见
-            # 那种，光靠下面的循环会漏。
-            exact = overrides.get(locale)
-            if isinstance(exact, dict) and i18n_key in exact:
-                exact.pop(i18n_key)
-                removed = True
-
-            # 再一直删到「解析不出覆盖」为止。只删精确桶是不够的：候选链上
-            # 还有别的桶（存量短码 'zh'，以及每条链都会带上的 'zh-CN' /
-            # 'en'），删掉 zh-TW 之后它们会顶上来 —— 「恢复默认」就变成了
-            # 「换一份旧覆盖」，而且再按一次还是它。
-            # ⚠️ 代价说清楚：同一个人如果按 locale 分别调过这一层的提示词，
-            # 重置会把该层其它 locale 的那几份一起清掉。单用户桌面应用里，
-            # 这比「按了恢复默认却恢复不掉」轻 —— 后者没有任何出路。
-            while True:
-                found = resolve_prompt_override(overrides, locale, i18n_key)
-                if found is None:
-                    break
-                overrides[found[0]].pop(i18n_key, None)
-                removed = True
-
-            if not removed:
-                return False
-            override_found = True
-            for bucket in [
-                b for b, entries in overrides.items()
-                if isinstance(entries, dict) and not entries
-            ]:
-                overrides.pop(bucket, None)
-            settings["prompt_overrides"] = overrides
-            return True
-
-        success = await QQAutoReplyPlugin._mutate_business_config(
-            self, _reset_override,
-        )
-        if override_found:
-            if success:
-                self.session_instruction_service._discard_all_sessions_for_prompt_change()
-            return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
-        return Ok({"persisted": True, "layer_id": layer_id, "locale": locale, "reason": "no_override_found"})
-
-    async def _config_group_prompt_save(self, kw: dict[str, Any]):
-        group_id = str(kw.get("group_id") or "")
-        text = kw.get("text")
-        """保存某个群的专属提示词。text 为空字符串则视为删除。"""
-        gid = str(group_id or "").strip()
-        if not gid:
-            return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
-        custom_text = str(text or "").strip()
-        def _save_group_prompt(settings):
-            group_prompts = dict(settings.get("group_prompts") or {})
-            if custom_text:
-                group_prompts[gid] = custom_text
-            else:
-                group_prompts.pop(gid, None)
-            settings["group_prompts"] = group_prompts
-            return True
-
-        success = await QQAutoReplyPlugin._mutate_business_config(
-            self, _save_group_prompt,
-        )
-        if success:
-            if custom_text:
-                self._emit_log(
-                    "INFO",
-                    f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)",
-                )
-            else:
-                self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
-        else:
-            self._emit_log(
-                "WARNING",
-                f"群 {gid} 自定义提示词写盘失败，运行时变更未持久化",
-            )
-        # 清除该群的当前会话，下次回复时重新注入新提示词
-        if self.session_runtime_service:
-            discarded = await self._run_with_session_lock(
-                f"group:{gid}",
-                lambda: self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_changed"),
-            )
-            if discarded is False:
-                self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
-        return Ok({"persisted": success, "group_id": gid, "has_text": bool(custom_text)})
-
-    async def _config_group_prompt_delete(self, kw: dict[str, Any]):
-        group_id = str(kw.get("group_id") or "")
-        """删除某个群的专属提示词。"""
-        gid = str(group_id or "").strip()
-        if not gid:
-            return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
-        existed = False
-
-        def _delete_group_prompt(settings):
-            nonlocal existed
-            group_prompts = dict(settings.get("group_prompts") or {})
-            existed = gid in group_prompts
-            if not existed:
-                return False
-            group_prompts.pop(gid)
-            settings["group_prompts"] = group_prompts
-            return True
-
-        success = await QQAutoReplyPlugin._mutate_business_config(
-            self, _delete_group_prompt,
-        )
-        if existed:
-            if self.session_runtime_service:
-                discarded = await self._run_with_session_lock(
-                    f"group:{gid}",
-                    lambda: self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_deleted"),
-                )
-                if discarded is False:
-                    self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
-            if success:
-                self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
-            else:
-                self._emit_log(
-                    "WARNING",
-                    f"群 {gid} 自定义提示词删除写盘失败，运行时变更未持久化",
-                )
-            return Ok({"persisted": success, "group_id": gid, "deleted": True})
-        return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
-
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         await self.handler_runtime_service.run_message_handler(message)
 
@@ -2337,18 +2132,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="config",
         name=tr("entries.config.name", default="保存配置"),
-        description=tr("entries.config.description", default="写入持久化设置与提示词。action 取 save / init / nl / prompt_save / prompt_reset / group_prompt_save / group_prompt_delete / attention_adjust / memory_forget（**群遗忘不等于成员遗忘**：memory_forget 只清群本体域 + 群轴坐标，成员个人域要逐个 dc_forget_user）。"),
+        description=tr("entries.config.description", default="写入持久化设置，不支持提示词覆盖。action 取 save / init / nl / attention_adjust / memory_forget（**群遗忘不等于成员遗忘**：memory_forget 只清群本体域 + 群轴坐标，成员个人域要逐个 dc_forget_user）。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
-                       "enum": ["save", "init", "nl", "prompt_save", "prompt_reset",
-                                "group_prompt_save", "group_prompt_delete",
-                                "attention_adjust", "memory_forget"],
-                       "description": "save=保存设置（其余参数见下）；init=初始化配置；nl=用自然语言改 OneBot 地址/token；prompt_save/reset=提示词覆盖；group_prompt_save/delete=群专属提示词；attention_adjust=调群注意力；memory_forget=清除群长期记忆"},
+                       "enum": ["save", "init", "nl", "attention_adjust", "memory_forget"],
+                       "description": "save=保存设置（其余参数见下）；init=初始化配置；nl=用自然语言改 OneBot 地址/token；attention_adjust=调群注意力；memory_forget=清除群长期记忆"},
             "message": {"type": "string", "description": "nl：自然语言指令"},
-            "locale": {"type": "string", "description": "prompt_save / prompt_reset：语言"},
-            "layer_id": {"type": "string", "description": "prompt_save / prompt_reset：提示词层 id"},
-            "text": {"type": "string", "description": "prompt_save / group_prompt_save：内容（群提示词传空串=删除）"},
-            "group_id": {"type": "string", "description": "group_prompt_save / group_prompt_delete / attention_adjust / memory_forget：群号"},
+            "group_id": {"type": "string", "description": "attention_adjust / memory_forget：群号"},
             "delta": {"type": "number", "description": "attention_adjust：正数加分、负数扣分"},
             # ── action="save" 的键由 settings_schema.input_schema_properties() 生成。
             #    加键只改那张表 —— 过去这里要和白名单、save_settings 签名三处手工对齐，
@@ -2376,22 +2166,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return await self._config_init(kw)
         if action == "nl":
             return await self._config_nl(kw)
-        if action == "prompt_save":
-            return await self._config_prompt_save(kw)
-        if action == "prompt_reset":
-            return await self._config_prompt_reset(kw)
-        if action == "group_prompt_save":
-            return await self._config_group_prompt_save(kw)
-        if action == "group_prompt_delete":
-            return await self._config_group_prompt_delete(kw)
         if action == "attention_adjust":
             return await self._config_attention_adjust(kw)
         if action == "memory_forget":
             return await self._config_memory_forget(kw)
         return Err(SdkError(
             f"BAD_ACTION: config 不支持 {action!r}"
-            f"（可选 save/init/nl/prompt_save/prompt_reset/group_prompt_save/"
-            f"group_prompt_delete/attention_adjust/memory_forget）"))
+            f"（可选 save/init/nl/attention_adjust/memory_forget）"))
 
     async def _config_save(self, kw: dict[str, Any]):
         """保存设置。只认白名单里的键 —— 多余的**记一条日志**后丢弃。
@@ -2428,7 +2209,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "WARNING",
                 f"[Config] save 丢弃了 {len(dropped)} 个不可识别的键: {dropped}"
                 f"（可用键 {len(self._CONFIG_SAVE_KEYS)} 个；"
-                f"注意有些键有专用入口（例如 group_prompts 走 group_prompt_save））",
+                f"仅接受已声明设置；提示词覆盖已退役）",
             )
         if not payload:
             return Err(SdkError(
@@ -2579,8 +2360,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # "第一个私聊的人"去猜可靠得多（那条 bootstrap 只在名单为空时生效一次）。
         #
         # 开放平台拿不到 QQ 号，只给 openid，所以信任名单里存的就是 openid；
-        # 同一个人在不同群的 openid 可能不同，那部分仍要人工合并身份
-        # （bind_identity_account 刻意不自动做）。
+        # 同一个人在不同群的 openid 可能不同，需要管理员明确关联账号。
         admin_openid = str(result.get("user_openid") or "").strip()
         if admin_openid:
             if self.permission_mgr and self.permission_mgr.add_user(admin_openid, "admin"):

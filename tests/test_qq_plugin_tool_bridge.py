@@ -1281,9 +1281,12 @@ def test_old_handler_rechecks_authority_at_dispatch(change):
     assert "权限已失效" in result.output
 
 
-@pytest.mark.parametrize("change", ["blacklist", "group_removed"])
-def test_group_handler_rechecks_sender_blacklist_and_group_roster(change):
-    plugin = _plugin(tiers={"web_search": "all"})
+@pytest.mark.parametrize(("mode", "change"), [
+    ("napcat", "blacklist"), ("napcat", "group_removed"), ("open_platform", "blacklist"),
+])
+def test_group_handler_rechecks_sender_blacklist_and_group_roster(mode, change):
+    """群名册只在 OneBot 上复查（开放平台没有群名册入口，见下一条）；黑名单两边都查。"""
+    plugin = _plugin(tiers={"web_search": "all"}, mode=mode)
     handler = plugin.plugin_tool_service.build_handler(
         [({"plugin_id": "web_search", "entries": ["search"]}, "all")],
         conversation={"sender_id": "x", "is_group": True, "group_id": "g", "permission_level": "trusted"},
@@ -1294,6 +1297,69 @@ def test_group_handler_rechecks_sender_blacklist_and_group_roster(change):
         plugin.group_permission_mgr.get_group_level = lambda group: "none"
     asyncio.run(handler(SimpleNamespace(name="plugin_web_search", arguments={"entry_id": "search"})))
     assert plugin.calls == []
+
+
+def _open_platform_group_handler(plugin, mounted, *, permission_level="trusted"):
+    """真机那一轮的形状：群是 openid、不在名册里，发言人也不在用户名册里。"""
+    plugin.permission_mgr.get_permission_level = lambda sender: "none"
+    plugin.group_permission_mgr.get_group_level = lambda group: "none"
+    return plugin.plugin_tool_service.build_handler(mounted, session_key="group:OPENID", conversation={
+        "sender_id": "member-openid", "is_group": True, "group_id": "0123456789ABCDEF0123456789ABCDEF",
+        "permission_level": permission_level,
+    })
+
+
+def _tool_call(name, entry):
+    return SimpleNamespace(call_id="c1", name=name, arguments={"entry_id": entry})
+
+
+def test_open_platform_group_outside_the_roster_can_use_the_tools_it_was_given():
+    """开放平台的群不查群名册（使用者 2026-11-16）。
+
+    真机 02:40 / 02:43：群里 @ 她，这一轮按「信任」挂上了 web_search 和 video_reader，模型也
+    调了，但调用前的复查去群名册里找这个群 —— 开放平台的群是一串 openid，界面上没有登记它
+    的入口，名册里只有 QQ 群号 —— 于是判成「无权限」，工具一次都没真的跑。
+    """
+    plugin = _plugin(tiers={"web_search": "all"})
+    handler = _open_platform_group_handler(plugin, [({"plugin_id": "web_search", "entries": ["search"]}, "all")])
+    result = asyncio.run(handler(_tool_call("plugin_web_search", "search")))
+    assert plugin.calls == [("web_search:search", {}, 20.0)]
+    assert "权限已失效" not in result.output
+
+
+def test_open_platform_groups_still_never_get_admin_tools():
+    """放开的是"查不查群名册"，不是档位：群里最高仍是「信任」，管理员档的工具照旧只在管理员私聊。"""
+    plugin = _plugin(tiers={"memo_reminder": "admin"})
+    mounted = [({"plugin_id": "memo_reminder", "entries": ["add"]}, "admin")]
+    for turn_authority in ("trusted", "admin"):
+        handler = _open_platform_group_handler(plugin, mounted, permission_level=turn_authority)
+        result = asyncio.run(handler(_tool_call("plugin_memo_reminder", "add")))
+        assert "权限已失效" in result.output
+    assert plugin.calls == []
+
+
+@pytest.mark.parametrize("turn_authority", ["none", "", "blacklist"])
+def test_open_platform_group_authority_never_exceeds_what_the_turn_started_with(turn_authority):
+    plugin = _plugin(tiers={"web_search": "all"})
+    handler = _open_platform_group_handler(
+        plugin, [({"plugin_id": "web_search", "entries": ["search"]}, "all")], permission_level=turn_authority,
+    )
+    asyncio.run(handler(_tool_call("plugin_web_search", "search")))
+    assert plugin.calls == []
+
+
+def test_a_refused_call_leaves_a_line_in_the_log():
+    """被复查拒掉的调用以前一个字都不写，真机上只能靠"对端插件没收到请求"反推。"""
+    plugin = _plugin(tiers={"web_search": "all"}, mode="napcat")
+    plugin.group_permission_mgr.get_group_level = lambda group: "none"
+    handler = plugin.plugin_tool_service.build_handler(
+        [({"plugin_id": "web_search", "entries": ["search"]}, "all")], session_key="group:g",
+        conversation={"sender_id": "x", "is_group": True, "group_id": "g", "permission_level": "trusted"},
+    )
+    asyncio.run(handler(_tool_call("plugin_web_search", "search")))
+    refused = [line for line in plugin.logged if "调用被拒绝" in line]
+    assert len(refused) == 1
+    assert "session=group:g" in refused[0] and "plugin_web_search" in refused[0] and "none" in refused[0]
 
 
 def test_handler_without_conversation_fails_closed():

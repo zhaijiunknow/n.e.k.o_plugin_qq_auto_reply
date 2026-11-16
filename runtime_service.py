@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any
 from urllib.parse import urlparse
+
+#: 这个插件进程的一次性标识：每次启动（含热重载）都不同。界面用它判断"这次启动之后
+#: 提示过没有" —— 首页那个 OneBot 老用户弹窗每次启动只弹一次（见 static/onebot-legacy.js）。
+BOOT_ID = uuid.uuid4().hex
 
 
 class QQRuntimeService:
@@ -16,6 +21,7 @@ class QQRuntimeService:
         qrcode_path = self.plugin.config_dir / "static" / "cache" / "qrcode.png"
         attention_snapshot = self.plugin.attention_service.get_snapshot() if getattr(self.plugin, "attention_service", None) else {"enabled": False, "focus_group_id": "", "focus_score": 0.0, "groups": []}
         return {
+            "boot_id": BOOT_ID,
             "deployment_complete": self._deployment_complete(backend.value),
             "onebot_backend": backend.value,
             "backend_label": "SnowLuma" if backend == "snowluma" else "NapCat",

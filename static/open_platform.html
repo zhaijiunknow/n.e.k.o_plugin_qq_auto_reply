@@ -71,24 +71,24 @@ body{display:flex;height:100vh;overflow:hidden}
 .drop-zone{border:2px dashed var(--border);border-radius:var(--radius-md);padding:32px;text-align:center;color:var(--text-secondary);font-size:13px;transition:.2s;cursor:pointer}
 .drop-zone.drag-over{border-color:var(--primary);background:var(--primary-tint-soft);color:var(--primary-on-tint)}
 </style>
-<link rel="stylesheet" href="layout.css?v=2">
+<link rel="stylesheet" href="layout.css?v=3">
 </head>
 <body class="console-layout">
 <aside id="sidebar">
     <div class="logo"><img src="assets/neko-logo.png?v=1" alt="" draggable="false" onerror="this.style.display='none'"><span data-i18n="ui.shared.sidebar.logo">QQ 控制台</span></div>
+    <!-- 侧栏只留日常用的三项；其余收进「高级」（默认折叠，当前页在里面时自动展开）。 -->
     <nav aria-label="控制台导航">
-        <div class="nav-section" data-i18n="ui.layout.connection">连接与运行</div>
         <div class="nav-item active" data-page="status"><span class="dot" id="status-dot" style="background:var(--success)"></span><span data-i18n="ui.shared.sidebar.status">状态</span></div>
-        <div class="nav-item" data-page="guide"><span data-i18n="ui.shared.sidebar.guide">引导</span></div>
-        <div class="nav-item" data-page="config"><span data-i18n="ui.shared.sidebar.config">配置</span></div>
-        <div class="nav-section" data-i18n="ui.layout.chat">聊天配置</div>
+        <div class="nav-item" data-page="config" data-sub="accounts"><span data-i18n="ui.layout.roster">名单</span></div>
         <div class="nav-item" data-page="sticker"><span data-i18n="ui.shared.sidebar.sticker">表情包</span></div>
-        <div class="nav-item" data-page="plugintools"><span data-i18n="ui.shared.sidebar.plugintools">插件</span></div>
-        <div class="nav-item" data-page="prompts"><span data-i18n="ui.napcat.sidebar.prompts">提示词</span></div>
-        <div class="nav-section" data-i18n="ui.layout.maintenance">排查与维护</div>
-        <div class="nav-item" data-page="logs"><span data-i18n="ui.shared.sidebar.logs">日志</span></div>
-        <a class="nav-item setup-nav" href="status.html" data-nav="status.html" data-i18n="ui.index.status.title">一键部署</a>
-        <a class="nav-item" href="napcat.html" data-nav="napcat.html">OneBot 控制台 ↗</a>
+        <details class="nav-advanced" id="nav-advanced"><summary data-i18n="ui.layout.advanced">高级</summary>
+            <div class="nav-item" data-page="config"><span data-i18n="ui.shared.sidebar.config">配置</span></div>
+            <div class="nav-item" data-page="plugintools"><span data-i18n="ui.shared.sidebar.plugintools">插件</span></div>
+            <div class="nav-item" data-page="logs"><span data-i18n="ui.shared.sidebar.logs">日志</span></div>
+            <div class="nav-item" data-page="guide"><span data-i18n="ui.shared.sidebar.guide">引导</span></div>
+            <a class="nav-item setup-nav" href="status.html" data-nav="status.html" data-i18n="ui.index.status.title">一键部署</a>
+            <a class="nav-item" href="napcat.html" data-nav="napcat.html">OneBot 控制台 ↗</a>
+        </details>
     </nav>
     <div class="actions">
         <button class="btn-start" onclick="doStart()" data-i18n="ui.shared.sidebar.start">启动</button>
@@ -101,7 +101,7 @@ body{display:flex;height:100vh;overflow:hidden}
     <img src="assets/paw.png?v=1" alt="" class="tb-paw" draggable="false" onerror="this.style.display='none'">
     <div id="topbar-tabs"></div>
     <div class="tb-spacer"></div>
-    <a class="tb-switch" id="btn-back-index" href="index.html" data-nav="index.html" style="text-decoration:none;margin-right:8px" data-i18n="ui.shared.topbar.back_index" title="返回接入方式选择">← 返回首页</a>
+    <a class="tb-switch" id="btn-back-index" href="index.html" data-nav="index.html" style="text-decoration:none;margin-right:8px" data-i18n="ui.shared.topbar.back_index" title="返回首页">← 返回首页</a>
     <span class="tb-status" style="margin-left:10px"><span class="dot" id="conn-dot" style="background:var(--danger)"></span><span id="conn-text" data-i18n="ui.shared.topbar.disconnected">未连接</span></span>
 </div>
 <div id="content">
@@ -204,16 +204,23 @@ body{display:flex;height:100vh;overflow:hidden}
 <div class="page" id="page-config-accounts">
     <div class="card"><div class="card-title" data-i18n="ui.shared.card.accounts">信任用户</div>
         <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px" data-i18n="ui.openplat.config.accounts_hint">第一个私聊的用户自动成为管理员。ID 为加密 openid（非 QQ 号），可在日志中查看。</p>
+        <details style="margin-bottom:12px"><summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)" data-i18n="ui.openplat.config.probe_summary">排查工具（群里认不出管理员时用）</summary>
         <div class="form-group"><label><input id="cfg-identity-probe" type="checkbox"> <span data-i18n="ui.openplat.config.identity_probe">记录每条消息里的 ID（群里认不出你是管理员时才开）</span></label></div>
         <div class="form-hint" style="margin-bottom:12px" data-i18n="ui.openplat.config.identity_probe_hint">勾选后，每收到一条消息就多记一行 ID 和字段名，不含聊天内容。写满 200 行自动停，查完请关掉。</div>
+        </details>
         <button class="btn btn-primary btn-sm" onclick="showModal('user')" style="margin-bottom:10px" data-i18n="ui.shared.btn.add">+ 添加</button>
         <table class="data-table"><thead><tr><th data-i18n="ui.shared.table.user_id">用户ID</th><th data-i18n="ui.shared.table.qq_nickname">昵称</th><th data-i18n="ui.shared.table.qq_level">级别</th><th data-i18n="ui.shared.table.actions">操作</th></tr></thead><tbody id="user-table"></tbody></table>
     </div>
-    <div class="card" id="identity-scope-card" style="display:none">
-        <div class="card-title" data-i18n="ui.openplat.identity.title">群内 ID 认领</div>
-        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px" data-i18n="ui.openplat.identity.scope_hint">本通道的 ID 按群隔离：同一个人在每个群是一个不同的 ID，私聊里又是另一个。所以信赖度不跨群累计，主人也只在配置过的那个群里被认作主人。要让某个群认出你，把你在该群的 ID 加进上面的信任用户。</p>
-        <button class="btn btn-sm btn-ghost" onclick="loadIdentityClaims()" style="margin-bottom:10px" data-i18n="ui.shared.btn.refresh">刷新</button>
-        <table class="data-table"><thead><tr><th data-i18n="ui.openplat.identity.col_group">群</th><th data-i18n="ui.shared.table.user_id">用户ID</th><th data-i18n="ui.openplat.identity.col_seen">发言数</th><th data-i18n="ui.shared.table.actions">操作</th></tr></thead><tbody id="claim-table"><tr><td colspan="4" style="color:var(--text-secondary)" data-i18n="ui.shared.topbar.loading">点击刷新加载</td></tr></tbody></table>
+    <!-- 唯一的账号关联入口；直接关联和认领码共用同一张别名表。 -->
+    <div class="card" id="identity-links-card" style="display:none">
+        <div class="card-title" data-i18n="ui.openplat.links.title">账号关联</div>
+        <p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px" data-i18n="ui.openplat.links.hint">让对方发一句话，再明确选择对应的已有账号。关联后沿用目标的权限和记忆键（自身名册条目优先）；关联管理员账号可能授予管理员权限。不会自动关联，也不合并关联前的历史账本。</p>
+        <button class="btn btn-sm btn-ghost" onclick="loadIdentityLinks()" style="margin-bottom:10px" data-i18n="ui.shared.btn.refresh">刷新</button>
+        <table class="data-table"><thead><tr><th data-i18n="ui.openplat.links.col_seen">新 ID</th><th data-i18n="ui.openplat.links.col_said">最近说的话</th><th data-i18n="ui.openplat.links.col_match">关联到</th></tr></thead><tbody id="seen-table"><tr><td colspan="3" style="color:var(--text-secondary)" data-i18n="ui.openplat.links.seen_empty">暂无。让对方在新通道发一句话后点刷新。</td></tr></tbody></table>
+        <details style="margin-top:14px"><summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)" data-i18n="ui.openplat.links.more">已关联的记录 / 用认领码让对方自己认领</summary>
+        <div id="link-code-box" role="status" style="display:none;margin:10px 0;padding:10px 12px;border-radius:var(--radius);background:var(--primary-tint-soft);font-size:13px"></div>
+        <table class="data-table" style="margin-top:10px"><thead><tr><th data-i18n="ui.openplat.links.col_old">目标账号</th><th data-i18n="ui.openplat.links.col_new">已关联的 ID</th><th data-i18n="ui.shared.table.actions">操作</th></tr></thead><tbody id="link-table"><tr><td colspan="3" style="color:var(--text-secondary)" data-i18n="ui.shared.topbar.loading">点击刷新加载</td></tr></tbody></table>
+        </details>
     </div>
     <!-- 插件工具桥：添加别的插件 → 拖拽卡片分到两个档位。所有 QQ 通道都生效
          （开放平台 + OneBot；2026-10-02 放开），当前通道是否挂得上由
@@ -281,7 +288,7 @@ function escapeHtml(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'
 // 清单会把**昵称**传进来，而昵称是别人随手打的。
 function escapeOnclick(s){return escapeHtml(String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r/g,'\\r').replace(/\n/g,'\\n'))}
 const P='qq_auto_reply',RUNS='/runs',MODE='open_platform';
-let state={mode:MODE,running:!1,onebotOk:!1,selfId:'',nickname:'',settings:{},users:[],groups:[],backlogLabels:[],backlogItems:[],identityScope:{},claims:[],identityCandidates:[]};
+let state={mode:MODE,running:!1,onebotOk:!1,selfId:'',nickname:'',settings:{},users:[],groups:[],backlogLabels:[],backlogItems:[],};
 function t(key,fallback){return window.I18n&&typeof window.I18n.t==='function'?window.I18n.t(key,fallback):(fallback||key)}
 function tf(key,fallback,vals){return t(key,fallback).replace(/\{([a-zA-Z0-9_]+)\}/g,(m,n)=>vals.hasOwnProperty(n)?String(vals[n]):m)}
 async function call(entry,args){args=args||{};let r=await fetch(RUNS,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plugin_id:P,entry_id:entry,args})});if(!r.ok)throw new Error(`HTTP ${r.status}`);let d=await r.json(),id=d.run_id||d.id;if(!id)throw new Error('no run_id');/* SSE 等 run 完成 + 2s 慢轮询兜底 */let status=await UISSE.awaitRun(id,{fetchStatus:async function(runId){try{let p=await fetch(RUNS+'/'+runId);if(!p.ok)return null;let rec=await p.json();return['succeeded','failed','canceled','timeout'].includes(rec.status)?rec.status:null}catch(e){return null}}});if(status==='succeeded'){let exp=await fetch(RUNS+'/'+id+'/export');if(!exp.ok)return{};let{items=[]}=await exp.json();let item=items.find(i=>i.type==='json'&&i.json)||items[0];if(!item)return{};let raw=item.json||{};while(raw&&raw.data&&typeof raw.data==='object'&&('success' in raw.data||'error' in raw.data))raw=raw.data;if(raw&&raw.success&&raw.data&&typeof raw.data==='object')raw=raw.data;return raw}throw new Error(status)}
@@ -291,8 +298,10 @@ function toast(msg,ok){let e=document.getElementById('toast');e.textContent=msg;
    模块加载后自己覆盖。 */
 if(typeof loadPluginTools!=='function'){var loadPluginTools=function(){};var ptScheduleRefresh=function(){};var ptStopRefresh=function(){};}
 let currentPage='status',currentSub='overview';
-function switchPage(page){currentPage=page;document.querySelectorAll('#sidebar .nav-item').forEach(e=>e.classList.toggle('active',e.dataset.page===page));document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));let tb=document.getElementById('topbar-tabs'),tabs=[];if(page==='status')tabs=[{id:'overview',label:t('ui.shared.topbar.tab_overview','概览')}];else if(page==='config')tabs=[{id:'connection',label:t('ui.shared.topbar.tab_connection','连接')},{id:'gating',label:t('ui.napcat.topbar.tab_gating','门控')},{id:'accounts',label:t('ui.shared.topbar.tab_users','用户')}];tb.innerHTML=tabs.map(tt=>`<span class="tb-tab${currentSub===tt.id?' active':''}" data-sub="${tt.id}">${tt.label}</span>`).join('');tb.querySelectorAll('.tb-tab').forEach(tt=>tt.addEventListener('click',()=>switchSub(tt.dataset.sub)));switchSub(tabs.length?tabs[0].id:'');if(page==='guide'){loadDashboard();updateGuide()}else if(page==='status')loadDashboard();else if(page==='config')loadDashboard();else if(page==='sticker')loadStickers();else if(page==='plugintools'){loadPluginTools();ptScheduleRefresh()}else if(page==='prompts')loadPromptEditorState();else if(page==='logs'){loadLogs();startLogPoll()}else{stopLogPoll()}if(page!=='plugintools')ptStopRefresh()}
-function switchSub(sub){currentSub=sub;document.querySelectorAll('#topbar .tb-tab').forEach(tt=>tt.classList.toggle('active',tt.dataset.sub===sub));let pageId='page-'+currentPage+'-'+sub;let el=document.getElementById(pageId);if(!el)el=document.getElementById('page-'+currentPage);if(el){document.querySelectorAll('.page.active').forEach(e=>e.classList.remove('active'));el.classList.add('active')}if(sub==='accounts'&&(state.identityScope||{}).actor_scope==='per_conversation')loadIdentityClaims()}
+function switchPage(page){currentPage=page;document.querySelectorAll('#sidebar .nav-item').forEach(e=>e.classList.toggle('active',e.dataset.page===page));document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));let tb=document.getElementById('topbar-tabs'),tabs=[];if(page==='status')tabs=[{id:'overview',label:t('ui.shared.topbar.tab_overview','概览')}];else if(page==='config')tabs=[{id:'connection',label:t('ui.shared.topbar.tab_connection','连接')},{id:'gating',label:t('ui.napcat.topbar.tab_gating','门控')},{id:'accounts',label:t('ui.shared.topbar.tab_users','用户')}];tb.innerHTML=tabs.map(tt=>`<span class="tb-tab${currentSub===tt.id?' active':''}" data-sub="${tt.id}">${tt.label}</span>`).join('');tb.querySelectorAll('.tb-tab').forEach(tt=>tt.addEventListener('click',()=>switchSub(tt.dataset.sub)));switchSub(tabs.length?tabs[0].id:'');if(page==='guide'){loadDashboard();updateGuide()}else if(page==='status')loadDashboard();else if(page==='config')loadDashboard();else if(page==='sticker')loadStickers();else if(page==='plugintools'){loadPluginTools();ptScheduleRefresh()}else if(page==='logs'){loadLogs();startLogPoll()}else{stopLogPoll()}if(page!=='plugintools')ptStopRefresh()}
+/* 侧栏高亮：带 data-sub 的项（「名单」）只在那个子页亮；同页不带 data-sub 的项（「配置」）此时不亮。当前页在「高级」里就把它展开。 */
+function markNav(){let claimed=!!document.querySelector('#sidebar .nav-item[data-page="'+currentPage+'"][data-sub="'+currentSub+'"]');document.querySelectorAll('#sidebar .nav-item[data-page]').forEach(e=>{let own=e.dataset.sub||'';e.classList.toggle('active',e.dataset.page===currentPage&&(own?own===currentSub:!claimed))});let adv=document.getElementById('nav-advanced');if(adv&&adv.querySelector('.nav-item.active'))adv.open=true}
+function switchSub(sub){currentSub=sub;document.querySelectorAll('#topbar .tb-tab').forEach(tt=>tt.classList.toggle('active',tt.dataset.sub===sub));let pageId='page-'+currentPage+'-'+sub;let el=document.getElementById(pageId);if(!el)el=document.getElementById('page-'+currentPage);if(el){document.querySelectorAll('.page.active').forEach(e=>e.classList.remove('active'));el.classList.add('active')}if(sub==='accounts'){loadIdentityLinks();}markNav()}
 async function updateGuide(){
 var done=0,total=5,items=[];
 function add(id,label,ok,hint){items.push({id:id,label:label,ok:ok,hint:hint});if(ok)done++}
@@ -314,26 +323,43 @@ document.getElementById("modal-bg").style.display="flex"}
 function applySettings(s){s=s||{};let _skc=document.getElementById('cfg-sticker-collect');if(_skc)_skc.value=['off','current','any'].includes(s.sticker_collect_policy)?s.sticker_collect_policy:'current';document.getElementById('cfg-appid').value=s.qq_open_app_id||'';document.getElementById('cfg-secret').value=s.qq_open_client_secret||'';document.getElementById('cfg-sandbox').checked=s.qq_open_sandbox_enabled===true;document.getElementById('cfg-identity-probe').checked=!!s.qq_open_identity_probe_enabled;document.getElementById('cfg-group-memory').checked=!!s.group_memory_enabled;document.getElementById('cfg-group-member-memory').checked=!!s.group_member_memory_enabled;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=!!s.allow_cross_group_context;syncGroupMemoryDeps();}
 function syncGroupMemoryDeps(){var g=document.getElementById('cfg-group-memory'),m=document.getElementById('cfg-group-member-memory');if(!g.checked)m.checked=false;m.disabled=!g.checked;m.closest('.form-group').style.opacity=g.checked?'':'0.55'}
 document.getElementById('cfg-group-memory').addEventListener('change',syncGroupMemoryDeps);
-function applyDashboard(d){let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];state.identityScope=d.identity_scope||{};applySettings(s);updateStatusBar();updateGuide();renderUsers();renderIdentityScope()}
-// 降级必须可见（设计文档 §2.15.4.3）：actor_scope 为 per_conversation 时才有
-// 「群内 ID 认领」这回事——napcat 下 ID 是真实 QQ 号，跨群本来就是同一个。
-function renderIdentityScope(){let card=document.getElementById('identity-scope-card');if(!card)return;card.style.display=(state.identityScope||{}).actor_scope==='per_conversation'?'':'none'}
-async function loadIdentityClaims(){try{let d=await call('trust', {action:'claims'});state.claims=d.claims||[];state.identityCandidates=d.candidates||[];renderClaims()}catch(e){toast(t('ui.openplat.identity.load_failed','加载未认领 ID 失败: ')+e.message)}}
-function renderClaims(){let tb=document.getElementById('claim-table');if(!tb)return;if(!state.claims.length){tb.innerHTML='<tr><td colspan="4" style="color:var(--text-secondary)">'+t('ui.openplat.identity.no_claims','暂无未认领的群内 ID。群里有人发言、而这个 ID 不在信任用户里时才会出现在这里。')+'</td></tr>';return}tb.innerHTML=state.claims.map(c=>`<tr><td style="word-break:break-all">${escapeHtml(c.group_id)}</td><td style="word-break:break-all">${escapeHtml(c.user_id)}${c.nickname?' ('+escapeHtml(c.nickname)+')':''}</td><td>${escapeHtml(String(c.message_count))}</td><td><button class="btn btn-primary btn-sm" onclick="showClaimAddModal('${escapeOnclick(c.user_id)}','${escapeOnclick(c.nickname||'')}')">${t('ui.openplat.identity.btn_add','加入名册')}</button> <button class="btn btn-ghost btn-sm" onclick="showBindModal('${escapeOnclick(c.user_id)}')">${t('ui.openplat.identity.btn_bind','合并到已有身份')}</button></td></tr>`).join('')}
-function showClaimAddModal(uid,nick){showModal('user');let f=document.getElementById('mu-qq');if(f)f.value=uid;let n=document.getElementById('mu-nick');if(n&&nick)n.value=nick}
-// 候选顺序由服务端按**账本权重**排好，前端原样渲染、且不预选任何一项。
-// 不要在这里按昵称相似度重排或自动勾选：自动身份合并是被硬约束否决的，
-// 把它做成默认答案跟自动做没有区别（设计文档 §2.15.4.3 第 1 级）。
-// 候选按**名册账号**取值，不按 entity_id：entity 只从账本活动里诞生，新装
-// 机器上靠第一条私聊自动授权的主人一个都没有——而他恰恰是所有群内 ID 要并
-// 进去的那一个。后端拿到目标账号后先 ensure 出种子 entity 再 bind。
-async function showBindModal(uid){if(!(state.identityCandidates||[]).length)await loadIdentityClaims();let cands=state.identityCandidates||[];let body='<p style="color:var(--text-secondary);font-size:12px;margin-bottom:12px">'+t('ui.openplat.identity.bind_hint','把这个群内 ID 的信赖度账本并入同一个人的已有身份。合并的只是信赖度，不改权限——要让这个群认出你，还得单独把它加进信任用户。合并前请自己确认这确实是同一个人：系统不做任何猜测。')+'</p>';if(!cands.length){body+='<p style="color:var(--text-secondary)">'+t('ui.openplat.identity.no_candidates','名册里还没有可合并的身份。')+'</p>'}else{body+=cands.filter(c=>c.qq&&c.qq!==uid).map(c=>`<div class="form-group"><label><input type="radio" name="bind-target" value="${escapeHtml(c.qq)}"> ${escapeHtml(c.qq)} ${c.nickname?'('+escapeHtml(c.nickname)+')':''} — ${escapeHtml(c.level)}</label></div>`).join('')}body+='<p style="color:var(--text-secondary);font-size:12px;margin-top:12px;border-top:1px solid var(--border-subtle);padding-top:12px">'+t('ui.openplat.identity.unbind_hint','选错了？合并会立刻把两边的信赖度并到一起，用下面这个按钮把这个 ID 拆回独立身份。没合并过的 ID 点了也无妨。')+'</p><button class="btn btn-ghost btn-sm" onclick="doUnbindIdentity(\''+escapeOnclick(uid)+'\')">'+t('ui.openplat.identity.btn_unbind','撤销本 ID 的合并')+'</button>';document.getElementById('modal-title').textContent=t('ui.openplat.identity.bind_title','合并到已有身份');document.getElementById('modal-body').innerHTML=body;document.getElementById('modal-confirm').onclick=async()=>{let picked=document.querySelector('input[name="bind-target"]:checked');if(!picked)return toast(t('ui.openplat.identity.validate_bind','请选择要合并到的身份'));try{await call('trust', {action:'identity_bind', user_id:uid,target_user_id:picked.value});hideModal();toast(t('ui.openplat.identity.bind_done','已合并'),!0);await loadIdentityClaims()}catch(e){toast(t('ui.openplat.identity.bind_failed','合并失败: ')+e.message)}};document.getElementById('modal-bg').style.display='flex'}
-async function doUnbindIdentity(uid){try{let r=await call('trust', {action:'identity_unbind', user_id:uid});hideModal();let u=(r&&r.unbind)||{};toast(u.changed?tf('ui.openplat.identity.unbind_done','已撤销合并（账本 {ledger}，实际分 {effective}）',{ledger:(u.ledger_delta??0).toFixed(2),effective:(u.effective_delta??0).toFixed(2)}):t('ui.openplat.identity.unbind_noop','这个 ID 本来就没有合并过'),!0);await loadIdentityClaims()}catch(e){toast(t('ui.openplat.identity.unbind_failed','撤销合并失败: ')+e.message)}}
+function applyDashboard(d){let s=d.settings||{},rt=d.runtime||{},lg=d.login||{};state.settings=s;state.running=rt.auto_reply_running||!1;state.onebotOk=rt.onebot_connected||!1;state.selfId=lg.self_id||'';state.nickname=lg.nickname||'';state.users=(d.permissions||{}).trusted_users||[];state.groups=(d.permissions||{}).trusted_groups||[];state.backlogItems=d.backlog_items||[];state.backlogLabels=Array.isArray(s.backlog_labels)?s.backlog_labels:[];applySettings(s);updateStatusBar();updateGuide();renderUsers()}
+/* 账号关联（identity_links.py）：认领码只在生成的那一刻显示一次，不存进 state。 */
+async function loadIdentityLinks(){try{state.links=await call('identity_link',{action:'links'});renderIdentityLinks()}catch(e){toast(t('ui.openplat.links.load_failed','加载关联记录失败: ')+e.message)}}
+function renderIdentityLinks(){
+  let d=state.links||{},body=document.getElementById('link-table');if(!body)return;
+  document.getElementById('identity-links-card').style.display='';
+  let rows=[];
+  for(let[kind,key,label]of[['user','users',t('ui.openplat.links.kind_user','用户')],['group','groups',t('ui.openplat.links.kind_group','群')]]){
+    let candidates=(d.candidates||{})[key]||[],targets=new Map(candidates.map(c=>[c.id,c]));
+    for(let id of Object.values(d[key]||{}))if(!targets.has(id))targets.set(id,{id:id,missing:true});
+    for(let c of targets.values()){
+      let linked=Object.entries(d[key]||{}).filter(([,target])=>target===c.id).map(([id])=>id);
+      let chips=linked.map(id=>'<span style="font-family:monospace;font-size:11px">'+esc(id)+'</span> <button class="btn btn-sm btn-ghost" data-link-kind="'+kind+'" data-link-id="'+esc(id)+'" onclick="doUnlink(this)">'+esc(t('ui.openplat.links.btn_unlink','解除关联'))+'</button>').join('<br>')||esc(t('ui.openplat.links.none','尚未关联'));
+      let action=c.missing?esc(t('ui.openplat.links.missing_target','目标不再是可用的主账号')):'<button class="btn btn-sm" data-link-kind="'+kind+'" data-link-id="'+esc(c.id)+'" onclick="doLinkCode(this)">'+esc(t('ui.openplat.links.btn_code','生成认领码'))+'</button>';
+      rows.push('<tr><td>'+esc(label)+' '+esc(c.id)+(c.nickname?' · '+esc(c.nickname):'')+'</td><td>'+chips+'</td><td>'+action+'</td></tr>');
+    }
+  }
+  body.innerHTML=rows.join('')||'<tr><td colspan="3">'+esc(t('ui.openplat.links.empty','请先在信任名单中添加一个目标用户或群。'))+'</td></tr>';
+  renderSeenIds();
+}
+function renderSeenIds(){
+  let d=state.links||{},body=document.getElementById('seen-table');if(!body)return;
+  let rows=(d.seen||[]).map(s=>{
+    let key=s.kind==='group'?'groups':'users';
+    let options=((d.candidates||{})[key]||[]).filter(c=>c.id!==s.id).map(c=>'<option value="'+esc(c.id)+'">'+esc(c.id)+(c.nickname?' · '+esc(c.nickname):'')+'</option>').join('');
+    let where=s.kind==='group'?t('ui.openplat.links.kind_group','群'):(s.group?t('ui.openplat.links.in_group','群内成员'):t('ui.openplat.links.in_private','私聊'));
+    let action=options?'<select class="form-select" style="width:auto;display:inline-block"><option value="" selected disabled>'+esc(t('ui.openplat.links.choose_target','请选择目标账号'))+'</option>'+options+'</select> <button class="btn btn-sm" data-link-kind="'+esc(s.kind)+'" data-link-id="'+esc(s.id)+'" onclick="doLinkDirect(this)">'+esc(t('ui.openplat.links.btn_match','关联'))+'</button>':esc(t('ui.openplat.links.no_target','名单里没有可关联的其他账号'));
+    return '<tr><td>'+esc(where)+' <span style="font-family:monospace;font-size:11px">'+esc(s.id)+'</span></td><td>'+esc(s.text||'')+'</td><td>'+action+'</td></tr>';
+  });
+  body.innerHTML=rows.join('')||'<tr><td colspan="3">'+esc(t('ui.openplat.links.seen_empty','暂无。让对方发一句话后点刷新。'))+'</td></tr>';
+}
+async function doLinkDirect(btn){let kind=btn.dataset.linkKind,id=btn.dataset.linkId,target=btn.parentElement.querySelector('select').value;if(!target)return toast(t('ui.openplat.links.choose_target','请选择目标账号'));if(!await UIConfirm.ask(tf('ui.openplat.links.match_confirm','把这个新 ID 关联到 {target}？它会沿用 {target} 的级别和记录，请确认是同一个人（或同一个群）。',{target:target}),{danger:true,okText:t('ui.openplat.links.btn_match','关联')}))return;try{state.links=await call('identity_link',kind==='group'?{action:'link',group_id:id,target_group_id:target}:{action:'link',user_id:id,target_user_id:target});renderIdentityLinks();toast(t('ui.openplat.links.match_done','已关联'),true)}catch(e){toast(t('ui.openplat.links.match_failed','关联失败: ')+e.message)}}
+async function doLinkCode(btn){let kind=btn.dataset.linkKind,id=btn.dataset.linkId;if(!await UIConfirm.ask(tf('ui.openplat.links.code_confirm','为 {id} 生成认领码？拿到认领码的人会沿用它的级别和记录，请只发给本人。',{id:id}),{danger:true,okText:t('ui.openplat.links.btn_code','生成认领码')}))return;try{let r=await call('identity_link',kind==='group'?{action:'link_code',group_id:id}:{action:'link_code',qq_number:id});let box=document.getElementById('link-code-box');box.style.display='';box.textContent=tf('ui.openplat.links.code_shown','{id} 的认领码：{code}（10 分钟内有效，只能用一次）。让对方发送：认领 {code}',{id:id,code:r.code})}catch(e){toast(t('ui.openplat.links.code_failed','生成认领码失败: ')+e.message)}}
+async function doUnlink(btn){if(!await UIConfirm.ask(t('ui.openplat.links.unlink_confirm','解除关联这条认领？这个新 ID 将不再沿用目标账号的级别和记录；旧记录本身不受影响。')))return;try{let kind=btn.dataset.linkKind,id=btn.dataset.linkId;state.links=await call('identity_link',kind==='group'?{action:'unlink',group_id:id}:{action:'unlink',user_id:id});renderIdentityLinks();toast(t('ui.openplat.links.unlink_done','已解除关联'),true)}catch(e){toast(t('ui.openplat.links.unlink_failed','解除关联失败: ')+e.message)}}
+
 function updateStatusBar(){document.getElementById('st-running').textContent=state.running?t('ui.shared.topbar.running','运行中'):t('ui.shared.topbar.stopped','未启动');document.getElementById('st-running').className='tag '+(state.running?'tag-running':'tag-offline');document.getElementById('st-onebot').textContent=state.onebotOk?t('ui.shared.topbar.connected','已连接'):t('ui.shared.topbar.disconnected','未连接');document.getElementById('st-onebot').className='tag '+(state.onebotOk?'tag-online':'tag-offline');document.getElementById('st-self-id').textContent=state.selfId||'-';document.getElementById('st-nickname').textContent=state.nickname||'-';let cd=document.getElementById('conn-dot'),ct=document.getElementById('conn-text');cd.style.background=state.onebotOk?'var(--success)':'var(--danger)';ct.textContent=state.onebotOk?(state.selfId||t('ui.shared.topbar.connected','已连接')):t('ui.shared.topbar.disconnected','未连接');document.getElementById('status-dot').style.background=state.running?'var(--success)':'var(--danger)'}
-// 名册行上也要有合并入口：待认领清单在一个 ID 被加进名册后就把它出清了，
-// 而「加进名册」（权限）与「合并身份」（信赖度）是刻意分开的两件事——只把
-// 合并挂在待认领行上，先加名册的操作者就再也点不到它了。
-function renderUsers(){let tb=document.getElementById('user-table');if(!state.users.length){tb.innerHTML='<tr><td colspan="4" style="color:var(--text-secondary)">'+t('ui.shared.render.no_users','暂无信任用户')+'</td></tr>';return}let perConv=(state.identityScope||{}).actor_scope==='per_conversation';tb.innerHTML=state.users.map(u=>`<tr><td>${escapeHtml(u.qq)}</td><td>${escapeHtml(u.nickname)}</td><td>${escapeHtml(u.level==='blacklist'?t('ui.shared.form.level_blacklist','黑名单（不处理其消息）'):u.level)}</td><td>${perConv?`<button class="btn btn-ghost btn-sm" onclick="showBindModal('${escapeOnclick(u.qq)}')">${t('ui.openplat.identity.btn_bind','合并到已有身份')}</button> `:''}<button class="btn btn-danger btn-sm" onclick="doRemoveUser('${escapeOnclick(u.qq)}')">${t('ui.shared.btn.remove','移除')}</button></td></tr>`).join('')}
+function renderUsers(){let tb=document.getElementById('user-table');if(!state.users.length){tb.innerHTML='<tr><td colspan="4" style="color:var(--text-secondary)">'+t('ui.shared.render.no_users','暂无信任用户')+'</td></tr>';return}tb.innerHTML=state.users.map(u=>`<tr><td>${escapeHtml(u.qq)}</td><td>${escapeHtml(u.nickname)}</td><td>${escapeHtml(u.level==='blacklist'?t('ui.shared.form.level_blacklist','黑名单（不处理其消息）'):u.level)}</td><td><button class="btn btn-danger btn-sm" onclick="doRemoveUser('${escapeOnclick(u.qq)}')">${t('ui.shared.btn.remove','移除')}</button></td></tr>`).join('')}
 function renderGroups(){let tb=document.getElementById('group-table');if(!state.groups.length){tb.innerHTML='<tr><td colspan="3" style="color:var(--text-secondary)">'+t('ui.shared.render.no_groups','暂无信任群聊')+'</td></tr>';return}tb.innerHTML=state.groups.map(g=>`<tr><td>${escapeHtml(g.group_id)}</td><td>${escapeHtml(g.level)}</td><td><label><input type="checkbox" ${g.sticker_collect_enabled===true?'checked':''} onchange="doSetGroupStickerCollect('${escapeOnclick(g.group_id)}',this)"> ${t('ui.group.sticker_collect','允许自动收集表情包（默认关闭）')}</label> <button class="btn btn-danger btn-sm" onclick="doRemoveGroup('${escapeOnclick(g.group_id)}')">${t('ui.shared.btn.remove','移除')}</button></td></tr>`).join('')}
 async function doSetGroupStickerCollect(gid, checkbox){
   const group=state.groups.find(g=>String(g.group_id)===String(gid));
@@ -390,15 +416,9 @@ function stopLogPoll(){if(_logPollTimer){clearInterval(_logPollTimer);_logPollTi
 /* SSE 事件 → 即时刷新（#2822 通道）；兜底轮询只保留 30s 保证最终一致 */
 UISSE.on('logs',function(){if(currentPage==='logs')loadLogs()});
 UISSE.ensureEs();
-document.querySelectorAll('#sidebar .nav-item').forEach(item=>item.addEventListener('click',()=>switchPage(item.dataset.page)));
+document.querySelectorAll('#sidebar .nav-item').forEach(item=>item.addEventListener('click',()=>{let adv=document.getElementById('nav-advanced'),was=adv.open;switchPage(item.dataset.page);if(item.dataset.sub){switchSub(item.dataset.sub);adv.open=was}}));
 document.getElementById('topbar-tabs').addEventListener('wheel',e=>{e.preventDefault();e.currentTarget.scrollLeft+=e.deltaY;});
 (function(){let dz=document.getElementById('sk-drop');if(!dz)return;['dragenter','dragover'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add('drag-over')}));['dragleave','drop'].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove('drag-over')}));dz.addEventListener('drop',async ev=>{let items=[...ev.dataTransfer.items];let imgs=[];async function scan(entry){if(entry.isFile){let f=await new Promise(r=>entry.file(r));if(f.type.startsWith('image/'))imgs.push(f)}else if(entry.isDirectory){let reader=entry.createReader();let entries=await new Promise(r=>reader.readEntries(r));for(let e of entries)await scan(e)}}for(let item of items){let entry=item.webkitGetAsEntry?item.webkitGetAsEntry():null;if(entry)await scan(entry)}if(imgs.length){_skPickedFiles=imgs;skBuildDescList()}})})();
-let _promptState={layers:[],locale:''};
-async function loadPromptEditorState(){try{let d=await call('query', {action:'prompt_editor', mode:MODE});_promptState=d;let tabs=[{id:'overview',label:t('ui.napcat.prompts.tab_overview','概览')}];(d.layers||[]).forEach(l=>{if(!l.is_runtime)tabs.push({id:l.id,label:t('ui.napcat.prompts.layer.'+l.id+'.name',l.id)})});let tb=document.getElementById('topbar-tabs');tb.innerHTML=tabs.map(tt=>`<span class="tb-tab${currentSub===tt.id?' active':''}" data-sub="${tt.id}">${tt.label}</span>`).join('');tb.querySelectorAll('.tb-tab').forEach(tt=>tt.addEventListener('click',()=>switchSub(tt.dataset.sub)));renderPromptOverview();currentSub='overview';switchSub('overview')}catch(e){toast('加载提示词状态失败: '+e.message)}}
-function renderPromptOverview(){let el=document.getElementById('page-prompts-overview');if(!el){renderPromptPages();el=document.getElementById('page-prompts-overview');if(!el)return}let html=`<div class="card"><div class="card-title">`+t('ui.napcat.prompts.overview_title','提示词总览')+`</div><div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px"><div><span class="form-label">`+t('ui.napcat.prompts.overview_language','语言')+`</span><span>`+(_promptState.locale||'?')+`</span></div></div></div>`;(_promptState.layers||[]).forEach(l=>{let badge=l.is_runtime?`<span class="tag tag-offline">`+t('ui.napcat.prompts.overview_runtime','运行时')+`</span>`:l.has_override?`<span class="tag tag-running">`+t('ui.napcat.prompts.overview_customized','已自定义')+`</span>`:`<span class="tag tag-online">`+t('ui.napcat.prompts.overview_editable','可编辑')+`</span>`;html+=`<div class="card" style="cursor:pointer" onclick="`+(l.is_runtime?'':`switchSub('`+l.id+`')`)+`"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600">`+l.id+`</span>`+badge+`</div><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">`+('默认来源: prompt_fragment_templates.py')+`</div></div>`});el.innerHTML=html}
-function renderPromptPages(){let content=document.getElementById('content');(_promptState.layers||[]).forEach(l=>{let pageId='page-prompts-'+l.id;if(document.getElementById(pageId))return;let div=document.createElement('div');div.className='page';div.id=pageId;div.innerHTML=l.is_runtime?`<div class="card"><div class="card-title">`+l.id+`</div><p style="color:var(--text-secondary)">`+t('ui.napcat.prompts.layer_runtime_hint','此层由运行时动态生成，不可编辑。')+`</p></div>`:`<div class="card"><div class="card-title">`+l.id+`</div><div class="form-group"><label class="form-label">`+t('ui.napcat.prompts.layer_default_source','默认来源')+`: `+(l.has_override?t('ui.napcat.prompts.layer_custom_source','已覆盖'):'Python 常量')+`</label><textarea class="form-input" id="prompt-textarea-`+l.id+`" style="min-height:200px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all" placeholder="`+t('ui.napcat.prompts.placeholder','输入提示词...')+`">`+escapeHtml(l.effective_text||l.default_text||'')+`</textarea></div>`+(l.required_placeholders&&l.required_placeholders.length?`<div style="font-size:11px;color:var(--warning);margin-bottom:8px">`+t('ui.napcat.prompts.required_placeholders','必需占位符')+`: `+l.required_placeholders.join(', ')+`</div>`:'')+`<div style="display:flex;gap:8px"><button class="btn btn-primary btn-sm" onclick="savePromptOverride('`+l.id+`')">`+t('ui.napcat.prompts.save','保存')+`</button><button class="btn btn-ghost btn-sm" onclick="resetPromptOverride('`+l.id+`')">`+t('ui.napcat.prompts.reset','恢复默认')+`</button></div><p style="font-size:11px;color:var(--text-secondary);margin-top:8px">`+t('ui.napcat.prompts.session_warning','修改后下次回复生效，当前已有会话将被清除。')+`</p></div>`;content.appendChild(div)});let ov=document.createElement('div');ov.className='page';ov.id='page-prompts-overview';content.appendChild(ov)}
-async function savePromptOverride(layerId){let ta=document.getElementById('prompt-textarea-'+layerId);if(!ta)return;let text=ta.value;if(!text.trim())return toast(t('ui.napcat.prompts.empty_error','内容不能为空'));try{let r=await call('config', {action:'prompt_save', layer_id:layerId,text:text,locale:_promptState.locale});if(r.persisted)toast(t('ui.napcat.prompts.saved','已保存'),1);await loadPromptEditorState()}catch(e){toast(t('ui.napcat.prompts.save_failed','保存失败: ')+e.message)}}
-async function resetPromptOverride(layerId){if(!await UIConfirm.ask(t('ui.napcat.prompts.reset_confirm','确定恢复默认？当前自定义内容将丢失。')))return;try{let r=await call('config', {action:'prompt_reset', layer_id:layerId,locale:_promptState.locale});if(r.persisted)toast(t('ui.napcat.prompts.reset_done','已恢复默认'),1);await loadPromptEditorState()}catch(e){toast(t('ui.napcat.prompts.reset_failed','重置失败: ')+e.message)}}
 /* ── 机器人账本（扫码绑定已移到 status.html，这里只管复用/切换）──── */
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 
@@ -426,7 +446,7 @@ loadBots();
 async function bootstrap(){try{await call('config', {action:'save', qq_connection_mode:MODE});let d=await call('query', {action:'dashboard'});applyDashboard(d)}catch(e){console.error('bootstrap failed',e);try{await call('config', {action:'init'});await loadDashboard()}catch(e2){console.error('init failed',e2)}}}
 bootstrap();
 </script>
-<script src="plugin-tools.js?v=1"></script>
+<script src="plugin-tools.js?v=2"></script>
 <script src="background-settings.js?v=1"></script>
 </body>
 </html>

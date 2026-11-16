@@ -25,6 +25,16 @@ class QQMemoryBridge:
         #: 抛异常即视为登记失败 → 调用方 fail-closed（不发 HTTP）。
         #: ⚠️ 只在**写入**路径触发；`post_scoped_forget` 绝不触发（遗忘不该登记坐标）。
         self.on_subject_write: Callable[[dict[str, Any]], None] | None = None
+        # 认领过的 openid 用旧账号的键（见 ``identity_links``）：在实例上把四个拼键的函数
+        # 换成先换算再拼的版本。类级调用（``QQMemoryBridge.group_subject(...)``）不经换算。
+        links = getattr(plugin, "identity_links", None)
+        if links is not None:
+            raw = type(self)
+            self.speaker_account_id = lambda sender_id: raw.speaker_account_id(links.user(sender_id))
+            self.participant_subject = lambda sender_id: raw.participant_subject(links.user(sender_id))
+            self.group_subject = lambda group_id: raw.group_subject(links.group(group_id))
+            self.group_participant_subject = lambda group_id, sender_id: raw.group_participant_subject(
+                links.group(group_id), links.user(sender_id))
 
     @staticmethod
     def _client():
@@ -425,91 +435,6 @@ class QQMemoryBridge:
         response.raise_for_status()
         return response.json()
 
-    async def bind_speaker_account(
-        self,
-        *,
-        account_id: str,
-        entity_id: str,
-        bound_by: str,
-        require_unbound: bool = False,
-        timeout: float = 10.0,
-    ) -> dict[str, Any]:
-        """把一个 account 并入已有 entity。**只能由人触发**。
-
-        唯一调用方是信任用户页的「合并到已有身份」——开放平台上同一个人在
-        每个群是一个不同的 member_openid，跨群把信赖度并起来只有人工断言这
-        一条路（见设计文档 §2.15.4.3 第 1 级）。任何自动建边（昵称、共现、
-        时序、编辑距离）都被硬约束否决，不要在调用侧偷偷补上。
-        """
-        client = self._client()
-        response = await client.post(
-            f"{self._base_url()}/internal/identity/accounts/bind",
-            json={
-                "account_id": account_id,
-                "entity_id": entity_id,
-                "bound_by": bound_by,
-                "require_unbound": bool(require_unbound),
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def ensure_speaker_account(
-        self, *, account_id: str, timeout: float = 10.0,
-    ) -> dict[str, Any]:
-        """确保一个 account 在身份池里有 entity，返回它。
-
-        合并目标必须先有 entity 才能被 bind（服务端对未知 entity 直接
-        404），而 entity 只从账本活动里诞生——新装机器上主人的私聊 account
-        往往一个都没有，恰恰是所有群内 ID 要并进去的那一个。
-        """
-        client = self._client()
-        response = await client.post(
-            f"{self._base_url()}/internal/identity/accounts/ensure",
-            json={"account_id": account_id},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def unbind_speaker_account(
-        self, *, account_id: str, require_provenance: bool = False,
-        timeout: float = 10.0,
-    ) -> dict[str, Any]:
-        """把一个 account 拆回独立 entity。**误绑的唯一回滚**。
-
-        ``require_provenance`` 让服务端在临界区里确认「这个账号确实是被绑
-        过来的」，否则原样返回 ``changed=false``。UI 的撤销按钮必须带上：
-        没有它，连点两下会把一个已经独立的账号反复搬进新 entity。
-        """
-        client = self._client()
-        response = await client.post(
-            f"{self._base_url()}/internal/identity/accounts/unbind",
-            json={
-                "account_id": account_id,
-                "require_provenance": bool(require_provenance),
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()
-
-    async def fetch_speaker_profile(
-        self, account_id: str, *, timeout: float = 10.0,
-    ) -> dict[str, Any]:
-        """一个 account 的只读诊断视图（entity_id + 账本权重）。
-
-        合并候选**只能按账本权重排序**，这个方法就是权重的来源。
-        """
-        client = self._client()
-        response = await client.get(
-            f"{self._base_url()}/internal/trust/profile",
-            params={"account_id": account_id},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()
 
     async def post_scoped_memory_history_batch(
         self,

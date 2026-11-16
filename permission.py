@@ -34,6 +34,12 @@ class PermissionManager:
         `speaker_trust_profiles` 键原样保留，只做一次性迁移源。
         """
         self._users: Dict[str, Dict[str, Any]] = {}  # {qq: {level, nickname?, normal_relay_probability?}}
+        #: 载入时级别认不出来的条目 ``(QQ 号, 原样写的级别)``，已按最低档收录；
+        #: 由调用方写进日志，让人去改配置。
+        self.invalid_levels: List[tuple[str, str]] = []
+        #: 认领别名的换算（开放平台 openid → 旧账号，见 ``identity_links``）。读名单时，
+        #: 这个 ID 自己没有条目才去查它认领的那个旧账号。默认原样返回。
+        self.resolve = lambda value: str(value or "").strip()
 
         if trusted_users:
             for user in trusted_users:
@@ -50,6 +56,8 @@ class PermissionManager:
                         }
                     continue
                 qq = self._normalize_qq(user.get("qq", ""))
+                if qq and self.recognise_level(user.get("level")) is None:
+                    self.invalid_levels.append((qq, str(user.get("level"))))
                 level = self._normalize_level(user.get("level", "trusted"))
                 nickname = str(user.get("nickname", "") or "").strip()
                 normal_relay_probability = self._normalize_probability(user.get("normal_relay_probability"))
@@ -64,10 +72,24 @@ class PermissionManager:
     def _normalize_qq(qq_number: str) -> str:
         return str(qq_number or "").strip()
 
+    def _entry(self, qq_number: str) -> Dict[str, Any]:
+        """读名单用：自己的条目优先，没有再看它认领的旧账号。"""
+        key = self._normalize_qq(qq_number)
+        return self._users.get(key) or self._users.get(self.resolve(key)) or {}
+
+    @classmethod
+    def recognise_level(cls, level: Any) -> Optional[str]:
+        """没写（None / 空白）→ ``trusted``；认得出来 → 那一档；写了却认不出来 → None。"""
+        level_text = str(level if level is not None else "").strip().lower()
+        if not level_text:
+            return "trusted"
+        return level_text if level_text in cls.VALID_LEVELS else None
+
     @classmethod
     def _normalize_level(cls, level: str) -> str:
-        level_text = str(level or "trusted").strip().lower()
-        return level_text if level_text in cls.VALID_LEVELS else "trusted"
+        # 写了却认不出来的级别落到 ``normal``（权限最低的有效档），不是 ``trusted``：
+        # 以前把 blacklist 写错一个字母，这个人反而成了信任用户。
+        return cls.recognise_level(level) or "normal"
 
     @staticmethod
     def _normalize_probability(value: Any) -> Optional[float]:
@@ -129,7 +151,10 @@ class PermissionManager:
         qq_str = self._normalize_qq(qq_number)
         if not qq_str:
             return False
-        normalized_level = self._normalize_level(level)
+        normalized_level = self.recognise_level(level)
+        if normalized_level is None:
+            # 认不出来的级别：拒绝，名单不动（不悄悄存成别的档）。
+            return False
         normalized_nickname = (
             "" if normalized_level == "admin"
             else self._normalize_nickname_for_write(nickname)
@@ -149,6 +174,10 @@ class PermissionManager:
         if qq_str in self._users:
             del self._users[qq_str]
 
+    def own_level(self, qq_number: str) -> str:
+        """这个 ID **自己**在名单里的级别（不看它认领的旧账号）；没有条目返回 ``none``。"""
+        return str((self._users.get(self._normalize_qq(qq_number)) or {}).get("level") or "none")
+
     def get_permission_level(self, qq_number: str) -> str:
         """
         获取用户权限等级
@@ -159,9 +188,7 @@ class PermissionManager:
         Returns:
             权限等级: admin, trusted, normal, none
         """
-        qq_str = self._normalize_qq(qq_number)
-        user = self._users.get(qq_str) or {}
-        return str(user.get("level") or "none")
+        return str(self._entry(qq_number).get("level") or "none")
 
     def list_users(self) -> List[Dict[str, Any]]:
         """列出所有用户"""
@@ -179,12 +206,12 @@ class PermissionManager:
 
     def get_nickname(self, qq_number: str) -> Optional[str]:
         """获取用户昵称"""
-        user = self._users.get(self._normalize_qq(qq_number)) or {}
+        user = self._entry(qq_number)
         nickname = str(user.get("nickname") or "").strip()
         return nickname or None
 
     def get_normal_relay_probability(self, qq_number: str) -> Optional[float]:
-        user = self._users.get(self._normalize_qq(qq_number)) or {}
+        user = self._entry(qq_number)
         return self._normalize_probability(user.get("normal_relay_probability"))
 
     def set_nickname(self, qq_number: str, nickname: str):

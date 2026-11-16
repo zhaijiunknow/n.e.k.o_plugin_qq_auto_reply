@@ -371,6 +371,7 @@ class QQPluginToolService:
                 "description": str(item.get("description") or ""),
                 "entries": sorted(set(self._entry_ids(item))),
                 "entry_hints": self._entry_hints(item),
+                "return_image_entries": self._return_image_entries(item),
                 #: 只有 True 的那些会进提示词（见 :meth:`select_mounted`）。
                 "running": status == "running",
             })
@@ -518,11 +519,44 @@ class QQPluginToolService:
                 continue
             if plugin_id == "video_reader":
                 # Never offer desktop-push entries to a QQ conversation.
-                if "prepare_for_qq" not in row["entries"]:
+                video_entry = self.qq_video_entry(row)
+                if not video_entry:
                     continue
-                row = {**row, "entries": ["prepare_for_qq"]}
+                row = {**row, "entries": [video_entry]}
             chosen.append((row, tier))
         return chosen[:MAX_MOUNTED_PLUGINS]
+
+    @staticmethod
+    def qq_video_entry(row: dict[str, Any]) -> str:
+        """看视频插件里 QQ 能用的那个入口；没有就返回空串（不挂载）。
+
+        两代看视频插件的入口不同，都要认：
+
+        * 0.3.0：专用入口 ``prepare_for_qq``；
+        * 0.3.1 起：只剩一个 ``analyze``，带 ``return_images=true`` 时只把抽帧图片交回来、
+          不往桌面推。QQ 侧只认 ``analyze``（2026-11-10 之后装了新版的人就再也挂不上了）。
+
+        ``analyze`` 只有在它的入参里**声明了** ``return_images`` 时才算数：更早的版本也有
+        ``analyze``，但那个只会往桌面推送，不能给 QQ 会话用。
+        """
+        entries = row.get("entries") or []
+        if "prepare_for_qq" in entries:
+            return "prepare_for_qq"
+        if "analyze" in entries and "analyze" in (row.get("return_image_entries") or ()):
+            return "analyze"
+        return ""
+
+    @staticmethod
+    def _return_image_entries(item: dict[str, Any]) -> list[str]:
+        """入参里声明了布尔型 ``return_images`` 的 entry id（见 :meth:`qq_video_entry`）。"""
+        found: list[str] = []
+        for entry in item.get("entries") if isinstance(item.get("entries"), list) else []:
+            schema = entry.get("input_schema") if isinstance(entry, dict) else None
+            properties = schema.get("properties") if isinstance(schema, dict) else None
+            flag = properties.get("return_images") if isinstance(properties, dict) else None
+            if isinstance(flag, dict) and flag.get("type") == "boolean":
+                found.append(str(entry.get("id") or entry.get("event_id") or "").strip())
+        return [entry_id for entry_id in found if entry_id]
 
     # ── 工具定义与分发 ──────────────────────────────────────────────
 
@@ -534,8 +568,9 @@ class QQPluginToolService:
         from main_logic.tool_calling import ToolDefinition
 
         entries = list(candidate.get("entries") or [])
+        video_entry = self.qq_video_entry(candidate) if candidate.get("plugin_id") == "video_reader" else ""
         if candidate.get("plugin_id") == "video_reader":
-            entries = [entry for entry in entries if entry == "prepare_for_qq"]
+            entries = [entry for entry in entries if entry == video_entry]
         hints = candidate.get("entry_hints") if isinstance(candidate.get("entry_hints"), dict) else {}
         name = str(candidate.get("name") or candidate.get("plugin_id") or "")
         description = str(candidate.get("description") or "").strip()
@@ -552,8 +587,8 @@ class QQPluginToolService:
         lines.append("params 是一个 JSON 对象，内容按该 entry 自己的入参填。")
         if candidate.get("plugin_id") == "video_reader":
             lines.append(
-                "QQ 看视频仅用 prepare_for_qq，params 必填 source（用户给出的公开视频链接，支持 B站分享文本/Markdown），"
-                "可选 question、start_seconds、seconds（默认300秒）。每轮只看一个视频。"
+                f"QQ 看视频仅用 {video_entry}，params 必填 source（用户给出的公开视频链接，支持 B站分享文本/Markdown），"
+                "可选 question、start_seconds、seconds（默认300秒），不要传其它参数。每轮只看一个视频。"
                 "先实际调用，等待画面分析结果后在当前 QQ 会话一次性概括；不发送进度，不在桌面回复。"
                 "只分析抽样画面、不分析声音，长视频须说明本次观看范围，不可凭标题编造。"
             )
@@ -611,7 +646,8 @@ class QQPluginToolService:
         }
         video_name = self.tool_name("video_reader")
         if video_name in allowed:
-            allowed[video_name] &= {"prepare_for_qq"}
+            video_row = next(row for row, _tier in mounted if row["plugin_id"] == "video_reader")
+            allowed[video_name] &= {self.qq_video_entry(video_row)}
         video_attempted = False
         #: 每个工具对应的"查异步任务"的 entry（同一插件里 id 含 status 的那个）。
         pollers: dict[str, str] = {}
@@ -650,6 +686,11 @@ class QQPluginToolService:
                 not channel_allows_plugin_tools(getattr(self.plugin, "qq_client", None))
                 or self.tiers().get(plugin_id) not in self.allowed_tiers_for(permission)
             ):
+                emit_bridge_log(
+                    self.plugin, "WARN",
+                    f"[PluginTool] 调用被拒绝 session={session_key} tool={name}"
+                    f"（调用前复查：当前权限 {permission}，工具档位 {self.tiers().get(plugin_id) or '未授权'}）",
+                )
                 return ToolResult(call_id=call_id, name=name, output="当前权限已失效，不能调用这个工具。")
             if plugin_id == "video_reader":
                 if video_attempted:
@@ -664,8 +705,8 @@ class QQPluginToolService:
                         and self.tiers().get(plugin_id) in self.allowed_tiers_for(level)
                     )
 
-                output = await analyze_qq_video(self.plugin, params, still_allowed)
-                emit_bridge_log(self.plugin, "INFO", "[PluginTool] video_reader:prepare_for_qq -> text result")
+                output = await analyze_qq_video(self.plugin, params, still_allowed, entry=entry_id)
+                emit_bridge_log(self.plugin, "INFO", f"[PluginTool] video_reader:{entry_id} -> text result")
                 return ToolResult(call_id=call_id, name=name, output=redact_text(output))
             output, payload = await self.call_plugin_entry_with_payload(
                 plugin_id, entry_id, params, session_key=session_key,
