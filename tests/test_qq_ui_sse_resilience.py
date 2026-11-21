@@ -31,7 +31,7 @@ STATIC = PLUGIN_DIR / "static"
 SSE = "ui-sse.js"
 
 #: 载入 ui-sse.js 的页面 —— 版本号必须一致（改了这个文件却不提版本号，浏览器会一直用旧的）。
-PAGES_USING_SSE = ("napcat.html", "open_platform.html", "status.html", "old.html")
+PAGES_USING_SSE = ("napcat.html", "open_platform.html", "status.html")
 
 #: 当前资源版本号。
 SSE_VERSION = "3"

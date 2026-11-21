@@ -1,11 +1,5 @@
 /* Backend-specific UI copy and setting names. Wire direction is independent. */
 window.OneBotBackends = Object.freeze({
-  napcat: Object.freeze({
-    label: 'NapCat', directoryKey: 'napcat_directory', windowKey: 'show_napcat_window',
-    directoryHint: '输入绝对路径。留空则使用存档目录中的 NapCat.Shell。',
-    loginHint: 'NapCat 启动后自动获取二维码，请使用填写的机器人 QQ 号扫码。',
-    loginMethod: 'qrcode',
-  }),
   snowluma: Object.freeze({
     label: 'SnowLuma', directoryKey: 'snowluma_directory', windowKey: 'show_snowluma_window',
     directoryHint: '输入 SnowLuma 根目录（包含 index.mjs）。留空则使用存档目录中的 SnowLuma。',
@@ -18,7 +12,7 @@ window.OneBotBackends = Object.freeze({
     },
   }),
 });
-window.onebotBackend = key => window.OneBotBackends[key] || window.OneBotBackends.napcat;
+window.onebotBackend = key => window.OneBotBackends[key] || window.OneBotBackends.snowluma;
 
 window.renderSnowLumaSetup = (element, visible) => {
   element.style.display = visible ? '' : 'none';

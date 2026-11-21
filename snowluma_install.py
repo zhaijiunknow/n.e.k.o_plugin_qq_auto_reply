@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from .napcat_install import safe_member_path, sha256_of
+from .archive_utils import safe_member_path, sha256_of
 
 # SolarUmbra publishes compatible SnowLuma packages after the original repo
 # became unavailable. Keep release metadata pinned for both direct and proxy URLs.

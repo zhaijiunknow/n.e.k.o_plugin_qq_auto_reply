@@ -223,7 +223,7 @@ def test_deepchat_entries_are_direct_tools():
 # `Entry 'deploy' timed out after 30.0s`，而且界面上只显示一个语焉不详的 failed。
 
 def test_deploy_declares_a_timeout_long_enough_for_its_own_download():
-    from plugin.plugins.qq_auto_reply import napcat_install
+    from plugin.plugins.qq_auto_reply import snowluma_install
     from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
     from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
     from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
@@ -235,7 +235,7 @@ def test_deploy_declares_a_timeout_long_enough_for_its_own_download():
     assert resolved is not None
     assert resolved > PLUGIN_EXECUTION_TIMEOUT, (
         f"退回宿主默认的 {PLUGIN_EXECUTION_TIMEOUT} 秒了 —— 一次稍慢的下载就会把一键部署掐死")
-    assert resolved >= napcat_install.DOWNLOAD_TIMEOUT_SECONDS, (
+    assert resolved >= snowluma_install.DOWNLOAD_TIMEOUT, (
         "入口超时不该比它内部允许的下载超时还短")
 
 

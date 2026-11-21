@@ -5,12 +5,13 @@
 | 分支 | 版本 | 界面 | tag |
 |---|---|---|---|
 | `main` | 稳定版 | 只有 QQ 开放平台；OneBot（NapCat / SnowLuma）界面不出现，后端能力不动 | `vX.Y.Z` |
-| `beta-onebot-ui` | 测试版 | 保留 OneBot 的全部界面 | `vX.Y.Z-beta.N`，release 标成 Pre-release |
+| `beta-onebot-ui` | 测试版 | 保留 OneBot 界面，仅支持 SnowLuma 部署与启动 | `vX.Y.Z-beta.N`，release 标成 Pre-release |
 
 起因：NapCat / SnowLuma 的 release 不能稳定拉取，一键部署对新用户不可靠；已经下载好的用户
 还能继续用，所以 OneBot 界面留在测试版。
 
-- **`beta-onebot-ui` = `main` + 一个 revert**：它从 main 分出来，第一个提交把 main 上
+- **2026-11-22 起测试版移除 NapCat 界面、部署和启动支持**：保留 SnowLuma 与通用 OneBot，合入 main 时不得恢复 NapCat。兼容字段及共用接口名可保留，旧配置迁移会关闭 OneBot 开机自启。
+- **`beta-onebot-ui` 最初为 `main` + 一个 revert**：它从 main 分出来，第一个提交把 main 上
   「稳定版去除 OneBot 界面」那个提交整个还原。所以同步方向只有一个 ——
   `git checkout beta-onebot-ui && git merge main`，不要反过来合。
 - 合并时必然冲突的只有 `plugin.toml` 的版本号和 `README.md` 顶部的版本段（两边各写各的），

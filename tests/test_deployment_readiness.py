@@ -4,13 +4,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from plugin.plugins.qq_auto_reply import napcat_integrity, napcat_platform, snowluma_install
+from plugin.plugins.qq_auto_reply import snowluma_install
 from plugin.plugins.qq_auto_reply.deploy_service import QQDeployService
 from plugin.plugins.qq_auto_reply.runtime_service import QQRuntimeService
 from plugin.plugins.qq_auto_reply.snowluma_deploy import QQSnowLumaDeployService
 
 
-def make_plugin(root, backend="napcat"):
+def make_plugin(root, backend="snowluma"):
     settings = {"onebot_backend": backend, "qq_connection_mode": "napcat"}
     saved = []
 
@@ -38,13 +38,11 @@ def make_plugin(root, backend="napcat"):
     return plugin, saved
 
 
-@pytest.mark.parametrize("backend", ["napcat", "snowluma"])
+@pytest.mark.parametrize("backend", ["snowluma"])
 @pytest.mark.parametrize("failure", [False, True])
 async def test_real_deploy_records_completion_only_after_success(tmp_path, monkeypatch, backend, failure):
     plugin, saved = make_plugin(tmp_path, backend)
     plugin._qq_settings["onebot_url"] = "ws://localhost:6199"
-    monkeypatch.setattr(napcat_platform, "find_launcher", lambda root: root / "launcher")
-    monkeypatch.setattr(napcat_integrity, "check_installation", lambda *a, **kw: (True, "ok"))
     monkeypatch.setattr(snowluma_install, "check_installation", lambda root: (True, "ok"))
     deploy = QQDeployService(plugin) if backend == "napcat" else QQSnowLumaDeployService(plugin)
     deploy._write_config = AsyncMock()

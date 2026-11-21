@@ -1005,11 +1005,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 self._emit_log("INFO", "[自启] 1/3 启动自动回复（反向模式：插件是监听方）")
                 result = await self.runtime_ops_service.start_auto_reply()
 
-            self._emit_log("INFO", "[自启] 2/3 启动 NapCat…")
+            self._emit_log("INFO", "[自启] 2/3 启动 SnowLuma…")
             await self.napcat_service.ensure_napcat_started()
             err = self.napcat_service.get_startup_error()
             if err:
-                self._emit_log("WARN", f"[自启] NapCat 未启动: {err}")
+                self._emit_log("WARN", f"[自启] SnowLuma 未启动: {err}")
                 return
 
             if not reverse:
@@ -1020,7 +1020,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 status = str(result.value.get("status") or "")
             self._emit_log(
                 "INFO",
-                f"[自启] 完成（{status or 'ok'}）—— NapCat 就绪后会自动接上，不必手动点启动",
+                f"[自启] 完成（{status or 'ok'}）—— SnowLuma 就绪后会自动接上，不必手动点启动",
             )
         except asyncio.CancelledError:
             # 取消是 ``BaseException``，被下面的 ``except Exception`` 漏掉的话
@@ -1653,7 +1653,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="query",
         name=tr("entries.query.name", default="查询状态"),
-        description=tr("entries.query.description", default="只读查询：控制面板状态、缓冲、日志、提示词、用户画像、待审阅、NapCat WebUI、机器人账本。action 取 dashboard / buffer / logs / prompt_editor / user_profiles / backlog_summary / backlog_detail / napcat_webui / bots。"),
+        description=tr("entries.query.description", default="只读查询：控制面板状态、缓冲、日志、提示词、用户画像、待审阅、SnowLuma WebUI、机器人账本。action 取 dashboard / buffer / logs / prompt_editor / user_profiles / backlog_summary / backlog_detail / napcat_webui / bots。"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["dashboard", "buffer", "logs", "prompt_editor",
@@ -1763,7 +1763,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         url = await self.napcat_service.get_webui_login_url()
         webui_lines = await self.napcat_service._read_napcat_webui_lines()
         return Ok({"url": url, "lines": webui_lines,
-                   "backend": str(self._qq_settings.get("onebot_backend") or "napcat")})
+                   "backend": str(self._qq_settings.get("onebot_backend") or "snowluma")})
 
     async def _query_bots(self, kw: dict[str, Any]):
         _ = kw
@@ -2221,7 +2221,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _deploy_ensure(self, kw: dict[str, Any]):
         _ = kw
-        """仅启动 NapCat 进程，不连接"""
+        """仅启动 SnowLuma 进程，不连接"""
         await self._ensure_napcat_started()
         # 硬失败（目录缺失/启动器缺失/进程拉起失败）→ 明确报错，不返回
         # 「已启动」假象，也不让前端反复重试（ensure_napcat_started 已短路）。
@@ -2245,7 +2245,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             result = await self.deploy_service.deploy(
                 uin=str(uin or "").strip(),
                 force=bool(force),
-                # 自动回复由 deploy 自己**在启动 NapCat 之前**拉起（反向模式下先竖起
+                # 自动回复由 deploy 自己**在启动 SnowLuma 之前**拉起（反向模式下先竖起
                 # 监听，NapCat 起来就能拨进来）。这里只把开关传下去，别再启一次 ——
                 # 那会白停一次刚建好的连接。
                 auto_start=bool(auto_start),
@@ -2266,7 +2266,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 默认**不重启** —— NapCat 热读 OneBot 配置（重启会掐断刚建立的登录会话）
         restart = bool(kw.get("restart", False))
         auto_start = bool(kw.get("auto_start", True))
-        """扫码后的兜底：补写配置 → 重启 NapCat → 按新配置启动自动回复"""
+        """扫码后的兜底：补写配置 → 重启 SnowLuma → 按新配置启动自动回复"""
         try:
             result = await self.deploy_service.apply_onebot_config(
                 uin=str(uin or "").strip(),
@@ -2436,23 +2436,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="deploy",
         name=tr("entries.deploy.name", default="接入与部署"),
-        description=tr("entries.deploy.description", default="启动 NapCat、一键部署、补写 OneBot 配置、开放平台扫码绑定与机器人切换。action 取 ensure / one_click / apply_onebot / bind_start / bind_poll / use_bot / qrcode_sync。**此入口对 AI 隐藏，只能由界面或人触发。**"),
+        description=tr("entries.deploy.description", default="启动 SnowLuma、一键部署、补写 OneBot 配置、开放平台扫码绑定与机器人切换。action 取 ensure / one_click / apply_onebot / bind_start / bind_poll / use_bot / qrcode_sync。**此入口对 AI 隐藏，只能由界面或人触发。**"),
         input_schema={"type": "object", "properties": {
             "action": {"type": "string",
                        "enum": ["ensure", "one_click", "apply_onebot",
                                 "login_poll",
                                 "bind_start", "bind_poll", "use_bot", "qrcode_sync"],
-                       "description": "ensure=只启动 NapCat 进程；one_click=一键部署（下载/解包/写配置/启动/出码）；apply_onebot=扫码后补写 OneBot 配置并重启；login_poll=轮询「扫码登录成功了没」，成功就顺手做完收尾（前端在一键部署后定时调它）；bind_start/bind_poll=开放平台扫码绑定与轮询；use_bot=切换到账本里已有的机器人；qrcode_sync=刷新登录二维码"},
+                       "description": "ensure=只启动 SnowLuma 进程；one_click=一键部署（下载/解包/写配置/启动/出码）；apply_onebot=扫码后补写 OneBot 配置并重启；login_poll=轮询「扫码登录成功了没」，成功就顺手做完收尾（前端在一键部署后定时调它）；bind_start/bind_poll=开放平台扫码绑定与轮询；use_bot=切换到账本里已有的机器人；qrcode_sync=刷新登录二维码"},
             "uin": {"type": "string", "description": "one_click / apply_onebot：机器人 QQ 号（apply_onebot 留空则取最近登录的）"},
-            "force": {"type": "boolean", "default": False, "description": "one_click：已有 NapCat 也强制重新下载"},
+            "force": {"type": "boolean", "default": False, "description": "one_click：已有 SnowLuma 也强制重新下载"},
             "auto_start": {"type": "boolean", "default": True,
                            "description": "one_click / apply_onebot / bind_poll：完事顺手把自动回复跑起来（会按新设置停掉重建）"},
-            "restart": {"type": "boolean", "default": False, "description": "apply_onebot：写完是否重启 NapCat（默认不重启 —— NapCat 热读 OneBot 配置；重启会掐断刚建立的登录会话）"},
+            "restart": {"type": "boolean", "default": False, "description": "apply_onebot：写完是否重启 SnowLuma（默认不重启）"},
             "appid": {"type": "string", "description": "use_bot：要启用的机器人 AppID"},
         }, "required": ["action"], "additionalProperties": False},
         # 必须显式声明：宿主默认的 ``PLUGIN_EXECUTION_TIMEOUT`` 只有 30 秒，而
-        # ``one_click`` 要下载 28MB 再解包 690 个文件 —— 连 ``napcat_install``
-        # 自己给下载的 ``DOWNLOAD_TIMEOUT_SECONDS`` 都是 300 秒。不声明的话，
+        # ``one_click`` 要下载并解包 SnowLuma，下载器允许等待 240 秒。不声明的话，
         # 一次稍慢的下载就会撞上 `Entry 'deploy' timed out after 30.0s`，
         # 而且报出来只是个语焉不详的 failed（后端 error 没往界面上带）。
         #

@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from . import napcat_integrity, napcat_onebot_config, napcat_platform
+from . import napcat_onebot_config, napcat_platform
 
 
 def bundled_napcat_dir() -> Path:
@@ -374,84 +374,7 @@ class QQNapcatService:
         return True
 
     async def ensure_napcat_started(self) -> None:
-        await self.migrate_napcat_storage()
-        # After a hard failure (missing dir / launcher / process won't start) don't
-        # retry: retrying is pointless and only repeats the error + relaunch attempt,
-        # and the frontend gets no clear failure reason.
-        if self.has_hard_startup_error():
-            return
-        # 判「有没有可用的 NapCat」而不是「设置项填没填」。插件自带 NapCat 时
-        # （一键部署装到 <插件目录>/NapCat.Shell）用户根本没填 napcat_directory，
-        # 但目录是可用的 —— 按设置项判会让这种情况**永远不启动**且毫无报错，
-        # 表现就是"打开界面 NapCat 没起来"。
-        #
-        # ⚠️ 不能写成 ``if not self.get_napcat_directory()``：``pathlib.Path`` 没有
-        # ``__bool__``，空 Path 也是 truthy，那个判据恒不成立（实测踩过）。
-        # 只有"既没配置、自带位置也找不到启动器"才静默返回 —— 那是用户可能自己
-        # 开着 NapCat 的情况，仍不是硬失败：wait_for_onebot_ready 会继续轮询它。
-        if not self.get_configured_napcat_path() and self.find_napcat_launcher() is None:
-            return
-        if self._napcat_process and self._napcat_process.returncode is None:
-            return
-        launcher = self.find_napcat_launcher()
-        if launcher is None:
-            mode = str((self._get_settings() or {}).get("qq_connection_mode") or "napcat").strip()
-            if mode == "napcat_forward":
-                # For forward mode, local NapCat launch is **best-effort**: a missing
-                # launcher only warns and doesn't set a hard error -- forward can still
-                # connect to a remote / manually started NapCat, and bootstrap() should
-                # not enter the failure branch (wait_for_onebot_ready polls the forward
-                # dial result).
-                self._emit_log("WARN", self._build_missing_launcher_error())
-                return
-            self._set_startup_error(self._build_missing_launcher_error())
-            return
-        ok, detail = await asyncio.to_thread(
-            napcat_integrity.check_installation, launcher.parent, launcher=launcher,
-        )
-        if not ok:
-            self._set_startup_error(f"NapCat 完整性检查未通过: {detail}。请修复或重新安装 NapCat。")
-            self._emit_log("ERROR", self.get_startup_error())
-            return
-        self._emit_log("INFO", f"NapCat {detail}")
-        # 启动前补一次自动登录账号：扫过码但没点过「补写 OneBot 配置」的用户，
-        # 账号配置其实已经躺在 config/ 里了 —— 这里按目录扫出来记上，下次启动
-        # 就能快速登录。幂等，所以每次启动跑一遍无妨。
-        self._sync_auto_login_account()
-        try:
-            show_window = bool((self._get_settings() or {}).get("show_napcat_window", False))
-            if not show_window:
-                # 藏了窗口就没有控制台了。NapCat 默认只写控制台（fileLog=false），
-                # 而我们把它的 stdout/stderr 都丢进了 DEVNULL —— 不补这一刀，
-                # 它的日志就哪儿都不会留，出了事连它的输出都看不到。
-                try:
-                    if napcat_onebot_config.ensure_file_log(self.get_napcat_directory()):
-                        self._emit_log("INFO", "已打开 NapCat 文件日志（后台启动，控制台不可见）")
-                except Exception as e:
-                    self._emit_log("WARN", f"打开 NapCat 文件日志失败: {e}")
-            # 平台差异全在 launch_spec 里：Windows 走 cmd.exe + creationflags，
-            # POSIX 走 node + start_new_session。这里不再无条件传 creationflags
-            # —— 那个 kwarg 在 POSIX 上非法，会让启动直接抛错。
-            spec = napcat_platform.launch_spec(launcher, show_window=show_window)
-            self._napcat_process = await asyncio.create_subprocess_exec(
-                *spec.argv,
-                cwd=str(spec.cwd),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                **spec.kwargs,
-            )
-            self._manages_napcat_process = True
-            self.clear_startup_error()
-            pid = self._napcat_process.pid
-            if self.logger:
-                self.logger.info(
-                    f"Started NapCat: {launcher} (pid={pid}, show_window={show_window})"
-                )
-            self._emit_log("INFO", f"NapCat 已启动 PID={pid}")
-        except Exception as e:
-            self._set_startup_error(f"启动 NapCat 失败: {e}")
-            if self.logger:
-                self.logger.warning(f"Failed to start NapCat launcher {launcher}: {e}")
+        raise RuntimeError("NapCat 启动支持已移除，请使用 SnowLuma 或外部 OneBot 服务")
 
     async def stop_managed_napcat(self) -> None:
         if not self._manages_napcat_process:

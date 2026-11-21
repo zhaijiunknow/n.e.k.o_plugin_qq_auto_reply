@@ -5,7 +5,7 @@ import pytest
 from plugin.plugins.qq_auto_reply.runtime_ops_service import QQRuntimeOpsService
 
 
-def setup(backend="napcat", alive=False, connected=False):
+def setup(backend="snowluma", alive=False, connected=False):
     process = SimpleNamespace(returncode=None if alive else 0, pid=42)
     service = SimpleNamespace(
         napcat_process=process, manages_napcat_process=alive,
@@ -32,7 +32,7 @@ def setup(backend="napcat", alive=False, connected=False):
     return plugin, service, other, ops
 
 
-@pytest.mark.parametrize("backend", ["napcat", "snowluma"])
+@pytest.mark.parametrize("backend", ["snowluma"])
 async def test_start_and_stop_selected_backend(backend):
     plugin, service, other, ops = setup(backend)
     assert (await ops.control_backend(start=True, backend=backend)).is_ok()
@@ -47,13 +47,13 @@ async def test_start_and_stop_selected_backend(backend):
 @pytest.mark.parametrize("condition", ["open_platform", "deploy", "selection", "external"])
 async def test_reject_unsafe_stop(condition):
     plugin, service, _, ops = setup(alive=True)
-    backend = "napcat"
+    backend = "snowluma"
     if condition == "open_platform":
         plugin._qq_settings["qq_connection_mode"] = "open_platform"
     elif condition == "deploy":
         plugin._onebot_deploy_in_progress = True
     elif condition == "selection":
-        backend = "snowluma"
+        backend = "napcat"
     else:
         service.manages_napcat_process = False
     assert (await ops.control_backend(start=False, backend=backend)).is_err()
@@ -63,14 +63,14 @@ async def test_reject_unsafe_stop(condition):
 
 async def test_connected_external_backend_is_not_launched_again():
     _, service, _, ops = setup(connected=True)
-    assert (await ops.control_backend(start=True, backend="napcat")).is_ok()
+    assert (await ops.control_backend(start=True, backend="snowluma")).is_ok()
     service.ensure_napcat_started.assert_not_awaited()
 
 
 async def test_start_failure_is_not_reported_as_success():
     _, service, _, ops = setup()
     service.ensure_napcat_started.side_effect = None
-    assert (await ops.control_backend(start=True, backend="napcat")).is_err()
+    assert (await ops.control_backend(start=True, backend="snowluma")).is_err()
 
 
 async def test_stop_cancels_pipeline_before_terminating_backend():
@@ -86,5 +86,5 @@ async def test_stop_cancels_pipeline_before_terminating_backend():
 
     ops._stop_runtime_locked.side_effect = pipeline
     service.stop_managed_napcat.side_effect = process
-    assert (await ops.control_backend(start=False, backend="napcat")).is_ok()
+    assert (await ops.control_backend(start=False, backend="snowluma")).is_ok()
     assert order == ["pipeline", "process"]

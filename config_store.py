@@ -239,6 +239,16 @@ class QQAutoReplyConfigStore:
     async def exists(self) -> bool:
         return self._path.is_file()
 
+    @staticmethod
+    def _migrate_retired_backend(settings: dict[str, Any]) -> bool:
+        # [beta-no-napcat] Do not turn an existing auto-start into a different process.
+        if settings.get("onebot_backend") in (None, "", "napcat"):
+            settings["onebot_backend"] = "snowluma"
+            if settings.get("qq_connection_mode", "napcat") != "open_platform":
+                settings["auto_start_on_launch"] = False
+            return True
+        return False
+
     async def load(self) -> dict[str, Any]:
         self.migration_applied = False
         if not self._path.is_file():
@@ -249,6 +259,7 @@ class QQAutoReplyConfigStore:
         # 必须作用在**原始 payload** 上：下面 merged 会先用 default_config()
         # 把新名填满，届时已无法区分「用户存过新名」与「schema 默认值」。
         self.migration_applied = self._migrate_attention_keys(payload)
+        self.migration_applied = self._migrate_retired_backend(payload) or self.migration_applied
         merged = self.default_config()
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []

@@ -1,3 +1,8 @@
+# v0.16.0-beta.2 (2026-11-22)
+
+- 移除 NapCat 界面、下载部署和启动支持；保留 SnowLuma 与通用 OneBot。
+- 旧 NapCat 配置切换为 SnowLuma，并关闭 OneBot 开机自启，保留原安装目录与数据。
+
 # 更新记录
 
 [返回 README](README.md)

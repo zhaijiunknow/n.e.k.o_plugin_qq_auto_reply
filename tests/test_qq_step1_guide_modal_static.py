@@ -9,9 +9,10 @@ def test_step1_modal_markup_present():
     # (index.html is now just the napcat/open-platform mode picker) to the embedded
     # "配置引导" guide page in napcat.html.
     html = (ROOT / "static/napcat.html").read_text(encoding="utf-8")
-    assert 'id="guide-detail-step-napcat"' in html
+    assert 'id="guide-detail-step-napcat"' not in html
     assert 'data-i18n="ui.shared.card.guide"' in html
-    assert 'https://github.com/NapNeko/NapCatQQ/releases' in html
+    assert 'https://github.com/NapNeko/NapCatQQ/releases' not in html
+    assert 'SnowLuma' in (ROOT / 'static/onebot-backend.js').read_text(encoding='utf-8')
 
 
 def test_step1_state_persisted_in_config_and_backend():

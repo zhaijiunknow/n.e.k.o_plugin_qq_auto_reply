@@ -12,11 +12,11 @@ from __future__ import annotations
 import inspect
 import re
 
-from plugin.plugins.qq_auto_reply.deploy_service import QQDeployService
+from plugin.plugins.qq_auto_reply.snowluma_deploy import QQSnowLumaDeployService
 
 
 def _deploy_src() -> str:
-    return inspect.getsource(QQDeployService.deploy)
+    return inspect.getsource(QQSnowLumaDeployService.deploy)
 
 
 def test_auto_reply_starts_before_napcat():
@@ -31,7 +31,7 @@ def test_auto_reply_starts_before_napcat():
 def test_write_config_still_precedes_both():
     """写配置仍在最前：NapCat 会热读，但先写好能省一次往返。"""
     src = _deploy_src()
-    assert src.index("await self._persist_connection_settings") < src.index(
+    assert src.index("await self._write_config") < src.index(
         "await self.plugin._restart_auto_reply_runtime")
 
 

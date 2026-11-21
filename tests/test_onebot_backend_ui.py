@@ -36,7 +36,7 @@ const document = {
 const query = document.querySelectorAll.bind(document);
 document.querySelectorAll = selector => selector === '#modes .mode' ? [] : query(selector);
 let lastMode = null, _settingsDirty = false;
-let state = {settings:{napcat_directory:'C:/nc',snowluma_directory:'C:/sl',show_napcat_window:true,show_snowluma_window:false}};
+let state = {settings:{onebot_backend:'snowluma',napcat_directory:'C:/nc',snowluma_directory:'C:/sl',show_napcat_window:true,show_snowluma_window:false}};
 function stopBindPoll() {}
 function call() {}
 function renderBackendControls() {}
@@ -63,13 +63,14 @@ assert.match(document.getElementById('qr-empty').textContent,/本机 QQ/);
 assert.equal(document.getElementById('[data-i18n="ui.napcat.config.refresh_qrcode"]').style.display,'none');
 assert.match(onebotBackend('snowluma').guides['step-onebot'],/networks.wsClients/);
 onBackendChange('napcat');
-assert.equal(document.getElementById('cfg-path').value,'C:/nc');
-assert.equal(document.getElementById('cfg-show-napcat').checked,true);
-assert.equal(document.getElementById('[data-i18n="ui.napcat.config.refresh_qrcode"]').style.display,'');
+assert.equal(document.getElementById('cfg-path').value,'C:/sl');
+assert.equal(document.getElementById('cfg-show-napcat').checked,false);
+assert.equal(document.getElementById('[data-i18n="ui.napcat.config.refresh_qrcode"]').style.display,'none');
 assert.equal(state.settings.snowluma_directory,'C:/sl');
 state.backendWebuiUrl='http://localhost:6099/webui';
 applyBackendUI();
 assert.equal(document.getElementById('backend-webui-link')['aria-disabled'],'false');
+state.backendWebuiUrl='';
 onBackendChange('snowluma');
 assert.equal(document.getElementById('backend-webui-link').href,undefined);
 state.settings.onebot_backend='snowluma';
@@ -94,7 +95,7 @@ window.parent={};
 const realTimer=setTimeout;
 const link={style:{},setAttribute(k,v){this[k]=v},removeAttribute(k){delete this[k]}};
 (async()=>{
- for(const key of ['napcat','snowluma']) {
+ for(const key of ['snowluma']) {
   let opened=[];
   window.electronShell={openExternal:async url=>opened.push(url)};
   window.open=()=>{throw Error('Electron must not open an about:blank popup')};
@@ -142,7 +143,7 @@ const el = {querySelector(selector) { if(!elements.has(selector))elements.set(se
   let calls=[],refreshes=0;
   const call=async(name,args)=>calls.push([name,args]);
   const refresh=async()=>refreshes++;
-  for(const backend of ['napcat','snowluma']) {
+  for(const backend of ['snowluma']) {
     const settings={onebot_backend:backend,qq_connection_mode:'napcat'};
     renderBackendControls(el,settings,{},backend,call,refresh);
     assert.equal(el.querySelector('.backend-start').disabled,false);
@@ -159,7 +160,7 @@ const el = {querySelector(selector) { if(!elements.has(selector))elements.set(se
     renderBackendControls(el,settings,{},backend==='napcat'?'snowluma':'napcat',call,refresh);
     assert.equal(el.querySelector('.backend-start').disabled,true);
   }
-  assert.equal(refreshes,4);
+  assert.equal(refreshes,2);
   renderBackendControls(el,{qq_connection_mode:'open_platform'},{},'napcat',call,refresh);
   assert.equal(el.hidden,true);
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -963,7 +963,7 @@ class QQSettingsService:
             kwargs["proactive_initiative_greeting_slots"] = normalize_greeting_slots(
                 kwargs["proactive_initiative_greeting_slots"],
             )
-        from .onebot_backend import OneBotBackend, selected_backend
+        from .onebot_backend import OneBotBackend
 
         backend = kwargs.get("onebot_backend")
         backend_keys = ("onebot_backend", "snowluma_directory", "show_snowluma_window")
@@ -974,7 +974,7 @@ class QQSettingsService:
                     raise RuntimeError("部署正在进行，请完成后再修改连接设置")
         if backend is not None:
             backend = OneBotBackend(backend)  # Reject unknown backends before side effects.
-            if backend != selected_backend(self.plugin._qq_settings):
+            if backend != self.plugin._qq_settings.get("onebot_backend", "snowluma"):
                 await self.plugin._stop_auto_reply_runtime(stop_napcat=True)
                 # A backend switch must not reuse the previous login finalization.
                 deploy = getattr(self.plugin, "deploy_service", None)

@@ -86,10 +86,10 @@ def test_invalid_json_is_not_overwritten(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_facade_routes_paths_and_stops_both_owned_backends(tmp_path):
+async def test_facade_routes_paths_and_stops_snowluma(tmp_path):
     settings = {}
     service = OneBotBackendService(get_settings=lambda: settings, data_dir=tmp_path)
-    assert service.default_napcat_directory() == tmp_path / "NapCat.Shell"
+    assert service.default_napcat_directory() == tmp_path / "SnowLuma"
     settings["onebot_backend"] = "snowluma"
     assert service.get_napcat_directory() == tmp_path / "SnowLuma"
     assert isinstance(service.services["snowluma"], QQSnowLumaService)

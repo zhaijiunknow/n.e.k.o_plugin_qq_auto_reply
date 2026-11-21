@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>QQ 控制台 - NapCat</title>
+<title>QQ 控制台 - OneBot</title>
 <link rel="stylesheet" href="theme.css?v=8">
 <style>
 :root{--sidebar-w:180px;--topbar-h:44px;}
@@ -119,7 +119,7 @@ body{display:flex;height:100vh;overflow:hidden}
     <div class="card"><div class="card-title" data-i18n="ui.napcat.status.title">连接状态</div>
         <div style="display:flex;gap:20px;flex-wrap:wrap">
             <div><span class="form-label" data-i18n="ui.shared.status.label">状态</span><span id="st-running" class="tag tag-offline" data-i18n="ui.shared.topbar.stopped">未启动</span></div>
-            <div><span class="form-label" data-i18n="ui.napcat.status.pid">NapCat PID</span><span id="st-napcat-pid">-</span></div>
+            <div><span class="form-label" data-i18n="ui.napcat.status.pid">OneBot PID</span><span id="st-napcat-pid">-</span></div>
             <div><span class="form-label" data-i18n="ui.shared.status.onebot">OneBot</span><span id="st-onebot" class="tag tag-offline" data-i18n="ui.shared.topbar.disconnected">未连接</span></div>
             <div><span class="form-label" data-i18n="ui.shared.status.account">账号</span><span id="st-self-id">-</span></div>
             <div><span class="form-label" data-i18n="ui.shared.status.nickname">昵称</span><span id="st-nickname">-</span></div>
@@ -135,92 +135,6 @@ body{display:flex;height:100vh;overflow:hidden}
     <div id="guide-progress" style="height:4px;background:var(--border-subtle);border-radius:2px;margin-bottom:16px"><div id="guide-progress-bar" style="height:4px;background:var(--accent);border-radius:2px;width:0;transition:.3s"></div></div>
     <div id="guide-list" style="font-size:13px"></div>
     <div style="display:none">
-      <div id="guide-detail-step-napcat">
-  <div style="font-size:14px;line-height:2;">
-    <div style="margin-bottom:16px;padding:10px 14px;background:var(--warning-tint);border-left:4px solid var(--warning);border-radius:var(--radius);color:var(--warning-on-tint);font-size:13px;">
-      <b>当前是「反向连接」模式：</b>NapCat 以「<b>WebSocket 客户端</b>」身份，<b>主动连接 N.E.K.O 在本机开启的 WS 服务端</b>。以下步骤都按反向模式配置 NapCat。
-    </div>
-    <div style="margin-bottom:16px">
-      <b>1. 下载NapCat：</b>点击下方链接，或自行搜索NapCat仓库，下载对应的版本（推荐使用NapCat.Shell）<br>
-      <a href="https://github.com/NapNeko/NapCatQQ/releases/" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-weight:600;">NapCat 下载</a>
-    </div>
-    <div style="margin-bottom:16px">
-      <b>2. 打开 NapCat 终端上 [WebUI] 标签的网址：</b><br>
-      <a id="guide-napcat-url" href="" target="_blank" style="color:var(--accent);font-weight:600;">NapCat 终端</a>
-      <span id="guide-napcat-url-text" style="color:var(--text-secondary);font-size:12px;"></span>
-    </div>
-    <div style="margin-bottom:16px">
-      <b>3. 打开的页面如下</b>，点击「网络配置」→「新建」→「WebSocket客户端」<br>
-      <img src="Tutorial/1.png" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-top:8px;" alt="网络配置截图" onerror="this.style.display='none'">
-    </div>
-    <div style="margin-bottom:16px">
-      <b>4. 在「连接地址」中填写 N.E.K.O 的反向 WS 地址（如 <code>ws://127.0.0.1:6199/ws</code>）和 Token</b>（注意：如果后面自动回复没触发，回来检查 Token 是否与配置文件一致），输入名称 → 勾选启用 → 保存<br>
-      <img src="Tutorial/2.png" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-top:8px;" alt="WebSocket配置截图" onerror="this.style.display='none'">
-    </div>
-  </div>
-</div>
-      <div id="guide-detail-step-napcat-forward">
-  <div style="font-size:14px;line-height:2;">
-    <div style="margin-bottom:16px;padding:10px 14px;background:var(--primary-tint);border-left:4px solid var(--primary);border-radius:var(--radius);color:var(--primary-on-tint);font-size:13px;">
-      <b>当前是「正向连接」模式：</b>N.E.K.O 作为「<b>WebSocket 客户端</b>」主动拨出，连接 NapCat 上开启的 WS <b>服务器</b>。以下步骤都按正向模式配置 NapCat。
-    </div>
-    <div style="margin-bottom:16px">
-      <b>1. 下载NapCat：</b>点击下方链接，或自行搜索NapCat仓库，下载对应的版本（推荐使用NapCat.Shell）<br>
-      <a href="https://github.com/NapNeko/NapCatQQ/releases/" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-weight:600;">NapCat 下载</a>
-    </div>
-    <div style="margin-bottom:16px">
-      <b>2. 打开 NapCat 终端上 [WebUI] 标签的网址：</b><br>
-      <a id="guide-napcat-url" href="" target="_blank" style="color:var(--accent);font-weight:600;">NapCat 终端</a>
-      <span id="guide-napcat-url-text" style="color:var(--text-secondary);font-size:12px;"></span>
-    </div>
-    <div style="margin-bottom:16px">
-      <b>3. 打开的页面如下</b>，点击「网络配置」→「新建」→「<b>WebSocket 服务器</b>」（注意：正向模式要选<b>服务器</b>，不是「客户端」）<br>
-      <img src="Tutorial/3.png" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-top:8px;" alt="网络配置截图" onerror="this.style.display='none'">
-    </div>
-    <div style="margin-bottom:16px">
-      <b>4. 在 NapCat 里设置监听地址与 Token：</b>记下主机和端口（如 <code>0.0.0.0:3001</code>），设置访问 Token（可留空）→ 启用 → 保存。回到本页把「连接方向」保持为<b>正向</b>，在「NapCat WebSocket 服务器地址」填 <code>ws://127.0.0.1:3001</code>，并填入相同的 Token。<br>
-      <img src="Tutorial/4.png" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-top:8px;" alt="WebSocket配置截图" onerror="this.style.display='none'">
-    </div>
-  </div>
-</div>
-      <div id="guide-detail-step-onebot">
-  <div style="font-size:14px;line-height:2;">
-    <div style="margin-bottom:16px">
-      <b>1. 配置反向 WS 监听地址：</b>上方「通信地址 (URL)」默认 <code>ws://0.0.0.0:6199</code>。N.E.K.O 将在此地址启动 WebSocket 服务器。在 NapCat 的 WebUI 中创建「WebSocket 客户端」连接到此地址（如 <code>ws://127.0.0.1:6199/ws</code>）
-    </div>
-    <div style="margin-bottom:16px">
-      <b>2. 填入访问令牌：</b>将 NapCat 配置的 Token 输入到「访问令牌 (TOKEN)」字段。N.E.K.O 会验证连接客户端的 token，与 NapCat 中不一致则拒绝连接。
-    </div>
-    <div style="margin-bottom:16px">
-      <b>3. 配置 NapCat 目录：</b>插件可以通过绝对路径运行 NapCat，在「NapCat 目录」输入路径或点击「浏览...」选择目录即可
-    </div>
-    <div style="margin-bottom:16px">
-      <b>4. 点击侧边栏的保存设置</b>。点「启动」后 N.E.K.O 会开启 WebSocket 服务端，NapCat 需要至多 30 秒才会发起连接（它有重试间隔），请耐心等待状态页的 OneBot 指示灯变绿。
-    </div>
-    <div style="margin-top:16px">
-      <a href="javascript:hideModal();switchPage('config');switchSub('connection')" style="color:var(--accent);font-weight:600;">&#8594; 快速跳转到连接配置</a>
-    </div>
-  </div>
-</div>
-      <div id="guide-detail-step-onebot-forward">
-  <div style="font-size:14px;line-height:2;">
-    <div style="margin-bottom:16px">
-      <b>1. 在 NapCat 侧开启「正向 WebSocket」：</b>在 NapCat 的 WebUI「网络配置 → 新建」中选择「<b>WebSocket 服务器</b>」，记下它监听的主机和端口，并设置一个访问 Token（可留空）。
-    </div>
-    <div style="margin-bottom:16px">
-      <b>2. 填写 NapCat 的 WS 服务器地址：</b>上方「NapCat WebSocket 服务器地址」填 NapCat 侧监听地址，如 <code>ws://192.168.1.5:3001</code> 或 <code>ws://127.0.0.1:3001</code>。N.E.K.O 会作为 WS 客户端主动拨出连接。
-    </div>
-    <div style="margin-bottom:16px">
-      <b>3. 填入访问令牌：</b>将 NapCat 里配置的 Token 输入到「访问令牌 (TOKEN)」字段，保持一致（NapCat 未设 Token 则留空）。
-    </div>
-    <div style="margin-bottom:16px">
-      <b>4. 点击侧边栏的保存设置</b>，再点「启动」。状态页 OneBot 指示灯变绿即连接成功；若失败，日志会显示具体的拨出错误。
-    </div>
-    <div style="margin-top:16px">
-      <a href="javascript:hideModal();switchPage('config');switchSub('connection')" style="color:var(--accent);font-weight:600;">&#8594; 快速跳转到连接配置</a>
-    </div>
-  </div>
-</div>
       <div id="guide-detail-step-users">
   <div style="font-size:14px;line-height:2;">
     <div style="margin-bottom:16px">
@@ -271,10 +185,10 @@ body{display:flex;height:100vh;overflow:hidden}
     <a href="javascript:hideModal();switchPage('config');switchSub('params')" style="color:var(--accent);font-weight:600;">&#8594; 快速跳转到参数页</a>
   </div>
 </div>
-      <div id="guide-detail-step-linux"><div style="font-size:14px;line-height:2;"><div style="margin-bottom:16px"><b>Linux / Docker 部署</b></div><div style="margin-bottom:16px"><b>宿主机 NapCat + Docker N.E.K.O:</b><br>1. 宿主机安装启动 NapCat<br>2. NapCat WebUI→网络配置→新建→WS客户端<br>3. URL: <code>ws://宿主机IP:6199/ws</code><br>4. compose 加 <code>- "127.0.0.1:6199:6199"</code>（仅本机）或 <code>- "6199:6199"</code>（内网，需配 Token）<br>5. Token 一致</div><div style="margin-bottom:16px"><b>Docker NapCat + Docker N.E.K.O:</b><br>1. 同网络 → NapCat WS客户端 URL: <code>ws://容器名:6199/ws</code>（容器名即 compose 中 service 名称）</div><div style="margin-bottom:16px"><b>Kubernetes Sidecar:</b><br>1. 同 Pod → NapCat WS客户端 URL: <code>ws://localhost:6199/ws</code></div><div style="color:var(--text-secondary);font-size:12px">⚠️ N.E.K.O 容器内不支持运行 NapCat（Windows cmd.exe），需单独部署。</div></div></div><div id="guide-detail-step-debug">
+<div id="guide-detail-step-debug">
   <div style="font-size:14px;line-height:2;">
-    <div style="margin-bottom:16px"><b>1. 自动回复没反应：</b>检查 OneBot 是否已连接（状态页）、Token 是否与 NapCat 中一致、信任用户是否已添加。</div>
-    <div style="margin-bottom:16px"><b>2. 发送消息失败：</b>检查 QQ 是否已登录（NapCat 扫码）、群聊是否在信任列表中。</div>
+    <div style="margin-bottom:16px"><b>1. 自动回复没反应：</b>检查 OneBot 是否已连接（状态页）、Token 是否与 OneBot 中一致、信任用户是否已添加。</div>
+    <div style="margin-bottom:16px"><b>2. 发送消息失败：</b>检查 QQ 是否已在本机窗口登录、群聊是否在信任列表中。</div>
     <div style="margin-bottom:16px"><b>3. 查看日志：</b>切换到「日志」页查看实时运行日志，错误信息会详细记录。开启实时模式可自动刷新。</div>
     <div style="margin-bottom:16px"><b>4. 配置文件位置：</b>所有配置存储在 <code>business_config.json</code>（可通过 N.E.K.O 数据目录找到），出问题时可直接查看。</div>
     <a href="javascript:hideModal();switchPage('logs')" style="color:var(--accent);font-weight:600;">&#8594; 快速跳转到日志页</a>
@@ -285,24 +199,24 @@ body{display:flex;height:100vh;overflow:hidden}
 </div>
 <div class="page" id="page-status-traces"><div class="card"><div class="card-title" data-i18n="ui.napcat.status.traces_title">最近 Pipeline 记录</div><div id="traces-list" style="color:var(--text-secondary);font-size:13px" data-i18n="ui.shared.topbar.no_data">暂无记录</div></div></div>
 <div class="page" id="page-config-connection">
-    <div class="card"><div class="card-title" data-i18n="ui.napcat.config.connection_title">NapCat 连接配置</div>
-        <div class="form-group"><label class="form-label" for="cfg-backend">OneBot 后端</label><select class="form-input" id="cfg-backend" onchange="onBackendChange(this.value)"><option value="napcat">NapCat</option><option value="snowluma">SnowLuma</option></select></div>
+    <div class="card"><div class="card-title" data-i18n="ui.napcat.config.connection_title">OneBot 连接配置</div>
+        <div class="form-group"><label class="form-label" for="cfg-backend">OneBot 后端</label><select class="form-input" id="cfg-backend" onchange="onBackendChange(this.value)"><option value="snowluma">SnowLuma</option></select></div>
         <div class="form-group">
             <label class="form-label" data-i18n="ui.napcat.config.direction_label">连接方向</label>
             <div class="radio-cards" id="conn-direction-cards">
-                <div class="radio-card selected" data-direction="reverse" onclick="onDirectionChange('reverse')"><div style="font-weight:700" data-i18n="ui.napcat.config.direction_reverse">反向连接</div><div style="font-size:11px;color:var(--text-secondary);font-weight:400;margin-top:4px" data-i18n="ui.napcat.config.direction_reverse_desc">NapCat 作为 WS 客户端连接到此服务器</div></div>
-                <div class="radio-card" data-direction="forward" onclick="onDirectionChange('forward')"><div style="font-weight:700" data-i18n="ui.napcat.config.direction_forward">正向连接</div><div style="font-size:11px;color:var(--text-secondary);font-weight:400;margin-top:4px" data-i18n="ui.napcat.config.direction_forward_desc">主动连接 NapCat 的 WS 服务器（如远端 NapCat）</div></div>
+                <div class="radio-card selected" data-direction="reverse" onclick="onDirectionChange('reverse')"><div style="font-weight:700" data-i18n="ui.napcat.config.direction_reverse">反向连接</div><div style="font-size:11px;color:var(--text-secondary);font-weight:400;margin-top:4px" data-i18n="ui.napcat.config.direction_reverse_desc">OneBot 作为 WS 客户端连接到此服务器</div></div>
+                <div class="radio-card" data-direction="forward" onclick="onDirectionChange('forward')"><div style="font-weight:700" data-i18n="ui.napcat.config.direction_forward">正向连接</div><div style="font-size:11px;color:var(--text-secondary);font-weight:400;margin-top:4px" data-i18n="ui.napcat.config.direction_forward_desc">主动连接 OneBot 的 WS 服务器（如远端 OneBot）</div></div>
             </div>
         </div>
         <div class="form-group"><label class="form-label" id="cfg-url-label">通信地址 (URL)</label><input class="form-input" id="cfg-url" placeholder="ws://0.0.0.0:6199"></div>
         <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.token_label">访问令牌 (TOKEN)</label><input class="form-input secret-text-input" id="cfg-token" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" onblur="this.setAttribute('readonly','readonly')" placeholder="OneBot access_token"><div id="onebot-token-hint" class="form-hint"></div></div>
-        <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.path_label">NapCat 目录</label><input class="form-input" id="cfg-path" data-i18n-placeholder="ui.napcat.config.path_placeholder" placeholder="留空使用内置" style="flex:1"><div class="form-hint" data-i18n="ui.napcat.config.path_hint">输入绝对路径。留空则使用内置 NapCat.Shell。</div></div>
-        <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-show-napcat"> <span data-i18n="ui.napcat.config.show_window">前台启动 NapCat 窗口</span></label></div>
+        <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.path_label">OneBot 目录</label><input class="form-input" id="cfg-path" data-i18n-placeholder="ui.napcat.config.path_placeholder" placeholder="留空使用内置" style="flex:1"><div class="form-hint" data-i18n="ui.napcat.config.path_hint">输入 SnowLuma 根目录（包含 index.mjs）。留空使用存档目录中的 SnowLuma。</div></div>
+        <div class="form-group"><label class="form-check"><input type="checkbox" id="cfg-show-napcat"> <span data-i18n="ui.napcat.config.show_window">前台启动 OneBot 窗口</span></label></div>
     </div>
     <div id="config-backend-process-controls" class="card backend-process-controls"></div>
-    <div class="card"><div class="card-title" data-i18n="ui.napcat.config.qrcode_title">登录二维码</div>
+    <div class="card"><div class="card-title" data-i18n="ui.napcat.config.qrcode_title">QQ 登录</div>
         <div id="snowluma-setup" style="display:none"></div>
-        <img id="qr-img" class="qr-img" src="" style="display:none" alt="QR"><p id="qr-empty" style="color:var(--text-secondary);font-size:13px" data-i18n="ui.napcat.config.qrcode_placeholder">NapCat 启动后自动获取</p>
+        <img id="qr-img" class="qr-img" src="" style="display:none" alt="QR"><p id="qr-empty" style="color:var(--text-secondary);font-size:13px" data-i18n="ui.napcat.config.qrcode_placeholder">请在本机 QQ 窗口登录。</p>
         <button class="btn btn-sm btn-ghost" onclick="doSyncQrcode()" style="margin-top:8px" data-i18n="ui.napcat.config.refresh_qrcode">刷新二维码</button>
     </div>
 </div>
@@ -499,8 +413,8 @@ body{display:flex;height:100vh;overflow:hidden}
 <div id="toast" style="position:fixed;top:16px;right:16px;padding:10px 18px;border-radius:var(--radius-md);color:#fff;font-size:13px;z-index:999;opacity:0;transform:translateY(-10px);transition:.25s;pointer-events:none"></div>
 <script src="i18n.js?v=3"></script>
 <script src="nav.js?v=1"></script>
-<script src="onebot-backend.js?v=4"></script>
-<script src="backend-controls.js?v=1"></script>
+<script src="onebot-backend.js?v=5"></script>
+<script src="backend-controls.js?v=2"></script>
 <script src="ui-confirm.js?v=1"></script>
 <script src="ui-sse.js?v=3"></script>
 <script src="reply-presets.js?v=1"></script>
@@ -518,7 +432,7 @@ let state={mode:MODE,strategy:'neko_dynamic',replyMode:'text',running:!1,onebotO
 let _settingsDirty=!1;
 let _initiativeDirty=!1;
 function onBackendChange(key){
-  state.backend=key;_settingsDirty=true;
+  state.backend='snowluma';_settingsDirty=true;
   const backend=onebotBackend(key),saved=state.settings||{};
   document.getElementById('cfg-path').value=saved[backend.directoryKey]||'';
   document.getElementById('cfg-show-napcat').checked=!!saved[backend.windowKey];
@@ -546,16 +460,16 @@ function applyBackendUI(){
   document.querySelectorAll('[data-i18n="ui.napcat.config.refresh_qrcode"]').forEach(el=>el.style.display=sl?'none':'');
   if(sl){document.getElementById('qr-img').style.display='none';document.getElementById('qr-empty').textContent=state.loginOnline?'QQ 已登录 · 已连接':backend.loginHint;}
   const webui=document.getElementById('backend-webui-link');
-  const pending=(state.backend||'napcat')!==(state.settings.onebot_backend||'napcat');
-  updateBackendConsoleLink(webui,state.backend||'napcat',state.backendWebuiUrl,pending,call);
+  const pending=(state.backend||'snowluma')!==(state.settings.onebot_backend||'snowluma');
+  updateBackendConsoleLink(webui,state.backend||'snowluma',state.backendWebuiUrl,pending,call);
   document.title=backend.label+' · QQ 控制台';
   const label=document.getElementById('cfg-url-label');
   if(label)label.textContent=currentMode()==='napcat_forward'?backend.label+' WebSocket 服务器地址':'通信地址 (URL)';
 }
 function currentMode(){var el=document.querySelector('#conn-direction-cards .radio-card.selected');return el&&el.dataset.direction==='forward'?'napcat_forward':'napcat'}
-/* 正向/反向都需要本地 NapCat（目录/窗口/二维码是登录与 OneBot 服务的前置），
+/* 正向/反向都需要本地 OneBot（目录/窗口/二维码是登录与 OneBot 服务的前置），
    方向只影响 URL 字段语义与引导文案，不隐藏本地管理项。 */
-var URL_DEFAULTS=['ws://0.0.0.0:6199','ws://127.0.0.1:3001'];function updateDirectionUI(){var fwd=currentMode()==='napcat_forward';var lbl=document.getElementById('cfg-url-label');if(lbl)lbl.textContent=fwd?onebotBackend(state.backend).label+' WebSocket 服务器地址':t('ui.napcat.config.url_label','通信地址 (URL)');/* 方向一换，地址的**含义**就变了（反向=我们监听，正向=NapCat 的服务端），沿用旧值几乎必然错：正向去拨反向那个 0.0.0.0，Windows 报 WinError 1214 "指定的网络名格式无效"。只在框里还是**某个模式的默认值**时才替换 —— 用户自己填过的地址不动。 */var el=document.getElementById('cfg-url');if(el&&URL_DEFAULTS.indexOf(el.value.trim())>=0)el.value=fwd?'ws://127.0.0.1:3001':'ws://0.0.0.0:6199'}
+var URL_DEFAULTS=['ws://0.0.0.0:6199','ws://127.0.0.1:3001'];function updateDirectionUI(){var fwd=currentMode()==='napcat_forward';var lbl=document.getElementById('cfg-url-label');if(lbl)lbl.textContent=fwd?onebotBackend(state.backend).label+' WebSocket 服务器地址':t('ui.napcat.config.url_label','通信地址 (URL)');/* 方向一换，地址的**含义**就变了（反向=我们监听，正向=OneBot 的服务端），沿用旧值几乎必然错：正向去拨反向那个 0.0.0.0，Windows 报 WinError 1214 "指定的网络名格式无效"。只在框里还是**某个模式的默认值**时才替换 —— 用户自己填过的地址不动。 */var el=document.getElementById('cfg-url');if(el&&URL_DEFAULTS.indexOf(el.value.trim())>=0)el.value=fwd?'ws://127.0.0.1:3001':'ws://0.0.0.0:6199'}
 function onDirectionChange(direction){document.querySelectorAll('#conn-direction-cards .radio-card').forEach(function(c){c.classList.toggle('selected',c.dataset.direction===direction)});state.mode=currentMode();updateDirectionUI();_settingsDirty=true}
 /* i18n 加载完成后重设方向 UI：scanDOM 只刷 [data-i18n]，而 url 标签由
    updateDirectionUI 单独持有（含正向文案），避免被扫回默认文案。 */
@@ -590,7 +504,7 @@ function switchSub(sub){currentSub=sub;document.getElementById('content').scroll
    读过它，所以闸一直不存在。
    整函数 return 是安全的：派生 UI（策略卡显隐、radio 选中态、记忆父子联动）各自有
    onchange/click 监听，不依赖本函数；而进入配置页时会清脏标记，首次填充照常发生。 */
-if(_settingsDirty)return;state.backend=s.onebot_backend||'napcat';let _skc=document.getElementById('cfg-sticker-collect');if(_skc)_skc.value=['off','current','any'].includes(s.sticker_collect_policy)?s.sticker_collect_policy:'current';document.getElementById('cfg-backend').value=state.backend;state.replyMode=['text','voice','both'].includes(s.reply_mode)?s.reply_mode:'text';document.getElementById('cfg-url').value=s.onebot_url||'';document.getElementById('cfg-token').value=s.token||'';document.getElementById('cfg-path').value=s[onebotBackend(state.backend).directoryKey]||'';document.getElementById('cfg-show-napcat').checked=!!s[onebotBackend(state.backend).windowKey];document.getElementById('cfg-normal-prob').value=s.normal_relay_probability??.1;document.querySelectorAll('#reply-mode-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===state.replyMode));document.getElementById('cfg-retro-max-msgs').value=s.retroactive_review_max_messages??30;document.getElementById('cfg-retro-max-reply').value=s.retroactive_review_max_reply??5;document.getElementById('cfg-retro-min-unreviewed').value=s.retroactive_review_min_unreviewed??5;document.getElementById('cfg-retro-cooldown').value=s.retroactive_review_cooldown_seconds??300;document.getElementById('cfg-att-focus-threshold').value=s.attention_focus_threshold??4;document.getElementById('cfg-att-focus-send').value=s.attention_focus_hold_threshold??2;document.getElementById('cfg-att-maintenance-interval').value=s.attention_maintenance_interval_seconds??60;document.getElementById('cfg-gm-digest-interval').value=s.group_memory_digest_interval_seconds??300;document.getElementById('cfg-dormancy-idle').value=s.dormancy_idle_seconds??1800;document.getElementById('cfg-dormancy-wake-score').value=s.dormancy_wake_score??2;document.getElementById('cfg-dormancy-on').checked=s.dormancy_enabled!==!1;document.getElementById('cfg-att-freq-target-gap').value=s.attention_frequency_target_gap??30;document.getElementById('cfg-att-freq-min-mult').value=s.attention_frequency_min_multiplier??0.15;document.getElementById('cfg-att-freq-max-mult').value=s.attention_frequency_max_multiplier??3;document.getElementById('cfg-att-lock-seconds').value=s.attention_lock_seconds??90;document.getElementById('cfg-att-emotion-multipliers').value=JSON.stringify(s.attention_emotion_multipliers??{},null,2);document.getElementById('cfg-local-stt-url').value=s.local_stt_url||'';document.getElementById('cfg-group-memory').checked=s.group_memory_enabled===!0;document.getElementById('cfg-group-member-memory').checked=s.group_member_memory_enabled===!0;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=s.allow_cross_group_context===!0;state.mode=(s.qq_connection_mode==='napcat_forward')?'napcat_forward':'napcat';document.querySelectorAll('#conn-direction-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.direction===(state.mode==='napcat_forward'?'forward':'reverse')));updateDirectionUI();document.getElementById('cfg-catchup-enabled').checked=s.catchup_enabled!==!1;document.getElementById('cfg-buffer-group').checked=s.group_buffer_enabled!==!1;document.getElementById('cfg-force-sentence-split').checked=!!s.force_sentence_split;document.getElementById('cfg-buffer-private').checked=s.private_buffer_enabled!==!1;document.getElementById('cfg-burst-window').value=s.reply_burst_window_seconds??60;document.getElementById('cfg-burst-max').value=s.reply_burst_max_replies??3;document.getElementById('cfg-buffer-mean').value=s.buffer_delay_mean_seconds??1;document.getElementById('cfg-buffer-mean-private').value=s.buffer_delay_private_seconds??0.6;document.getElementById('cfg-buffer-max-count').value=s.buffer_max_count??17;document.getElementById('cfg-buffer-collect').value=s.buffer_collect_window_seconds??3;document.getElementById('cfg-buffer-collect-private').value=s.buffer_collect_window_private_seconds??1;syncGroupMemoryDeps();applyAttentionHints();if(typeof QQReplyPresets!=='undefined')QQReplyPresets.load(s);}
+if(_settingsDirty)return;state.backend=s.onebot_backend||'snowluma';let _skc=document.getElementById('cfg-sticker-collect');if(_skc)_skc.value=['off','current','any'].includes(s.sticker_collect_policy)?s.sticker_collect_policy:'current';document.getElementById('cfg-backend').value=state.backend;state.replyMode=['text','voice','both'].includes(s.reply_mode)?s.reply_mode:'text';document.getElementById('cfg-url').value=s.onebot_url||'';document.getElementById('cfg-token').value=s.token||'';document.getElementById('cfg-path').value=s[onebotBackend(state.backend).directoryKey]||'';document.getElementById('cfg-show-napcat').checked=!!s[onebotBackend(state.backend).windowKey];document.getElementById('cfg-normal-prob').value=s.normal_relay_probability??.1;document.querySelectorAll('#reply-mode-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===state.replyMode));document.getElementById('cfg-retro-max-msgs').value=s.retroactive_review_max_messages??30;document.getElementById('cfg-retro-max-reply').value=s.retroactive_review_max_reply??5;document.getElementById('cfg-retro-min-unreviewed').value=s.retroactive_review_min_unreviewed??5;document.getElementById('cfg-retro-cooldown').value=s.retroactive_review_cooldown_seconds??300;document.getElementById('cfg-att-focus-threshold').value=s.attention_focus_threshold??4;document.getElementById('cfg-att-focus-send').value=s.attention_focus_hold_threshold??2;document.getElementById('cfg-att-maintenance-interval').value=s.attention_maintenance_interval_seconds??60;document.getElementById('cfg-gm-digest-interval').value=s.group_memory_digest_interval_seconds??300;document.getElementById('cfg-dormancy-idle').value=s.dormancy_idle_seconds??1800;document.getElementById('cfg-dormancy-wake-score').value=s.dormancy_wake_score??2;document.getElementById('cfg-dormancy-on').checked=s.dormancy_enabled!==!1;document.getElementById('cfg-att-freq-target-gap').value=s.attention_frequency_target_gap??30;document.getElementById('cfg-att-freq-min-mult').value=s.attention_frequency_min_multiplier??0.15;document.getElementById('cfg-att-freq-max-mult').value=s.attention_frequency_max_multiplier??3;document.getElementById('cfg-att-lock-seconds').value=s.attention_lock_seconds??90;document.getElementById('cfg-att-emotion-multipliers').value=JSON.stringify(s.attention_emotion_multipliers??{},null,2);document.getElementById('cfg-local-stt-url').value=s.local_stt_url||'';document.getElementById('cfg-group-memory').checked=s.group_memory_enabled===!0;document.getElementById('cfg-group-member-memory').checked=s.group_member_memory_enabled===!0;document.getElementById('cfg-private-participant-memory').checked=!!s.private_participant_memory_enabled;document.getElementById('cfg-cross-group-context').checked=s.allow_cross_group_context===!0;state.mode=(s.qq_connection_mode==='napcat_forward')?'napcat_forward':'napcat';document.querySelectorAll('#conn-direction-cards .radio-card').forEach(c=>c.classList.toggle('selected',c.dataset.direction===(state.mode==='napcat_forward'?'forward':'reverse')));updateDirectionUI();document.getElementById('cfg-catchup-enabled').checked=s.catchup_enabled!==!1;document.getElementById('cfg-buffer-group').checked=s.group_buffer_enabled!==!1;document.getElementById('cfg-force-sentence-split').checked=!!s.force_sentence_split;document.getElementById('cfg-buffer-private').checked=s.private_buffer_enabled!==!1;document.getElementById('cfg-burst-window').value=s.reply_burst_window_seconds??60;document.getElementById('cfg-burst-max').value=s.reply_burst_max_replies??3;document.getElementById('cfg-buffer-mean').value=s.buffer_delay_mean_seconds??1;document.getElementById('cfg-buffer-mean-private').value=s.buffer_delay_private_seconds??0.6;document.getElementById('cfg-buffer-max-count').value=s.buffer_max_count??17;document.getElementById('cfg-buffer-collect').value=s.buffer_collect_window_seconds??3;document.getElementById('cfg-buffer-collect-private').value=s.buffer_collect_window_private_seconds??1;syncGroupMemoryDeps();applyAttentionHints();if(typeof QQReplyPresets!=='undefined')QQReplyPresets.load(s);}
 function applyRuntimeStatus(d){
   let rt=d.runtime||{},lg=d.login||{};
   state.backendWebuiUrl=rt.backend_webui_url||'';
@@ -626,20 +540,20 @@ document.getElementById("guide-progress-bar").style.width=(done/total*100)+"%";
 document.getElementById("guide-list").innerHTML=items.map(function(s,i){
 var icon=s.ok?"<svg width=20 height=20 viewBox='0 0 20 20'><circle cx=10 cy=10 r=9 fill=#67c23a stroke=#67c23a stroke-width=2></circle><path d='M6 10l3 3 5-6' fill=none stroke=#fff stroke-width=2 stroke-linecap=round stroke-linejoin=round></path></svg>":"<svg width=20 height=20 viewBox='0 0 20 20'><circle cx=10 cy=10 r=9 fill=none stroke=#94a3b8 stroke-width=2></circle><text x=10 y=15 text-anchor=middle fill=#667085 font-size=12>"+(i+1)+"</text></svg>";
 return"<div class=guide-task onclick=openGuideModal('"+escapeOnclick(s.id)+"')><div style=display:flex;align-items:center;gap:12px;padding:14px;background:"+(s.ok?"var(--success-tint)":"var(--surface-strong)")+";border-radius:var(--radius-md);border:1px solid "+(s.ok?"var(--success)":"var(--border)")+";margin-bottom:8px;cursor:pointer;transition:.15s>"+icon+"<div style=flex:1><div style=font-weight:600;font-size:14px>"+escapeHtml(s.label)+"</div><div style=font-size:11px;color:"+(s.ok?"var(--success)":"var(--text-secondary)")+">"+escapeHtml(s.hint)+"</div></div><span style=color:var(--accent);font-size:20px>&#8250;</span></div></div>"}).join("")}
-function openGuideModal(id){var titles={"step-napcat":t("ui.napcat.guide.modal_napcat","NapCat 进程配置"),"step-onebot":t("ui.napcat.guide.modal_onebot","OneBot 连接配置"),"step-users":t("ui.napcat.guide.modal_users","添加信任用户"),"step-running":t("ui.napcat.guide.modal_running","启动自动回复"),"step-sticker":t("ui.napcat.guide.modal_sticker","表情包管理"),"step-review":t("ui.napcat.guide.modal_review","消息审阅"),"step-strategy":t("ui.napcat.guide.modal_strategy","猫娘策略"),"step-linux":t("ui.napcat.guide.modal_linux","Linux/Docker 部署"),"step-debug":t("ui.napcat.guide.modal_debug","错误排查与上报")};
+function openGuideModal(id){var titles={"step-napcat":t("ui.napcat.guide.modal_napcat","OneBot 进程配置"),"step-onebot":t("ui.napcat.guide.modal_onebot","OneBot 连接配置"),"step-users":t("ui.napcat.guide.modal_users","添加信任用户"),"step-running":t("ui.napcat.guide.modal_running","启动自动回复"),"step-sticker":t("ui.napcat.guide.modal_sticker","表情包管理"),"step-review":t("ui.napcat.guide.modal_review","消息审阅"),"step-strategy":t("ui.napcat.guide.modal_strategy","猫娘策略"),"step-linux":t("ui.napcat.guide.modal_linux","Linux/Docker 部署"),"step-debug":t("ui.napcat.guide.modal_debug","错误排查与上报")};
 document.getElementById("modal-title").textContent=titles[id]||"";
-// 引导弹窗按当前连接方向（正向/反向）切换「NapCat 进程配置」和「OneBot 连接配置」的说明
+// 引导弹窗按当前连接方向（正向/反向）切换「OneBot 进程配置」和「OneBot 连接配置」的说明
 var fwd=currentMode()==="napcat_forward";
 var detailId=(id==="step-napcat"&&fwd)?"step-napcat-forward":((id==="step-onebot"&&fwd)?"step-onebot-forward":id);
 var backend=onebotBackend(state.backend);
 document.getElementById("modal-body").innerHTML=(backend.guides&&backend.guides[id])||document.getElementById("guide-detail-"+detailId).innerHTML;
 if(backend.guides&&backend.guides[id])document.getElementById('modal-title').textContent=backend.label+' 接入说明';
-// NapCat WebUI 链接：正向/反向变体各自带独立的 url 元素，注入 modal-body 后统一填充
+// OneBot WebUI 链接：正向/反向变体各自带独立的 url 元素，注入 modal-body 后统一填充
 var urlEl=document.querySelector("#modal-body #guide-napcat-url");
 var urlTx=document.querySelector("#modal-body #guide-napcat-url-text");
 var url=state._napcatUrl||"";
 if(urlEl)urlEl.href=url||"#";
-if(urlTx)urlTx.textContent=url?" ("+url.substring(0,60)+"...)":t("ui.napcat.guide.wait_napcat"," (等待 NapCat 启动...)");
+if(urlTx)urlTx.textContent=url?" ("+url.substring(0,60)+"...)":t("ui.napcat.guide.wait_napcat"," (等待 OneBot 启动...)");
 document.getElementById("modal-confirm").style.display="none";
 document.getElementById("modal-bg").style.display="flex";setTimeout(function(){document.querySelectorAll("#modal-body img").forEach(function(img){img.style.cursor="zoom-in";img.onclick=function(e){e.stopPropagation();document.getElementById("img-lightbox-img").src=this.src;document.getElementById("img-lightbox").style.display="flex"}})},100)}
 function goGuide(link){if(link.indexOf('http://')===0||link.indexOf('https://')===0){window.open(link,'_blank')}else{var p=link.split(':');switchPage(p[0]);if(p[1])switchSub(p[1])}}function updateStatusBar(){document.getElementById('st-running').textContent=state.running?t('ui.shared.topbar.running','运行中'):t('ui.shared.topbar.stopped','未启动');document.getElementById('st-running').className='tag '+(state.running?'tag-running':'tag-offline');document.getElementById('st-onebot').textContent=state.onebotOk?t('ui.shared.topbar.connected','已连接'):t('ui.shared.topbar.disconnected','未连接');document.getElementById('st-onebot').className='tag '+(state.onebotOk?'tag-online':'tag-offline');document.getElementById('st-self-id').textContent=state.selfId||'-';document.getElementById('st-nickname').textContent=state.nickname||'-';document.getElementById('st-napcat-pid').textContent=state.napcatPid||'-';let cd=document.getElementById('conn-dot'),ct=document.getElementById('conn-text');cd.style.background=state.onebotOk?'var(--success)':'var(--danger)';ct.textContent=state.onebotOk?(state.selfId||t('ui.shared.topbar.connected','已连接')):t('ui.shared.topbar.disconnected','未连接');document.getElementById('status-dot').style.background=state.running?'var(--success)':'var(--danger)'}
@@ -673,7 +587,7 @@ async function loadDashboard(){try{
   applyDashboard(await fetchDashboardSnapshot());
 }catch(e){console.error('loadDashboard failed',e)}}
  function isMaskedTokenPlaceholder(v){return /^[*●•]{3,8}$/.test(String(v||'').trim())}
-async function doSave(){try{let tokenValue=document.getElementById('cfg-token').value;/* 情绪倍率表(JSON)必须在提交前解析并校验：以前是内联的 try/catch 返回 undefined，而 JSON.stringify 会整体省略 undefined 属性 → 后端收不到这个键 → 整键被静默丢弃，但下面照样弹「设置已保存」并回填旧值。用户打错一个逗号，改动没了却被告知成功。这里改成：不合法就报错并中止整次保存。 */let emoRaw=document.getElementById('cfg-att-emotion-multipliers'),emoParsed;if((typeof QQReplyPresets==='undefined'||QQReplyPresets.isCustom())&&emoRaw&&emoRaw.value.trim()!==''){try{emoParsed=JSON.parse(emoRaw.value)}catch(e){toast(t('ui.shared.toast.emotion_json_invalid','情绪倍率表不是合法 JSON，已中止保存：')+e.message);return}}let args={catchup_enabled:document.getElementById('cfg-catchup-enabled').checked,sticker_collect_policy:((document.getElementById('cfg-sticker-collect')||{}).value||'current'),...initiativeSettingsPayload(),group_buffer_enabled:document.getElementById('cfg-buffer-group').checked,private_buffer_enabled:document.getElementById('cfg-buffer-private').checked,force_sentence_split:document.getElementById('cfg-force-sentence-split').checked,reply_burst_window_seconds:intVal('cfg-burst-window',60),reply_burst_max_replies:intVal('cfg-burst-max',3),buffer_delay_mean_seconds:floatVal('cfg-buffer-mean',1),buffer_delay_private_seconds:floatVal('cfg-buffer-mean-private',0.6),buffer_max_count:intVal('cfg-buffer-max-count',17),buffer_collect_window_seconds:floatVal('cfg-buffer-collect',3),buffer_collect_window_private_seconds:floatVal('cfg-buffer-collect-private',1),onebot_url:document.getElementById('cfg-url').value.trim(),onebot_backend:state.backend||'napcat',[onebotBackend(state.backend).directoryKey]:document.getElementById('cfg-path').value.trim(),[onebotBackend(state.backend).windowKey]:document.getElementById('cfg-show-napcat').checked,qq_connection_mode:currentMode(),reply_mode:state.replyMode,normal_relay_probability:floatVal('cfg-normal-prob',.1),retroactive_review_max_messages:intVal('cfg-retro-max-msgs',30),retroactive_review_max_reply:intVal('cfg-retro-max-reply',5),retroactive_review_min_unreviewed:intVal('cfg-retro-min-unreviewed',5),retroactive_review_cooldown_seconds:intVal('cfg-retro-cooldown',300),attention_focus_threshold:floatVal('cfg-att-focus-threshold',4),attention_focus_hold_threshold:floatVal('cfg-att-focus-send',2),attention_maintenance_interval_seconds:floatVal('cfg-att-maintenance-interval',60),group_memory_digest_interval_seconds:intVal('cfg-gm-digest-interval',300),dormancy_enabled:document.getElementById('cfg-dormancy-on').checked,dormancy_idle_seconds:intVal('cfg-dormancy-idle',1800),dormancy_wake_score:floatVal('cfg-dormancy-wake-score',2),attention_frequency_target_gap:floatVal('cfg-att-freq-target-gap',30),attention_frequency_min_multiplier:floatVal('cfg-att-freq-min-mult',0.15),attention_frequency_max_multiplier:floatVal('cfg-att-freq-max-mult',1.8),attention_lock_seconds:intVal('cfg-att-lock-seconds',90),attention_emotion_multipliers:emoParsed,local_stt_url:document.getElementById('cfg-local-stt-url').value.trim(),group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-memory').checked&&document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(typeof QQReplyPresets!=='undefined')args=QQReplyPresets.payload(args);if(!isMaskedTokenPlaceholder(tokenValue))args.token=tokenValue;if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1)toast(t('ui.shared.toast.save_failed','保存失败（写入磁盘失败）'));else{toast(t('ui.shared.toast.saved','设置已保存'),!0);_settingsDirty=!1;_initiativeDirty=!1}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
+async function doSave(){try{let tokenValue=document.getElementById('cfg-token').value;/* 情绪倍率表(JSON)必须在提交前解析并校验：以前是内联的 try/catch 返回 undefined，而 JSON.stringify 会整体省略 undefined 属性 → 后端收不到这个键 → 整键被静默丢弃，但下面照样弹「设置已保存」并回填旧值。用户打错一个逗号，改动没了却被告知成功。这里改成：不合法就报错并中止整次保存。 */let emoRaw=document.getElementById('cfg-att-emotion-multipliers'),emoParsed;if((typeof QQReplyPresets==='undefined'||QQReplyPresets.isCustom())&&emoRaw&&emoRaw.value.trim()!==''){try{emoParsed=JSON.parse(emoRaw.value)}catch(e){toast(t('ui.shared.toast.emotion_json_invalid','情绪倍率表不是合法 JSON，已中止保存：')+e.message);return}}let args={catchup_enabled:document.getElementById('cfg-catchup-enabled').checked,sticker_collect_policy:((document.getElementById('cfg-sticker-collect')||{}).value||'current'),...initiativeSettingsPayload(),group_buffer_enabled:document.getElementById('cfg-buffer-group').checked,private_buffer_enabled:document.getElementById('cfg-buffer-private').checked,force_sentence_split:document.getElementById('cfg-force-sentence-split').checked,reply_burst_window_seconds:intVal('cfg-burst-window',60),reply_burst_max_replies:intVal('cfg-burst-max',3),buffer_delay_mean_seconds:floatVal('cfg-buffer-mean',1),buffer_delay_private_seconds:floatVal('cfg-buffer-mean-private',0.6),buffer_max_count:intVal('cfg-buffer-max-count',17),buffer_collect_window_seconds:floatVal('cfg-buffer-collect',3),buffer_collect_window_private_seconds:floatVal('cfg-buffer-collect-private',1),onebot_url:document.getElementById('cfg-url').value.trim(),onebot_backend:state.backend||'snowluma',[onebotBackend(state.backend).directoryKey]:document.getElementById('cfg-path').value.trim(),[onebotBackend(state.backend).windowKey]:document.getElementById('cfg-show-napcat').checked,qq_connection_mode:currentMode(),reply_mode:state.replyMode,normal_relay_probability:floatVal('cfg-normal-prob',.1),retroactive_review_max_messages:intVal('cfg-retro-max-msgs',30),retroactive_review_max_reply:intVal('cfg-retro-max-reply',5),retroactive_review_min_unreviewed:intVal('cfg-retro-min-unreviewed',5),retroactive_review_cooldown_seconds:intVal('cfg-retro-cooldown',300),attention_focus_threshold:floatVal('cfg-att-focus-threshold',4),attention_focus_hold_threshold:floatVal('cfg-att-focus-send',2),attention_maintenance_interval_seconds:floatVal('cfg-att-maintenance-interval',60),group_memory_digest_interval_seconds:intVal('cfg-gm-digest-interval',300),dormancy_enabled:document.getElementById('cfg-dormancy-on').checked,dormancy_idle_seconds:intVal('cfg-dormancy-idle',1800),dormancy_wake_score:floatVal('cfg-dormancy-wake-score',2),attention_frequency_target_gap:floatVal('cfg-att-freq-target-gap',30),attention_frequency_min_multiplier:floatVal('cfg-att-freq-min-mult',0.15),attention_frequency_max_multiplier:floatVal('cfg-att-freq-max-mult',1.8),attention_lock_seconds:intVal('cfg-att-lock-seconds',90),attention_emotion_multipliers:emoParsed,local_stt_url:document.getElementById('cfg-local-stt-url').value.trim(),group_memory_enabled:document.getElementById('cfg-group-memory').checked,group_member_memory_enabled:document.getElementById('cfg-group-memory').checked&&document.getElementById('cfg-group-member-memory').checked,private_participant_memory_enabled:document.getElementById('cfg-private-participant-memory').checked,allow_cross_group_context:document.getElementById('cfg-cross-group-context').checked};if(typeof QQReplyPresets!=='undefined')args=QQReplyPresets.payload(args);if(!isMaskedTokenPlaceholder(tokenValue))args.token=tokenValue;if(state.backlogLabels&&state.backlogLabels.length)args.backlog_labels=state.backlogLabels;let r=await call('config',{action:'save',...args});if(r&&r.persisted===!1)toast(t('ui.shared.toast.save_failed','保存失败（写入磁盘失败）'));else{toast(t('ui.shared.toast.saved','设置已保存'),!0);_settingsDirty=!1;_initiativeDirty=!1}await loadDashboard()}catch(e){toast(t('ui.shared.toast.save_failed_prefix','保存失败: ')+e.message)}}
 async function doStart(){try{var mode=currentMode();/* 先捕获方向再刷新：loadDashboard 会用已保存配置重置方向卡片，晚读就拿到旧方向 */await loadDashboard();await call('config', {action:'save', qq_connection_mode:mode});await call('runtime',{action:'start'});toast(t('ui.shared.toast.started','已启动'),!0);await loadDashboard();startStatusPoll()}catch(e){toast(t('ui.shared.toast.start_failed_prefix','启动失败: ')+e.message)}}
 async function doStop(){try{await call('runtime',{action:'stop'});toast(t('ui.shared.toast.stopped','已停止'),!0);await loadDashboard();startStatusPoll()}catch(e){toast(t('ui.shared.toast.stop_failed_prefix','停止失败: ')+e.message)}}
 async function doSyncQrcode(){try{await call('deploy', {action:'qrcode_sync'});await loadDashboard();toast(t('ui.shared.toast.refreshed','已刷新'),!0)}catch(e){toast(t('ui.shared.toast.refresh_failed_prefix','刷新失败: ')+e.message)}}

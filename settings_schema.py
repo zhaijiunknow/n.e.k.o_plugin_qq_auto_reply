@@ -351,8 +351,8 @@ MISC = (
                 enum=("fast", "balanced", "quiet", "custom"),
                 description="save：回复风格预设；custom 保留独立参数"),
     # ── 连接 ──
-    SettingSpec("onebot_backend", "str", "napcat", saveable=True,
-                enum=("napcat", "snowluma"), description="save：OneBot 部署后端"),
+    SettingSpec("onebot_backend", "str", "snowluma", saveable=True,
+                enum=("snowluma",), description="save：OneBot 部署后端"),
     SettingSpec("snowluma_directory", "str", "", saveable=True,
                 description="save：SnowLuma 安装目录"),
     SettingSpec("show_snowluma_window", "bool", False, saveable=True,

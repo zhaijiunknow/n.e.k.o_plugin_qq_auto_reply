@@ -3,9 +3,9 @@ function renderBackendControls(el, settings, rt, selected, call, refresh) {
   if (!el) return;
   el.hidden = settings.qq_connection_mode === 'open_platform';
   if (el.hidden) return;
-  const backend = selected || settings.onebot_backend || 'napcat';
+  const backend = selected || settings.onebot_backend || 'snowluma';
   const label = onebotBackend(backend).label;
-  const pending = backend !== (settings.onebot_backend || 'napcat');
+  const pending = backend !== (settings.onebot_backend || 'snowluma');
   const alive = !!rt.napcat_running, managed = alive && !!rt.napcat_managed;
   if (!el.querySelector('button')) {
     el.innerHTML = '<strong></strong><p class="backend-process-state"></p><div class="backend-process-actions"><button type="button" class="btn btn-primary backend-start"></button><button type="button" class="btn btn-ghost ghost backend-stop"></button></div><p class="backend-process-hint"></p><p class="backend-process-result" role="status"></p>';
@@ -15,7 +15,7 @@ function renderBackendControls(el, settings, rt, selected, call, refresh) {
     alive ? '进程运行中' + (rt.napcat_pid ? ' · PID ' + rt.napcat_pid : '') + (rt.onebot_connected ? ' · OneBot 已连接' : ' · 等待 OneBot 连接') :
     rt.onebot_connected ? 'OneBot 已连接 · 外部管理' : '无插件管理的进程 · OneBot 未连接';
   el.querySelector('.backend-process-hint').textContent = '启动后端后，可单独启动自动回复。关闭后端会同时停止自动回复。' +
-    (backend === 'snowluma' ? '关闭 SnowLuma 不会退出本机 QQ。' : '关闭 NapCat 会退出它启动的 QQ。') +
+    '关闭 SnowLuma 不会退出本机 QQ。' +
     '手动或远程启动的后端需在对应控制台关闭。';
   const start = el.querySelector('.backend-start'), stop = el.querySelector('.backend-stop');
   start.textContent = '启动 ' + label;
