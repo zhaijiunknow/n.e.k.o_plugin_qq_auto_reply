@@ -7,7 +7,7 @@
 | 版本 | 分支 | 适用场景 |
 | --- | --- | --- |
 | v0.16.0 稳定版 | `main` | QQ 官方开放平台；首页提供扫码绑定和开放平台配置 |
-| **v0.16.0-beta.2 测试版** | `beta-onebot-ui` | 需要 OneBot（SnowLuma 等）控制台、登录或部署界面 |
+| **v0.16.1-beta.1 测试版** | `beta-onebot-ui` | 需要 OneBot（SnowLuma 等）控制台、登录或部署界面 |
 
 稳定版隐藏 OneBot 界面，**不删除后端能力，也不改动已有连接配置**，已接入的用户可以继续运行。
 本分支仅提供 SnowLuma 的部署和启动支持，保留通用 OneBot 管理界面，并同步 main 的通用修复。NapCat 的界面、部署和启动支持已移除；旧配置会切换到 SnowLuma 并关闭 OneBot 开机自动启动，原安装目录与数据保留。请重新配置 SnowLuma，或自行管理外部 OneBot 服务。测试版 Release 标记为 Pre-release，不替代稳定版。

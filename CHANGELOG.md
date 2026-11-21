@@ -1,3 +1,7 @@
+# v0.16.1-beta.1 (2026-11-22)
+
+- Republish the v0.16.0-beta.2 changes under the 0.16.1 beta version; no functional changes.
+
 # v0.16.0-beta.2 (2026-11-22)
 
 - 移除 NapCat 界面、下载部署和启动支持；保留 SnowLuma 与通用 OneBot。
